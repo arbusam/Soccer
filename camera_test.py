@@ -1,13 +1,15 @@
 import cv2
 
 cap = cv2.VideoCapture(0)
+
 while True:
     frame = cap.read()[1]  # returns (error code, frame), so get 2nd element
     hsvframe = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    bluelbound = (150, 100, 150)
-    blueubound = (200, 255, 255)
-    yellowlbound = (20, 100, 100)
-    yellowubound = (30, 255, 255)
+
+    bluelbound = (100, 50, 50)
+    blueubound = (130, 255, 255)
+    yellowlbound = (30, 50, 50)
+    yellowubound = (50, 255, 255)
 
     bluemask = cv2.inRange(hsvframe, bluelbound, blueubound)
     yellowmask = cv2.inRange(hsvframe, yellowlbound, yellowubound)
@@ -24,7 +26,7 @@ while True:
     bluecontours, _ = cv2.findContours(bluemask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for contour in bluecontours:
         area = cv2.contourArea(contour)
-        if area > 25:
+        if area > 200:
             x, y, w, h = cv2.boundingRect(contour)
             cv2.drawContours(frame, [contour], -1, (255, 0, 0), 1)
 
