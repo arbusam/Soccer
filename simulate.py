@@ -12,6 +12,7 @@ white = (255, 255, 255)
 black = (0, 0, 0)
 cyan = (0, 255, 255)
 yellow = (255, 255, 0)
+orange = (255, 165, 0)
 
 pitch.fill(green)
 
@@ -46,6 +47,7 @@ base_pitch = pitch.copy()
 
 clock = pygame.time.Clock()
 
+# Game log format: x_pos,y_pos,yaw,ball_x,ball_y
 f = open("test_game_log.txt", "r")
 lines = f.readlines()
 f.close()
@@ -59,6 +61,8 @@ for line in lines:
     x_pos = int(float(line_data[0]))
     y_pos = int(float(line_data[1]))
     yaw = float(line_data[2])
+    ball_x = int(float(line_data[3]))
+    ball_y = int(float(line_data[4]))
     frame_pitch = base_pitch.copy()
     pygame.draw.circle(frame_pitch, yellow, (x_pos, y_pos), 110)
     radius = 110
@@ -66,7 +70,7 @@ for line in lines:
     end_x = x_pos + radius * math.cos(angle)
     end_y = y_pos + radius * math.sin(angle)
     pygame.draw.line(frame_pitch, black, (x_pos, y_pos), (end_x, end_y), 12)
-
+    pygame.draw.circle(frame_pitch, orange, (ball_x, ball_y), 21)
     head_len = 35
     head_offset = math.radians(25)
     for offset in (-head_offset, head_offset):
