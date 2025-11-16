@@ -1,4 +1,5 @@
 import pygame
+import math
 
 pygame.init()
 
@@ -41,15 +42,42 @@ pygame.draw.line(pitch, black, (2130, 685), (2208, 685), 10)
 pygame.draw.line(pitch, black, (2204, 685), (2204, 1140), 10)
 pygame.draw.line(pitch, black, (2204, 1135), (2130, 1135), 10)
 
+base_pitch = pitch.copy()
 
 clock = pygame.time.Clock()
 
-while True:
+f = open("test_game_log.txt", "r")
+lines = f.readlines()
+f.close()
+
+for line in lines:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             pygame.quit()
             exit()
-    scaled = pygame.transform.smoothscale(pitch, (1215, 910))
+    line_data = line.strip().split(",")
+    x_pos = int(float(line_data[0]))
+    y_pos = int(float(line_data[1]))
+    yaw = float(line_data[2])
+    frame_pitch = base_pitch.copy()
+    pygame.draw.circle(frame_pitch, yellow, (x_pos, y_pos), 110)
+    radius = 110
+    angle = math.radians(yaw)
+    end_x = x_pos + radius * math.cos(angle)
+    end_y = y_pos + radius * math.sin(angle)
+    pygame.draw.line(frame_pitch, black, (x_pos, y_pos), (end_x, end_y), 12)
+
+    head_len = 35
+    head_offset = math.radians(25)
+    for offset in (-head_offset, head_offset):
+        side_angle = angle + math.pi + offset
+        side_x = end_x + head_len * math.cos(side_angle)
+        side_y = end_y + head_len * math.sin(side_angle)
+        pygame.draw.line(frame_pitch, black, (end_x, end_y), (side_x, side_y), 12)
+    scaled = pygame.transform.smoothscale(frame_pitch, (1215, 910))
     display.blit(scaled, (0, 0))
     pygame.display.flip()
     clock.tick(60)
+
+pygame.quit()
+exit()
