@@ -4,6 +4,8 @@ import sys
 
 import pygame
 
+from defence import defence
+
 parser = argparse.ArgumentParser(
     description="Visualize a simulated match from a log file.",
     epilog=(
@@ -41,6 +43,7 @@ black = (0, 0, 0)
 cyan = (0, 255, 255)
 yellow = (255, 255, 0)
 orange = (255, 165, 0)
+red = (255, 0, 0)
 
 pitch.fill(green)
 
@@ -75,11 +78,77 @@ base_pitch = pitch.copy()
 
 clock = pygame.time.Clock()
 
+# Scale factor: millimeters per pixel
+# Pitch playable area is approximately 1930x1320 pixels
+# Adjust this constant based on real-world pitch dimensions
+MM_PER_PIXEL = 1.0  # Default: 1mm per pixel (adjust as needed)
+FPS = 30
+
 # Game log format: x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,...
 
-def build_frame(surface, x_pos, y_pos, yaw, ball_x, ball_y, bot_coords):
-    frame_pitch = surface.copy()
-    pygame.draw.circle(frame_pitch, yellow, (x_pos, y_pos), 110)
+def is_out_of_white_boundary(x_pos, y_pos, bot_radius):
+    white_min_x = 300
+    white_max_x = 2180
+    white_min_y = 300
+    white_max_y = 1570
+    
+    # Find closest point on rectangle to circle center
+    closest_x = max(white_min_x, min(x_pos, white_max_x))
+    closest_y = max(white_min_y, min(y_pos, white_max_y))
+    
+    # Calculate distance from circle center to closest point on rectangle
+    dx = x_pos - closest_x
+    dy = y_pos - closest_y
+    distance = math.sqrt(dx * dx + dy * dy)
+    
+    # Circle is completely outside if distance > radius
+    return distance > bot_radius
+
+
+def point_to_line_segment_distance(px, py, x1, y1, x2, y2):
+    # Vector from line start to end
+    dx = x2 - x1
+    dy = y2 - y1
+    
+    # If line segment has zero length, return distance to endpoint
+    line_length_sq = dx * dx + dy * dy
+    if line_length_sq == 0:
+        dist = math.sqrt((px - x1) ** 2 + (py - y1) ** 2)
+        return dist, (x1, y1)
+    
+    # Vector from line start to point
+    to_point_x = px - x1
+    to_point_y = py - y1
+    
+    # Project point onto line (t is parameter along line segment)
+    t = max(0, min(1, (to_point_x * dx + to_point_y * dy) / line_length_sq))
+    
+    # Closest point on line segment
+    closest_x = x1 + t * dx
+    closest_y = y1 + t * dy
+    
+    # Distance from point to closest point on segment
+    dist_x = px - closest_x
+    dist_y = py - closest_y
+    distance = math.sqrt(dist_x * dist_x + dist_y * dist_y)
+    
+    return distance, (closest_x, closest_y)
+
+
+def check_collision_with_goal_lines(x_pos, y_pos, bot_radius, goal_lines):
+    for line in goal_lines:
+        (x1, y1), (x2, y2), line_width = line
+        distance, _ = point_to_line_segment_distance(x_pos, y_pos, x1, y1, x2, y2)
+        
+        # Collision if distance < (circle_radius + line_width/2)
+        if distance < (bot_radius + line_width / 2):
+            return True
+    return False
+
+
+def build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bot_coords, robot_color=yellow):
+    frame_pitch = base_pitch.copy()
+    pygame.draw.circle(frame_pitch, robot_color, (x_pos, y_pos), 110)
     radius = 110
     angle = math.radians(yaw)
     end_x = x_pos + radius * math.cos(angle)
@@ -123,23 +192,93 @@ if log_provided:
             bot_x = int(float(line_data[i]))
             bot_y = int(float(line_data[i + 1]))
             bots.append((bot_x, bot_y))
-        frame_pitch = build_frame(base_pitch, x_pos, y_pos, yaw, ball_x, ball_y, bots)
+        frame_pitch = build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bots, yellow)
         blit_frame(frame_pitch)
-        clock.tick(30)
+        clock.tick(FPS)
 else:
     x_pos = 600
     y_pos = pitch.get_height() // 2
     ball_x = pitch.get_width() // 2
     ball_y = pitch.get_height() // 2
     yaw = 0
-    frame_pitch = build_frame(base_pitch, x_pos, y_pos, yaw, ball_x, ball_y, [])
-    blit_frame(frame_pitch)
+    
+    # Window boundaries (accounting for bot radius of 110 pixels)
+    bot_radius = 110
+    min_x = bot_radius
+    max_x = pitch.get_width() - bot_radius
+    min_y = bot_radius
+    max_y = pitch.get_height() - bot_radius
+    
+    # Goal lines: ((x1, y1), (x2, y2), line_width)
+    goal_lines = [
+        ((300, 685), (222, 685), 10),
+        ((226, 685), (226, 1140), 10),
+        ((226, 1135), (300, 1135), 10),
+        ((2130, 685), (2208, 685), 10),
+        ((2204, 685), (2204, 1140), 10),
+        ((2204, 1135), (2130, 1135), 10),
+    ]
+    
+    out_of_bounds_start_time = None
+    RED_DURATION_MS = 5000
+    
     waiting = True
     while waiting:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 waiting = False
-        clock.tick(30)
+        
+        direction, speed = defence(x_pos, y_pos, yaw, ball_x, ball_y)
+        
+        # Calculate effective direction relative to yaw
+        effective_direction = (yaw + direction) % 360
+        effective_direction_rad = math.radians(effective_direction)
+        
+        # Convert speed from mm/s to pixels per frame
+        pixels_per_frame = (speed / MM_PER_PIXEL) / FPS
+        
+        # Store postion before attempted move
+        prev_x = x_pos
+        prev_y = y_pos
+        
+        # Move bot
+        x_pos += pixels_per_frame * math.cos(effective_direction_rad)
+        y_pos += pixels_per_frame * math.sin(effective_direction_rad)
+        
+        # Check for collision with goal
+        if check_collision_with_goal_lines(x_pos, y_pos, bot_radius, goal_lines):
+            # Revert to previous position if collision detected
+            x_pos = prev_x
+            y_pos = prev_y
+        
+        # Clamp position to pitch
+        x_pos = max(min_x, min(max_x, x_pos))
+        y_pos = max(min_y, min(max_y, y_pos))
+        
+        # Check if robot is out of white boundary
+        current_time = pygame.time.get_ticks()
+        is_out_of_bounds = is_out_of_white_boundary(x_pos, y_pos, bot_radius)
+        
+        # Update out-of-bounds state
+        if is_out_of_bounds:
+            if out_of_bounds_start_time is None:
+                # Just entered out-of-bounds state, start timer
+                out_of_bounds_start_time = current_time
+        
+        # Determine robot color - stay red for 5 seconds after going out of bounds
+        robot_color = yellow
+        if out_of_bounds_start_time is not None:
+            elapsed_ms = current_time - out_of_bounds_start_time
+            if elapsed_ms < RED_DURATION_MS:
+                robot_color = red
+            else:
+                out_of_bounds_start_time = None
+        
+        # Rebuild and blit frame
+        frame_pitch = build_frame(x_pos, y_pos, yaw, ball_x, ball_y, [], robot_color)
+        blit_frame(frame_pitch)
+        
+        clock.tick(FPS)
 
 pygame.quit()
 exit()
