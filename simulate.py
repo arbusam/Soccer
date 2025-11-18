@@ -1,5 +1,33 @@
-import pygame
+import argparse
 import math
+import sys
+
+import pygame
+
+parser = argparse.ArgumentParser(
+    description="Visualize a simulated match from a log file.",
+    epilog=(
+        "Game log format: "
+        "x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,..."
+    ),
+)
+parser.add_argument(
+    "log_file",
+    nargs="?",
+    help="Path to the game log file (CSV format) containing frame-by-frame positions.",
+)
+args = parser.parse_args()
+
+lines = []
+log_provided = args.log_file is not None
+
+if log_provided:
+    try:
+        with open(args.log_file, "r") as f:
+            lines = f.readlines()
+    except OSError as exc:
+        print(f"Unable to read log file '{args.log_file}': {exc}")
+        sys.exit(1)
 
 pygame.init()
 
@@ -48,22 +76,9 @@ base_pitch = pitch.copy()
 clock = pygame.time.Clock()
 
 # Game log format: x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,...
-f = open("test_game_log.txt", "r")
-lines = f.readlines()
-f.close()
 
-for line in lines:
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            pygame.quit()
-            exit()
-    line_data = line.strip().split(",")
-    x_pos = int(float(line_data[0]))
-    y_pos = int(float(line_data[1]))
-    yaw = float(line_data[2])
-    ball_x = int(float(line_data[3]))
-    ball_y = int(float(line_data[4]))
-    frame_pitch = base_pitch.copy()
+def build_frame(surface, x_pos, y_pos, yaw, ball_x, ball_y, bot_coords):
+    frame_pitch = surface.copy()
     pygame.draw.circle(frame_pitch, yellow, (x_pos, y_pos), 110)
     radius = 110
     angle = math.radians(yaw)
@@ -77,17 +92,54 @@ for line in lines:
         side_x = end_x + head_len * math.cos(side_angle)
         side_y = end_y + head_len * math.sin(side_angle)
         pygame.draw.line(frame_pitch, black, (end_x, end_y), (side_x, side_y), 12)
-    
-    for i in range(5, len(line_data), 2):
-        bot_x = int(float(line_data[i]))
-        bot_y = int(float(line_data[i+1]))
+
+    for bot_x, bot_y in bot_coords:
         pygame.draw.circle(frame_pitch, cyan, (bot_x, bot_y), 55)
-    
+
     pygame.draw.circle(frame_pitch, orange, (ball_x, ball_y), 21)
-    scaled = pygame.transform.smoothscale(frame_pitch, (1215, 910))
+    return frame_pitch
+
+
+def blit_frame(frame_surface):
+    scaled = pygame.transform.smoothscale(frame_surface, (1215, 910))
     display.blit(scaled, (0, 0))
     pygame.display.flip()
-    clock.tick(30)
+
+
+if log_provided:
+    for line in lines:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                exit()
+        line_data = line.strip().split(",")
+        x_pos = int(float(line_data[0]))
+        y_pos = int(float(line_data[1]))
+        yaw = float(line_data[2])
+        ball_x = int(float(line_data[3]))
+        ball_y = int(float(line_data[4]))
+        bots = []
+        for i in range(5, len(line_data), 2):
+            bot_x = int(float(line_data[i]))
+            bot_y = int(float(line_data[i + 1]))
+            bots.append((bot_x, bot_y))
+        frame_pitch = build_frame(base_pitch, x_pos, y_pos, yaw, ball_x, ball_y, bots)
+        blit_frame(frame_pitch)
+        clock.tick(30)
+else:
+    x_pos = 600
+    y_pos = pitch.get_height() // 2
+    ball_x = pitch.get_width() // 2
+    ball_y = pitch.get_height() // 2
+    yaw = 0
+    frame_pitch = build_frame(base_pitch, x_pos, y_pos, yaw, ball_x, ball_y, [])
+    blit_frame(frame_pitch)
+    waiting = True
+    while waiting:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                waiting = False
+        clock.tick(30)
 
 pygame.quit()
 exit()
