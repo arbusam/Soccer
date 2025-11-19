@@ -47,7 +47,7 @@ base_pitch = pitch.copy()
 
 clock = pygame.time.Clock()
 
-# Game log format: x_pos,y_pos,yaw,ball_x,ball_y
+# Game log format: x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,...
 f = open("test_game_log.txt", "r")
 lines = f.readlines()
 f.close()
@@ -70,7 +70,6 @@ for line in lines:
     end_x = x_pos + radius * math.cos(angle)
     end_y = y_pos + radius * math.sin(angle)
     pygame.draw.line(frame_pitch, black, (x_pos, y_pos), (end_x, end_y), 12)
-    pygame.draw.circle(frame_pitch, orange, (ball_x, ball_y), 21)
     head_len = 35
     head_offset = math.radians(25)
     for offset in (-head_offset, head_offset):
@@ -78,10 +77,17 @@ for line in lines:
         side_x = end_x + head_len * math.cos(side_angle)
         side_y = end_y + head_len * math.sin(side_angle)
         pygame.draw.line(frame_pitch, black, (end_x, end_y), (side_x, side_y), 12)
+    
+    for i in range(5, len(line_data), 2):
+        bot_x = int(float(line_data[i]))
+        bot_y = int(float(line_data[i+1]))
+        pygame.draw.circle(frame_pitch, cyan, (bot_x, bot_y), 55)
+    
+    pygame.draw.circle(frame_pitch, orange, (ball_x, ball_y), 21)
     scaled = pygame.transform.smoothscale(frame_pitch, (1215, 910))
     display.blit(scaled, (0, 0))
     pygame.display.flip()
-    clock.tick(60)
+    clock.tick(30)
 
 pygame.quit()
 exit()
