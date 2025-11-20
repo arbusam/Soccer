@@ -489,7 +489,7 @@ if log_provided:
         blit_frame(frame_pitch)
         clock.tick(FPS)
 else:
-    x_pos = 600
+    x_pos = 1500
     y_pos = pitch.get_height() // 2
     ball_x = pitch.get_width() // 2
     ball_y = pitch.get_height() // 2
@@ -659,6 +659,8 @@ else:
             else:
                 ball_vx = 0.0
                 ball_vy = 0.0
+
+        ball_x, ball_y = pygame.mouse.get_pos()[0]*2, pygame.mouse.get_pos()[1]*2
         
         # Check if robot is out of white boundary
         current_time = pygame.time.get_ticks()
