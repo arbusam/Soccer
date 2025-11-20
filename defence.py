@@ -3,7 +3,13 @@ def move(direction, speed): # degrees, mm/s
     pass
 
 def defence(x_pos, y_pos, yaw, ball_x, ball_y):
-    return 0, 500 # Move forward
+    if x_pos - ball_x < 30 and x_pos - ball_x > -30:
+        if y_pos - ball_y < 30 and y_pos - ball_y > -30:
+            return 0, 0
+        return 90, 500
+    else:
+        return -60, 500
+
 
 def goalie(x_pos, y_pos, yaw, ball_x, ball_y):
     return 0, 0 # Do nothing
