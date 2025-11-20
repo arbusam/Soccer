@@ -323,7 +323,10 @@ else:
         ((2204, 1135), (2130, 1135), 10),
     ]
     
-    out_of_bounds_start_time = None
+    # Tracks when the robot came back in bounds so we can keep it red
+    # for a short duration after re-entering.
+    red_until_time = None
+    was_out_of_bounds = False
     RED_DURATION_MS = 5000
     
     waiting = True
@@ -362,21 +365,30 @@ else:
         # Check if robot is out of white boundary
         current_time = pygame.time.get_ticks()
         is_out_of_bounds = is_out_of_white_boundary(x_pos, y_pos, bot_radius)
-        
-        # Update out-of-bounds state
+
+        # Determine robot color:
+        # - Stay red the entire time the robot is out of bounds.
+        # - Once it returns in bounds, start a 5 second timer during which it stays red.
         if is_out_of_bounds:
-            if out_of_bounds_start_time is None:
-                # Just entered out-of-bounds state, start timer
-                out_of_bounds_start_time = current_time
-        
-        # Determine robot color - stay red for 5 seconds after going out of bounds
-        robot_color = yellow
-        if out_of_bounds_start_time is not None:
-            elapsed_ms = current_time - out_of_bounds_start_time
-            if elapsed_ms < RED_DURATION_MS:
+            # While out of bounds, always red and cancel any post-return timer.
+            robot_color = red
+            red_until_time = None
+        else:
+            # Just came back in bounds this frame: start the red timer.
+            if was_out_of_bounds:
+                red_until_time = current_time + RED_DURATION_MS
+
+            # Default color in bounds.
+            robot_color = yellow
+
+            # If a red timer is active, stay red until it expires.
+            if red_until_time is not None and current_time <= red_until_time:
                 robot_color = red
-            else:
-                out_of_bounds_start_time = None
+            elif red_until_time is not None and current_time > red_until_time:
+                red_until_time = None
+
+        # Remember last frame's out-of-bounds state.
+        was_out_of_bounds = is_out_of_bounds
         
         # Rebuild and blit frame
         frame_pitch = build_frame(x_pos, y_pos, yaw, ball_x, ball_y, [], robot_color)
