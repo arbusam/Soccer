@@ -36,6 +36,8 @@ pygame.init()
 display = pygame.display.set_mode((1215, 910))
 
 pitch = pygame.Surface((2430, 1820))
+PITCH_WIDTH = pitch.get_width()
+PITCH_HEIGHT = pitch.get_height()
 
 green = (20, 110, 44)
 white = (255, 255, 255)
@@ -45,12 +47,23 @@ yellow = (255, 255, 0)
 orange = (255, 165, 0)
 red = (255, 0, 0)
 
+WHITE_MIN_X = 300
+WHITE_MAX_X = 2180
+WHITE_MIN_Y = 300
+WHITE_MAX_Y = 1570
+
 ROBOT_RADIUS = 110
 BALL_CAPTURE_ZONE_WIDTH = 50
 CAPTURE_OFFSET = ROBOT_RADIUS - 15
 CONNECTOR_ANGLE_DEG = 45
 CONNECTOR_ANGLE_RAD = math.radians(CONNECTOR_ANGLE_DEG)
 CUTOUT_ARC_SEGMENTS = 50
+CAPTURE_LINE_WIDTH = 4
+CAPTURE_LINE_HALF_WIDTH = CAPTURE_LINE_WIDTH / 2.0
+BALL_RADIUS = 21
+BALL_DECELERATION_SPEED = 1000  # mm/s^2
+WALL_BOUNCE_ENERGY_LOSS = 0.7
+EPSILON = 1e-6
 
 pitch.fill(green)
 
@@ -91,17 +104,19 @@ clock = pygame.time.Clock()
 MM_PER_PIXEL = 1.0  # Default: 1mm per pixel (adjust as needed)
 FPS = 30
 
+
+def mmps_to_pixels_per_frame(value_mm_per_s):
+    return (value_mm_per_s / MM_PER_PIXEL) / FPS
+
+
+BALL_DECELERATION_PER_FRAME = mmps_to_pixels_per_frame(BALL_DECELERATION_SPEED / FPS)
+
 # Game log format: x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,...
 
 def is_out_of_white_boundary(x_pos, y_pos, bot_radius):
-    white_min_x = 300
-    white_max_x = 2180
-    white_min_y = 300
-    white_max_y = 1570
-    
     # Find closest point on rectangle to circle center
-    closest_x = max(white_min_x, min(x_pos, white_max_x))
-    closest_y = max(white_min_y, min(y_pos, white_max_y))
+    closest_x = max(WHITE_MIN_X, min(x_pos, WHITE_MAX_X))
+    closest_y = max(WHITE_MIN_Y, min(y_pos, WHITE_MAX_Y))
     
     # Calculate distance from circle center to closest point on rectangle
     dx = x_pos - closest_x
@@ -228,16 +243,13 @@ def build_clockwise_arc_points(start_point, end_point, center, radius, segments)
     return points
 
 
-def build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bot_coords, robot_color=yellow):
-    frame_pitch = base_pitch.copy()
-    pygame.draw.circle(frame_pitch, robot_color, (x_pos, y_pos), ROBOT_RADIUS)
+def get_capture_geometry(x_pos, y_pos, yaw):
     angle = math.radians(yaw)
     line_start, line_end = calculate_capture_zone_back(x_pos, y_pos, angle)
     robot_center = (x_pos, y_pos)
 
     angle_left = angle - CONNECTOR_ANGLE_RAD
     angle_right = angle + CONNECTOR_ANGLE_RAD
-
     left_circle = ray_circle_intersection(
         line_start[0], line_start[1], angle_left, robot_center, ROBOT_RADIUS
     )
@@ -245,34 +257,205 @@ def build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bot_coords, robot_color=yello
         line_end[0], line_end[1], angle_right, robot_center, ROBOT_RADIUS
     )
 
-    def _int_point(point):
-        return (int(point[0]), int(point[1]))
-
     connector_lines = [
-        (_int_point(line_start), _int_point(left_circle)),
-        (_int_point(line_end), _int_point(right_circle)),
-        (_int_point(line_start), _int_point(line_end)),
+        (line_start, left_circle),
+        (line_end, right_circle),
+        (line_start, line_end),
     ]
 
+    arc_segments = []
     if left_circle != robot_center and right_circle != robot_center:
         arc_points = build_clockwise_arc_points(
             left_circle, right_circle, robot_center, ROBOT_RADIUS, CUTOUT_ARC_SEGMENTS
         )
         arc_points_full = [left_circle] + arc_points + [right_circle]
         for i in range(len(arc_points_full) - 1):
-            pygame.draw.line(frame_pitch, black, _int_point(arc_points_full[i]), _int_point(arc_points_full[i + 1]), 4)
+            arc_segments.append((arc_points_full[i], arc_points_full[i + 1]))
+
+    segments = connector_lines + arc_segments
+
+    return {
+        "angle": angle,
+        "line_start": line_start,
+        "line_end": line_end,
+        "robot_center": robot_center,
+        "connector_lines": connector_lines,
+        "arc_segments": arc_segments,
+        "segments": segments,
+    }
+
+
+def build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bot_coords, robot_color=yellow):
+    frame_pitch = base_pitch.copy()
+    pygame.draw.circle(frame_pitch, robot_color, (x_pos, y_pos), ROBOT_RADIUS)
+    geometry = get_capture_geometry(x_pos, y_pos, yaw)
+
+    def _int_point(point):
+        return (int(point[0]), int(point[1]))
+
+    connector_lines = [
+        (_int_point(start), _int_point(end)) for start, end in geometry["connector_lines"]
+    ]
+
+    for start, end in geometry["arc_segments"]:
+        pygame.draw.line(frame_pitch, black, _int_point(start), _int_point(end), CAPTURE_LINE_WIDTH)
 
     for start, end in connector_lines:
-        pygame.draw.line(frame_pitch, black, start, end, 4)
+        pygame.draw.line(frame_pitch, black, start, end, CAPTURE_LINE_WIDTH)
 
 
     for bot_x, bot_y in bot_coords:
         pygame.draw.circle(frame_pitch, cyan, (bot_x, bot_y), 55)
 
-    pygame.draw.circle(frame_pitch, orange, (ball_x, ball_y), 21)
+    pygame.draw.circle(frame_pitch, orange, (ball_x, ball_y), BALL_RADIUS)
     return frame_pitch
 
 
+def resolve_circle_segment_penetration(
+    circle_x,
+    circle_y,
+    radius,
+    segment_start,
+    segment_end,
+    line_half_width,
+    outward_reference=None,
+):
+    distance, closest_point = point_to_line_segment_distance(
+        circle_x, circle_y, segment_start[0], segment_start[1], segment_end[0], segment_end[1]
+    )
+    allowed_distance = radius + line_half_width
+    if distance >= allowed_distance:
+        return circle_x, circle_y, None
+
+    diff_x = circle_x - closest_point[0]
+    diff_y = circle_y - closest_point[1]
+    norm = math.hypot(diff_x, diff_y)
+    if norm < EPSILON:
+        if outward_reference is not None:
+            diff_x = circle_x - outward_reference[0]
+            diff_y = circle_y - outward_reference[1]
+            norm = math.hypot(diff_x, diff_y)
+    if norm < EPSILON:
+        # Default normal if we still cannot determine direction
+        diff_x, diff_y = 1.0, 0.0
+        norm = 1.0
+
+    normal_x = diff_x / norm
+    normal_y = diff_y / norm
+    penetration = allowed_distance - distance
+    circle_x += normal_x * penetration
+    circle_y += normal_y * penetration
+    return circle_x, circle_y, (normal_x, normal_y)
+
+
+def resolve_ball_capture_collisions(ball_x, ball_y, ball_vx, ball_vy, geometry, bot_velocity):
+    ball_being_pushed = False
+    bot_speed = math.hypot(bot_velocity[0], bot_velocity[1])
+    for segment_start, segment_end in geometry["segments"]:
+        ball_x, ball_y, normal = resolve_circle_segment_penetration(
+            ball_x,
+            ball_y,
+            BALL_RADIUS,
+            segment_start,
+            segment_end,
+            CAPTURE_LINE_HALF_WIDTH,
+            geometry["robot_center"],
+        )
+        if normal is None:
+            continue
+        impact = 0.0
+        if bot_speed > EPSILON:
+            impact = bot_velocity[0] * normal[0] + bot_velocity[1] * normal[1]
+        if impact > 0:
+            alignment = min(1.0, impact / (bot_speed + EPSILON))
+            ball_vx = bot_velocity[0] * alignment
+            ball_vy = bot_velocity[1] * alignment
+            ball_being_pushed = True
+        else:
+            vel_dot = ball_vx * normal[0] + ball_vy * normal[1]
+            if vel_dot < 0:
+                ball_vx -= vel_dot * normal[0]
+                ball_vy -= vel_dot * normal[1]
+
+    return ball_x, ball_y, ball_vx, ball_vy, ball_being_pushed
+
+
+def keep_ball_in_pitch_bounds(ball_x, ball_y, ball_vx, ball_vy):
+    ball_min_x = BALL_RADIUS
+    ball_max_x = PITCH_WIDTH - BALL_RADIUS
+    ball_min_y = BALL_RADIUS
+    ball_max_y = PITCH_HEIGHT - BALL_RADIUS
+
+    against_boundary = False
+
+    if ball_x < ball_min_x:
+        ball_x = ball_min_x
+        ball_vx = abs(ball_vx) * WALL_BOUNCE_ENERGY_LOSS
+        against_boundary = True
+    elif ball_x > ball_max_x:
+        ball_x = ball_max_x
+        ball_vx = -abs(ball_vx) * WALL_BOUNCE_ENERGY_LOSS
+        against_boundary = True
+
+    if ball_y < ball_min_y:
+        ball_y = ball_min_y
+        ball_vy = abs(ball_vy) * WALL_BOUNCE_ENERGY_LOSS
+        against_boundary = True
+    elif ball_y > ball_max_y:
+        ball_y = ball_max_y
+        ball_vy = -abs(ball_vy) * WALL_BOUNCE_ENERGY_LOSS
+        against_boundary = True
+
+    return ball_x, ball_y, ball_vx, ball_vy, against_boundary
+
+
+def is_ball_touching_pitch_bounds(ball_x, ball_y):
+    ball_min_x = BALL_RADIUS
+    ball_max_x = PITCH_WIDTH - BALL_RADIUS
+    ball_min_y = BALL_RADIUS
+    ball_max_y = PITCH_HEIGHT - BALL_RADIUS
+    return (
+        ball_x <= ball_min_x + EPSILON
+        or ball_x >= ball_max_x - EPSILON
+        or ball_y <= ball_min_y + EPSILON
+        or ball_y >= ball_max_y - EPSILON
+    )
+
+
+def is_ball_touching_goal_lines(ball_x, ball_y, goal_lines):
+    for (x1, y1), (x2, y2), line_width in goal_lines:
+        distance, _ = point_to_line_segment_distance(ball_x, ball_y, x1, y1, x2, y2)
+        allowed_distance = BALL_RADIUS + line_width / 2.0
+        if distance <= allowed_distance + EPSILON:
+            return True
+    return False
+
+
+def resolve_ball_goal_line_collisions(ball_x, ball_y, ball_vx, ball_vy, goal_lines):
+    against_goal_line = False
+    for (x1, y1), (x2, y2), line_width in goal_lines:
+        distance, closest_point = point_to_line_segment_distance(ball_x, ball_y, x1, y1, x2, y2)
+        allowed_distance = BALL_RADIUS + line_width / 2.0
+        if distance >= allowed_distance:
+            continue
+        diff_x = ball_x - closest_point[0]
+        diff_y = ball_y - closest_point[1]
+        norm = math.hypot(diff_x, diff_y)
+        if norm < EPSILON:
+            continue
+        normal_x = diff_x / norm
+        normal_y = diff_y / norm
+        penetration = allowed_distance - distance
+        ball_x += normal_x * penetration
+        ball_y += normal_y * penetration
+        vel_dot = ball_vx * normal_x + ball_vy * normal_y
+        if vel_dot < 0:
+            ball_vx -= 2 * vel_dot * normal_x
+            ball_vy -= 2 * vel_dot * normal_y
+            ball_vx *= WALL_BOUNCE_ENERGY_LOSS
+            ball_vy *= WALL_BOUNCE_ENERGY_LOSS
+        against_goal_line = True
+    return ball_x, ball_y, ball_vx, ball_vy, against_goal_line
 def blit_frame(frame_surface):
     scaled = pygame.transform.smoothscale(frame_surface, (1215, 910))
     display.blit(scaled, (0, 0))
@@ -304,6 +487,8 @@ else:
     y_pos = pitch.get_height() // 2
     ball_x = pitch.get_width() // 2
     ball_y = pitch.get_height() // 2
+    ball_vx = 0.0
+    ball_vy = 0.0
     yaw = 0
     
     # Window boundaries (accounting for bot radius of 110 pixels)
@@ -335,22 +520,62 @@ else:
             if event.type == pygame.QUIT:
                 waiting = False
         
-        direction, speed = defence(x_pos, y_pos, yaw, ball_x, ball_y)
+        keys = pygame.key.get_pressed()
+        up = keys[pygame.K_UP]
+        down = keys[pygame.K_DOWN]
+        left = keys[pygame.K_LEFT]
+        right = keys[pygame.K_RIGHT]
+
+        direction = None
+        speed = 0
+
+        if up and not down:
+            if left and not right:
+                direction = (270 + 180) / 2  # Up + Left
+            elif right and not left:
+                direction = (270 + 360) / 2    # Up + Right
+            elif not left and not right:
+                direction = 270              # Up only
+        elif down and not up:
+            if left and not right:
+                direction = (90 + 180) / 2   # Down + Left
+            elif right and not left:
+                direction = (90 + 0) / 2     # Down + Right
+            elif not left and not right:
+                direction = 90               # Down only
+        elif left and not right and not up and not down:
+            direction = 180
+        elif right and not left and not up and not down:
+            direction = 0
+
+        # Check for opposites
+        if (up and down) or (left and right):
+            speed = 0
+            direction = 0  # Arbitrary, since speed is zero
+        elif direction is not None:
+            speed = 300  # Or whatever default speed you wish
+        else:
+            direction = 0
+            speed = 0
+
         
         # Calculate effective direction relative to yaw
         effective_direction = (yaw + direction) % 360
         effective_direction_rad = math.radians(effective_direction)
         
         # Convert speed from mm/s to pixels per frame
-        pixels_per_frame = (speed / MM_PER_PIXEL) / FPS
+        pixels_per_frame = mmps_to_pixels_per_frame(speed)
         
-        # Store postion before attempted move
+        # Store position before attempted move
         prev_x = x_pos
         prev_y = y_pos
         
+        bot_step_x = pixels_per_frame * math.cos(effective_direction_rad)
+        bot_step_y = pixels_per_frame * math.sin(effective_direction_rad)
+        
         # Move bot
-        x_pos += pixels_per_frame * math.cos(effective_direction_rad)
-        y_pos += pixels_per_frame * math.sin(effective_direction_rad)
+        x_pos += bot_step_x
+        y_pos += bot_step_y
         
         # Check for collision with goal
         if check_collision_with_goal_lines(x_pos, y_pos, bot_radius, goal_lines):
@@ -361,6 +586,69 @@ else:
         # Clamp position to pitch
         x_pos = max(min_x, min(max_x, x_pos))
         y_pos = max(min_y, min(max_y, y_pos))
+        bot_actual_dx = x_pos - prev_x
+        bot_actual_dy = y_pos - prev_y
+        
+        # Update ball position based on current velocity
+        ball_x += ball_vx
+        ball_y += ball_vy
+        
+        ball_x, ball_y, ball_vx, ball_vy, boundary_collision_pre = keep_ball_in_pitch_bounds(
+            ball_x, ball_y, ball_vx, ball_vy
+        )
+        ball_x, ball_y, ball_vx, ball_vy, goal_line_collision_pre = resolve_ball_goal_line_collisions(
+            ball_x, ball_y, ball_vx, ball_vy, goal_lines
+        )
+        geometry = get_capture_geometry(x_pos, y_pos, yaw)
+        ball_x, ball_y, ball_vx, ball_vy, ball_being_pushed = resolve_ball_capture_collisions(
+            ball_x, ball_y, ball_vx, ball_vy, geometry, (bot_actual_dx, bot_actual_dy)
+        )
+        ball_x, ball_y, ball_vx, ball_vy, boundary_collision_post = keep_ball_in_pitch_bounds(
+            ball_x, ball_y, ball_vx, ball_vy
+        )
+        (
+            ball_x,
+            ball_y,
+            ball_vx,
+            ball_vy,
+            goal_line_collision_post,
+        ) = resolve_ball_goal_line_collisions(ball_x, ball_y, ball_vx, ball_vy, goal_lines)
+        ball_against_surface = (
+            boundary_collision_pre
+            or goal_line_collision_pre
+            or boundary_collision_post
+            or goal_line_collision_post
+            or is_ball_touching_pitch_bounds(ball_x, ball_y)
+            or is_ball_touching_goal_lines(ball_x, ball_y, goal_lines)
+        )
+        
+        if (
+            ball_against_surface
+            and ball_being_pushed
+            and (abs(bot_actual_dx) > EPSILON or abs(bot_actual_dy) > EPSILON)
+        ):
+            # Ball is pinned; stop the bot and hold the ball in place
+            x_pos = prev_x
+            y_pos = prev_y
+            bot_actual_dx = 0.0
+            bot_actual_dy = 0.0
+            ball_vx = 0.0
+            ball_vy = 0.0
+            geometry = get_capture_geometry(x_pos, y_pos, yaw)
+            ball_x, ball_y, ball_vx, ball_vy, _ = resolve_ball_capture_collisions(
+                ball_x, ball_y, ball_vx, ball_vy, geometry, (0.0, 0.0)
+            )
+            ball_being_pushed = False
+        
+        if not ball_being_pushed:
+            ball_speed = math.hypot(ball_vx, ball_vy)
+            if ball_speed > BALL_DECELERATION_PER_FRAME:
+                scale = (ball_speed - BALL_DECELERATION_PER_FRAME) / ball_speed
+                ball_vx *= scale
+                ball_vy *= scale
+            else:
+                ball_vx = 0.0
+                ball_vy = 0.0
         
         # Check if robot is out of white boundary
         current_time = pygame.time.get_ticks()
