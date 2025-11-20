@@ -45,6 +45,13 @@ yellow = (255, 255, 0)
 orange = (255, 165, 0)
 red = (255, 0, 0)
 
+ROBOT_RADIUS = 110
+BALL_CAPTURE_ZONE_WIDTH = 50
+CAPTURE_OFFSET = ROBOT_RADIUS - 15
+CONNECTOR_ANGLE_DEG = 45
+CONNECTOR_ANGLE_RAD = math.radians(CONNECTOR_ANGLE_DEG)
+CUTOUT_ARC_SEGMENTS = 50
+
 pitch.fill(green)
 
 #Pitch markings
@@ -146,21 +153,118 @@ def check_collision_with_goal_lines(x_pos, y_pos, bot_radius, goal_lines):
     return False
 
 
+def calculate_capture_zone_back(x_pos, y_pos, angle_rad):
+    line_center_x = x_pos + CAPTURE_OFFSET * math.cos(angle_rad)
+    line_center_y = y_pos + CAPTURE_OFFSET * math.sin(angle_rad)
+
+    half_width = BALL_CAPTURE_ZONE_WIDTH / 2.0
+    perpendicular_angle = angle_rad + math.pi / 2.0
+    dx = half_width * math.cos(perpendicular_angle)
+    dy = half_width * math.sin(perpendicular_angle)
+
+    line_start = (line_center_x - dx, line_center_y - dy)
+    line_end = (line_center_x + dx, line_center_y + dy)
+    return line_start, line_end
+
+
+def ray_circle_intersection(px, py, angle_rad, circle_center, radius):
+    cx, cy = circle_center
+    dir_x = math.cos(angle_rad)
+    dir_y = math.sin(angle_rad)
+
+    fx = px - cx
+    fy = py - cy
+
+    b = fx * dir_x + fy * dir_y
+    c = fx * fx + fy * fy - radius * radius
+    discriminant = b * b - c
+
+    if discriminant < 0:
+        return circle_center
+
+    sqrt_disc = math.sqrt(discriminant)
+    t1 = -b - sqrt_disc
+    t2 = -b + sqrt_disc
+
+    ts = [t for t in (t1, t2) if t > 0]
+    if not ts:
+        return circle_center
+
+    t = min(ts)
+    hit_x = px + t * dir_x
+    hit_y = py + t * dir_y
+    return hit_x, hit_y
+
+
+def build_clockwise_arc_points(start_point, end_point, center, radius, segments):
+    if segments < 2 or start_point == center or end_point == center or radius <= 0:
+        return []
+
+    cx, cy = center
+    two_pi = 2 * math.pi
+
+    start_angle = math.atan2(start_point[1] - cy, start_point[0] - cx) % two_pi
+    end_angle = math.atan2(end_point[1] - cy, end_point[0] - cx) % two_pi
+
+    cw_span = (start_angle - end_angle) % two_pi
+    ccw_span = (end_angle - start_angle) % two_pi
+    use_cw = True
+    span = cw_span if use_cw else ccw_span
+
+    if math.isclose(span, 0, abs_tol=1e-5):
+        return []
+
+    angle_step = span / segments
+
+    points = []
+    for i in range(1, segments):
+        if use_cw:
+            angle = (start_angle - angle_step * i) % two_pi
+        else:
+            angle = (start_angle + angle_step * i) % two_pi
+        px = cx + radius * math.cos(angle)
+        py = cy + radius * math.sin(angle)
+        points.append((px, py))
+    return points
+
+
 def build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bot_coords, robot_color=yellow):
     frame_pitch = base_pitch.copy()
-    pygame.draw.circle(frame_pitch, robot_color, (x_pos, y_pos), 110)
-    radius = 110
+    pygame.draw.circle(frame_pitch, robot_color, (x_pos, y_pos), ROBOT_RADIUS)
     angle = math.radians(yaw)
-    end_x = x_pos + radius * math.cos(angle)
-    end_y = y_pos + radius * math.sin(angle)
-    pygame.draw.line(frame_pitch, black, (x_pos, y_pos), (end_x, end_y), 12)
-    head_len = 35
-    head_offset = math.radians(25)
-    for offset in (-head_offset, head_offset):
-        side_angle = angle + math.pi + offset
-        side_x = end_x + head_len * math.cos(side_angle)
-        side_y = end_y + head_len * math.sin(side_angle)
-        pygame.draw.line(frame_pitch, black, (end_x, end_y), (side_x, side_y), 12)
+    line_start, line_end = calculate_capture_zone_back(x_pos, y_pos, angle)
+    robot_center = (x_pos, y_pos)
+
+    angle_left = angle - CONNECTOR_ANGLE_RAD
+    angle_right = angle + CONNECTOR_ANGLE_RAD
+
+    left_circle = ray_circle_intersection(
+        line_start[0], line_start[1], angle_left, robot_center, ROBOT_RADIUS
+    )
+    right_circle = ray_circle_intersection(
+        line_end[0], line_end[1], angle_right, robot_center, ROBOT_RADIUS
+    )
+
+    def _int_point(point):
+        return (int(point[0]), int(point[1]))
+
+    connector_lines = [
+        (_int_point(line_start), _int_point(left_circle)),
+        (_int_point(line_end), _int_point(right_circle)),
+        (_int_point(line_start), _int_point(line_end)),
+    ]
+
+    if left_circle != robot_center and right_circle != robot_center:
+        arc_points = build_clockwise_arc_points(
+            left_circle, right_circle, robot_center, ROBOT_RADIUS, CUTOUT_ARC_SEGMENTS
+        )
+        arc_points_full = [left_circle] + arc_points + [right_circle]
+        for i in range(len(arc_points_full) - 1):
+            pygame.draw.line(frame_pitch, black, _int_point(arc_points_full[i]), _int_point(arc_points_full[i + 1]), 4)
+
+    for start, end in connector_lines:
+        pygame.draw.line(frame_pitch, black, start, end, 4)
+
 
     for bot_x, bot_y in bot_coords:
         pygame.draw.circle(frame_pitch, cyan, (bot_x, bot_y), 55)
