@@ -68,6 +68,7 @@ CAPTURE_LINE_WIDTH = 4
 CAPTURE_LINE_HALF_WIDTH = CAPTURE_LINE_WIDTH / 2.0
 BALL_RADIUS = 21
 BALL_DECELERATION_SPEED = 1000  # mm/s^2
+YAW_CORRECT_SPEED = 200  # mm/s spin speed used when aligning yaw
 WALL_BOUNCE_ENERGY_LOSS = 0.7
 EPSILON = 1e-6
 
@@ -116,8 +117,18 @@ def mmps_to_pixels_per_frame(value_mm_per_s):
 
 
 BALL_DECELERATION_PER_FRAME = mmps_to_pixels_per_frame(BALL_DECELERATION_SPEED / FPS)
+YAW_CORRECT_DEG_PER_FRAME = math.degrees(
+    mmps_to_pixels_per_frame(YAW_CORRECT_SPEED) / ROBOT_RADIUS
+)
 
 # Game log format: x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,...
+
+def normalize_angle_deg(angle):
+    return angle % 360
+
+
+def shortest_angle_delta(current, target):
+    return (target - current + 180) % 360 - 180
 
 def is_out_of_white_boundary(x_pos, y_pos, bot_radius):
     # Find closest point on rectangle to circle center
@@ -532,16 +543,19 @@ else:
 
         if args.defence:
             # Use automated defence strategy to get movement direction and speed
-            direction, speed = defence(x_pos, y_pos, yaw, ball_x, ball_y)
+            direction, speed, rotation = defence(x_pos, y_pos, yaw, ball_x, ball_y)
         else:
             keys = pygame.key.get_pressed()
             up = keys[pygame.K_UP]
             down = keys[pygame.K_DOWN]
             left = keys[pygame.K_LEFT]
             right = keys[pygame.K_RIGHT]
+            ctrl = keys[pygame.K_LCTRL]
+            alt = keys[pygame.K_LALT]
 
             direction = None
             speed = 0
+            rotation = yaw
 
             if up and not down:
                 if left and not right:
@@ -571,8 +585,22 @@ else:
             else:
                 direction = 0
                 speed = 0
+            
+            if ctrl:
+                rotation = (yaw - 10) % 360
+            elif alt:
+                rotation = (yaw + 10) % 360
 
-        
+        # Rotate towards target yaw while continuing to move
+        rotation_target = rotation if rotation is not None else yaw
+        yaw_error = shortest_angle_delta(yaw, rotation_target)
+        if abs(yaw_error) > EPSILON:
+            yaw_step = math.copysign(
+                min(abs(yaw_error), YAW_CORRECT_DEG_PER_FRAME),
+                yaw_error,
+            )
+            yaw = normalize_angle_deg(yaw + yaw_step)
+
         # Calculate effective direction relative to yaw
         effective_direction = (yaw + direction) % 360
         effective_direction_rad = math.radians(effective_direction)
