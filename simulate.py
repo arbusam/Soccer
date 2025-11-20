@@ -18,6 +18,12 @@ parser.add_argument(
     nargs="?",
     help="Path to the game log file (CSV format) containing frame-by-frame positions.",
 )
+parser.add_argument(
+    "-d",
+    "--defence",
+    action="store_true",
+    help="Use the defence strategy from defence.py instead of keyboard control.",
+)
 args = parser.parse_args()
 
 lines = []
@@ -519,44 +525,48 @@ else:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 waiting = False
-        
-        keys = pygame.key.get_pressed()
-        up = keys[pygame.K_UP]
-        down = keys[pygame.K_DOWN]
-        left = keys[pygame.K_LEFT]
-        right = keys[pygame.K_RIGHT]
 
-        direction = None
-        speed = 0
-
-        if up and not down:
-            if left and not right:
-                direction = (270 + 180) / 2  # Up + Left
-            elif right and not left:
-                direction = (270 + 360) / 2    # Up + Right
-            elif not left and not right:
-                direction = 270              # Up only
-        elif down and not up:
-            if left and not right:
-                direction = (90 + 180) / 2   # Down + Left
-            elif right and not left:
-                direction = (90 + 0) / 2     # Down + Right
-            elif not left and not right:
-                direction = 90               # Down only
-        elif left and not right and not up and not down:
-            direction = 180
-        elif right and not left and not up and not down:
-            direction = 0
-
-        # Check for opposites
-        if (up and down) or (left and right):
-            speed = 0
-            direction = 0  # Arbitrary, since speed is zero
-        elif direction is not None:
-            speed = 300  # Or whatever default speed you wish
+        if args.defence:
+            # Use automated defence strategy to get movement direction and speed
+            direction, speed = defence(x_pos, y_pos, yaw, ball_x, ball_y)
         else:
-            direction = 0
+            keys = pygame.key.get_pressed()
+            up = keys[pygame.K_UP]
+            down = keys[pygame.K_DOWN]
+            left = keys[pygame.K_LEFT]
+            right = keys[pygame.K_RIGHT]
+
+            direction = None
             speed = 0
+
+            if up and not down:
+                if left and not right:
+                    direction = (270 + 180) / 2  # Up + Left
+                elif right and not left:
+                    direction = (270 + 360) / 2    # Up + Right
+                elif not left and not right:
+                    direction = 270              # Up only
+            elif down and not up:
+                if left and not right:
+                    direction = (90 + 180) / 2   # Down + Left
+                elif right and not left:
+                    direction = (90 + 0) / 2     # Down + Right
+                elif not left and not right:
+                    direction = 90               # Down only
+            elif left and not right and not up and not down:
+                direction = 180
+            elif right and not left and not up and not down:
+                direction = 0
+
+            # Check for opposites
+            if (up and down) or (left and right):
+                speed = 0
+                direction = 0  # Arbitrary, since speed is zero
+            elif direction is not None:
+                speed = 300  # Or whatever default speed you wish
+            else:
+                direction = 0
+                speed = 0
 
         
         # Calculate effective direction relative to yaw
