@@ -47,9 +47,9 @@ yellow = (255, 255, 0)
 orange = (255, 165, 0)
 red = (255, 0, 0)
 
-WHITE_MIN_X = 300
+WHITE_MIN_X = 250
 WHITE_MAX_X = 2180
-WHITE_MIN_Y = 300
+WHITE_MIN_Y = 250
 WHITE_MAX_Y = 1570
 
 ROBOT_RADIUS = 110
@@ -512,7 +512,7 @@ else:
     # for a short duration after re-entering.
     red_until_time = None
     was_out_of_bounds = False
-    RED_DURATION_MS = 5000
+    RED_DURATION_MS = 1000
     
     waiting = True
     while waiting:
