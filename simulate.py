@@ -525,6 +525,10 @@ else:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 waiting = False
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                ball_x, ball_y = pygame.mouse.get_pos()[0]*2, pygame.mouse.get_pos()[1]*2
+                ball_vx = 0.0
+                ball_vy = 0.0
 
         if args.defence:
             # Use automated defence strategy to get movement direction and speed
@@ -659,8 +663,6 @@ else:
             else:
                 ball_vx = 0.0
                 ball_vy = 0.0
-
-        ball_x, ball_y = pygame.mouse.get_pos()[0]*2, pygame.mouse.get_pos()[1]*2
         
         # Check if robot is out of white boundary
         current_time = pygame.time.get_ticks()
