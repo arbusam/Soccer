@@ -322,7 +322,7 @@ def build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bot_coords, robot_color=yello
 
 
     for bot_x, bot_y in bot_coords:
-        pygame.draw.circle(frame_pitch, cyan, (bot_x, bot_y), 55)
+        pygame.draw.circle(frame_pitch, cyan, (bot_x, bot_y), 110)
 
     pygame.draw.circle(frame_pitch, orange, (ball_x, ball_y), BALL_RADIUS)
     return frame_pitch
