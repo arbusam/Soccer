@@ -4,7 +4,7 @@ import sys
 
 import pygame
 
-from defence import defence
+from defence import defence, goalie
 
 parser = argparse.ArgumentParser(
     description="Visualize a simulated match from a log file.",
@@ -23,6 +23,12 @@ parser.add_argument(
     "--defence",
     action="store_true",
     help="Use the defence strategy from defence.py instead of keyboard control.",
+)
+parser.add_argument(
+    "-g",
+    "--goalie",
+    action="store_true",
+    help="Use the goalie strategy from defence.py instead of keyboard control.",
 )
 args = parser.parse_args()
 
@@ -322,7 +328,7 @@ def build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bot_coords, robot_color=yello
 
 
     for bot_x, bot_y in bot_coords:
-        pygame.draw.circle(frame_pitch, cyan, (bot_x, bot_y), 55)
+        pygame.draw.circle(frame_pitch, cyan, (bot_x, bot_y), 110)
 
     pygame.draw.circle(frame_pitch, orange, (ball_x, ball_y), BALL_RADIUS)
     return frame_pitch
@@ -542,8 +548,11 @@ else:
                 ball_vy = 0.0
 
         if args.defence:
-            # Use automated defence strategy to get movement direction and speed
+            # Simulate defence code
             direction, speed, rotation = defence(x_pos, y_pos, yaw, ball_x, ball_y)
+        elif args.goalie:
+            # Simulate goalie code
+            direction, speed, rotation = goalie(x_pos, y_pos, yaw, ball_x, ball_y)
         else:
             keys = pygame.key.get_pressed()
             up = keys[pygame.K_UP]
