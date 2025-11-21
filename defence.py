@@ -1,7 +1,29 @@
 import math
+from sympy import *
+
+QUADRANT_FUNCS = [
+lambda r: (r-1, 1, -1, 1-r),    # 0°‑89° N → E
+lambda r: (1, 1-r, r-1, -1),    # 90°‑179° E → S
+lambda r: (1-r, -1, 1, r-1),    # 180°‑270° S → W
+lambda r: (-1, r-1, 1-r, 1),    # 270°‑359° W → N
+]
+
 def move(direction, speed): # degrees, mm/s
-    # TODO: Move the robot in the given direction at the given speed
+    octant = (direction % 360) // 90
+    ratio = (direction % 90) / 45
+    a_mult, b_mult, c_mult, d_mult = QUADRANT_FUNCS[octant](ratio)
+    a_value = int(a_mult * speed)
+    b_value = int(b_mult * speed)
+    c_value = int(c_mult * speed)
+    d_value = int(d_mult * speed)
     pass
+
+def pid_controller(target, pv, kp, ki, kd, prev_error, integral, dt):
+    error = target - pv
+    integral += error * dt
+    derivative = (error - prev_error) / dt if dt > 0 else 0
+    control = kp * error + ki * integral + kd * derivative
+    return control, error, integral
 
 # Outputs: direction, speed, rotation
 # direction: degrees to move in
