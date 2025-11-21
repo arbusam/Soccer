@@ -77,6 +77,7 @@ BALL_DECELERATION_SPEED = 1000  # mm/s^2
 YAW_CORRECT_SPEED = 200  # mm/s spin speed used when aligning yaw
 WALL_BOUNCE_ENERGY_LOSS = 0.7
 EPSILON = 1e-6
+ACCELERATION = 2000  # mm/s^2
 
 pitch.fill(green)
 
@@ -536,6 +537,8 @@ else:
     red_until_time = None
     was_out_of_bounds = False
     RED_DURATION_MS = 1000
+
+    current_speed = 0
     
     waiting = True
     while waiting:
@@ -599,6 +602,14 @@ else:
                 rotation = (yaw - 10) % 360
             elif alt:
                 rotation = (yaw + 10) % 360
+
+        #Acceleration code
+        if current_speed > speed + mmps_to_pixels_per_frame(ACCELERATION / FPS):
+            current_speed -= mmps_to_pixels_per_frame(ACCELERATION)
+        elif current_speed < speed - mmps_to_pixels_per_frame(ACCELERATION / FPS):
+            current_speed += mmps_to_pixels_per_frame(ACCELERATION)
+        
+        speed = current_speed
 
         # Rotate towards target yaw while continuing to move
         rotation_target = rotation if rotation is not None else yaw
