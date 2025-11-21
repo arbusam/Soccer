@@ -539,6 +539,7 @@ else:
     RED_DURATION_MS = 1000
 
     current_speed = 0
+    current_direction = 0
     
     waiting = True
     while waiting:
@@ -583,19 +584,19 @@ else:
                     direction = (90 + 0) / 2     # Down + Right
                 elif not left and not right:
                     direction = 90               # Down only
-            elif left and not right and not up and not down:
+            elif left and not right and not up and not down: # Left only
                 direction = 180
-            elif right and not left and not up and not down:
+            elif right and not left and not up and not down: # Right only
                 direction = 0
 
             # Check for opposites
             if (up and down) or (left and right):
                 speed = 0
-                direction = 0  # Arbitrary, since speed is zero
+                direction = current_direction
             elif direction is not None:
                 speed = 300  # Or whatever default speed you wish
             else:
-                direction = 0
+                direction = current_direction
                 speed = 0
             
             if ctrl:
@@ -610,6 +611,11 @@ else:
             current_speed += mmps_to_pixels_per_frame(ACCELERATION)
         
         speed = current_speed
+        if direction is None:
+            direction = current_direction
+        else:
+            current_direction = direction
+        
 
         # Rotate towards target yaw while continuing to move
         rotation_target = rotation if rotation is not None else yaw
