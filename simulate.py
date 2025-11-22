@@ -1,6 +1,9 @@
 import argparse
 import math
+import random
 import sys
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Sequence
 
 import pygame
 
@@ -30,6 +33,18 @@ parser.add_argument(
     action="store_true",
     help="Use the goalie strategy from defence.py instead of keyboard control.",
 )
+parser.add_argument(
+    "--team1",
+    nargs="+",
+    metavar="ROLE",
+    help="Space-separated roles (e.g., d g) for Team 1 (yellow, yaw 0).",
+)
+parser.add_argument(
+    "--team2",
+    nargs="+",
+    metavar="ROLE",
+    help="Space-separated roles (e.g., d d) for Team 2 (cyan, yaw 180).",
+)
 args = parser.parse_args()
 
 lines = []
@@ -58,6 +73,20 @@ cyan = (0, 255, 255)
 yellow = (255, 255, 0)
 orange = (255, 165, 0)
 red = (255, 0, 0)
+
+ControllerFunc = Callable[[float, float, float, float, float], Sequence[float]]
+
+ROLE_CONTROLLER_MAP = {
+    "d": ("defence", defence),
+    "defence": ("defence", defence),
+    "g": ("goalie", goalie),
+    "goalie": ("goalie", goalie),
+}
+
+TEAM_DEFAULTS = {
+    1: {"color": yellow, "yaw": 0.0},
+    2: {"color": cyan, "yaw": 180.0},
+}
 
 WHITE_MIN_X = 250
 WHITE_MAX_X = 2180
@@ -107,6 +136,15 @@ pygame.draw.line(pitch, black, (2130, 685), (2208, 685), 10)
 pygame.draw.line(pitch, black, (2204, 685), (2204, 1140), 10)
 pygame.draw.line(pitch, black, (2204, 1135), (2130, 1135), 10)
 
+GOAL_LINES = [
+    ((300, 685), (222, 685), 10),
+    ((226, 685), (226, 1140), 10),
+    ((226, 1135), (300, 1135), 10),
+    ((2130, 685), (2208, 685), 10),
+    ((2204, 685), (2204, 1140), 10),
+    ((2204, 1135), (2130, 1135), 10),
+]
+
 base_pitch = pitch.copy()
 
 clock = pygame.time.Clock()
@@ -117,9 +155,238 @@ clock = pygame.time.Clock()
 MM_PER_PIXEL = 1.0  # Default: 1mm per pixel (adjust as needed)
 FPS = 30
 
+BOT_RADIUS = ROBOT_RADIUS
+BOT_MIN_X = BOT_RADIUS
+BOT_MAX_X = pitch.get_width() - BOT_RADIUS
+BOT_MIN_Y = BOT_RADIUS
+BOT_MAX_Y = pitch.get_height() - BOT_RADIUS
+RED_DURATION_MS = 1000
+BOT_DIAMETER = BOT_RADIUS * 2
+
+
+@dataclass
+class Bot:
+    x: float
+    y: float
+    yaw: float
+    base_color: tuple
+    controller: Optional[ControllerFunc] = None
+    manual: bool = False
+    name: str = "bot"
+    red_until_time: Optional[int] = None
+    was_out_of_bounds: bool = False
+    current_color: tuple = field(init=False)
+    push_speed: float = 0.0
+    desired_velocity: tuple = field(default_factory=lambda: (0.0, 0.0))
+
+    def __post_init__(self):
+        self.current_color = self.base_color
+
+    def as_render_state(self):
+        return {
+            "x": self.x,
+            "y": self.y,
+            "yaw": self.yaw,
+            "color": self.current_color,
+            "draw_geometry": True,
+        }
+
 
 def mmps_to_pixels_per_frame(value_mm_per_s):
     return (value_mm_per_s / MM_PER_PIXEL) / FPS
+
+
+def parse_role_token(token):
+    key = token.lower()
+    if key not in ROLE_CONTROLLER_MAP:
+        parser.error(
+            f"Unknown role '{token}'. Use one of: {', '.join(sorted(set(ROLE_CONTROLLER_MAP)))}"
+        )
+    return ROLE_CONTROLLER_MAP[key]
+
+
+def create_team(role_tokens: Sequence[str], team_number: int) -> List[Bot]:
+    defaults = TEAM_DEFAULTS.get(team_number, TEAM_DEFAULTS[1])
+    bots: List[Bot] = []
+    for idx, token in enumerate(role_tokens, start=1):
+        role_name, controller = parse_role_token(token)
+        start_x = random.randint(BOT_MIN_X, BOT_MAX_X)
+        start_y = random.randint(BOT_MIN_Y, BOT_MAX_Y)
+        bots.append(
+            Bot(
+                x=start_x,
+                y=start_y,
+                yaw=defaults["yaw"],
+                base_color=defaults["color"],
+                controller=controller,
+                manual=False,
+                name=f"Team {team_number} {role_name.title()} #{idx}",
+            )
+        )
+    return bots
+
+
+def resolve_bot_collisions(bot_states):
+    num_bots = len(bot_states)
+    if num_bots < 2:
+        return
+
+    for i in range(num_bots):
+        for j in range(i + 1, num_bots):
+            state_a = bot_states[i]
+            state_b = bot_states[j]
+            bot_a = state_a["bot"]
+            bot_b = state_b["bot"]
+
+            dx = bot_b.x - bot_a.x
+            dy = bot_b.y - bot_a.y
+            distance = math.hypot(dx, dy)
+            if distance >= BOT_DIAMETER or distance < EPSILON:
+                continue
+
+            overlap = BOT_DIAMETER - distance if distance > EPSILON else BOT_DIAMETER
+            speed_a = bot_a.push_speed
+            speed_b = bot_b.push_speed
+
+            pushing_state = None
+            pushed_state = None
+            dir_x = 0.0
+            dir_y = 0.0
+
+            if abs(speed_a - speed_b) <= 1e-3:
+                dx_a, dy_a = state_a["delta"]
+                dx_b, dy_b = state_b["delta"]
+                mag_a = math.hypot(dx_a, dy_a)
+                mag_b = math.hypot(dx_b, dy_b)
+
+                if mag_a < EPSILON and mag_b < EPSILON:
+                    bot_a.x, bot_a.y = state_a["prev"]
+                    bot_b.x, bot_b.y = state_b["prev"]
+                    state_a["delta"] = (0.0, 0.0)
+                    state_b["delta"] = (0.0, 0.0)
+                    bot_a.push_speed = 0.0
+                    bot_b.push_speed = 0.0
+                    continue
+
+                dot_product = dx_a * dx_b + dy_a * dy_b
+                if dot_product < -EPSILON:
+                    bot_a.x, bot_a.y = state_a["prev"]
+                    bot_b.x, bot_b.y = state_b["prev"]
+                    state_a["delta"] = (0.0, 0.0)
+                    state_b["delta"] = (0.0, 0.0)
+                    bot_a.push_speed = 0.0
+                    bot_b.push_speed = 0.0
+                    continue
+
+                if mag_a >= mag_b:
+                    pushing_state = state_a
+                    pushed_state = state_b
+                else:
+                    pushing_state = state_b
+                    pushed_state = state_a
+
+                rel_x = pushed_state["bot"].x - pushing_state["bot"].x
+                rel_y = pushed_state["bot"].y - pushing_state["bot"].y
+                rel_dist = math.hypot(rel_x, rel_y)
+                if rel_dist > EPSILON:
+                    dir_x = rel_x / rel_dist
+                    dir_y = rel_y / rel_dist
+                else:
+                    dir_x, dir_y = 1.0, 0.0
+            else:
+                if speed_a > speed_b:
+                    pushing_state = state_a
+                    pushed_state = state_b
+                    dir_x = dx / distance if distance > EPSILON else 1.0
+                    dir_y = dy / distance if distance > EPSILON else 0.0
+                else:
+                    pushing_state = state_b
+                    pushed_state = state_a
+                    dir_x = -dx / distance if distance > EPSILON else -1.0
+                    dir_y = -dy / distance if distance > EPSILON else 0.0
+
+            pushed_bot = pushed_state["bot"]
+            pushed_bot.x += dir_x * overlap
+            pushed_bot.y += dir_y * overlap
+            pushed_bot.x = max(BOT_MIN_X, min(BOT_MAX_X, pushed_bot.x))
+            pushed_bot.y = max(BOT_MIN_Y, min(BOT_MAX_Y, pushed_bot.y))
+
+            boundary_block = False
+            pushed_normals = get_bot_boundary_normals(pushed_bot.x, pushed_bot.y)
+            if pushed_normals:
+                for normal_x, normal_y in pushed_normals:
+                    if dir_x * normal_x + dir_y * normal_y < -EPSILON:
+                        boundary_block = True
+                        break
+
+            if boundary_block:
+                bot_a.x, bot_a.y = state_a["prev"]
+                bot_b.x, bot_b.y = state_b["prev"]
+                state_a["delta"] = (0.0, 0.0)
+                state_b["delta"] = (0.0, 0.0)
+                bot_a.push_speed = 0.0
+                bot_b.push_speed = 0.0
+                continue
+
+            prev_x, prev_y = pushed_state["prev"]
+            new_dx = pushed_bot.x - prev_x
+            new_dy = pushed_bot.y - prev_y
+            pushed_state["delta"] = (new_dx, new_dy)
+            pushed_bot.push_speed = math.hypot(new_dx, new_dy)
+
+            pushing_bot = pushing_state["bot"]
+            push_dx = pushing_bot.x - pushing_state["prev"][0]
+            push_dy = pushing_bot.y - pushing_state["prev"][1]
+            pushing_state["delta"] = (push_dx, push_dy)
+            pushing_bot.push_speed = math.hypot(push_dx, push_dy)
+
+
+def manual_control_from_keys(keys, current_yaw):
+    up = keys[pygame.K_UP]
+    down = keys[pygame.K_DOWN]
+    left = keys[pygame.K_LEFT]
+    right = keys[pygame.K_RIGHT]
+    ctrl = keys[pygame.K_LCTRL]
+    alt = keys[pygame.K_LALT]
+
+    direction = None
+    speed = 0
+    rotation = current_yaw
+
+    if up and not down:
+        if left and not right:
+            direction = (270 + 180) / 2
+        elif right and not left:
+            direction = (270 + 360) / 2
+        elif not left and not right:
+            direction = 270
+    elif down and not up:
+        if left and not right:
+            direction = (90 + 180) / 2
+        elif right and not left:
+            direction = (90 + 0) / 2
+        elif not left and not right:
+            direction = 90
+    elif left and not right and not up and not down:
+        direction = 180
+    elif right and not left and not up and not down:
+        direction = 0
+
+    if (up and down) or (left and right):
+        speed = 0
+        direction = 0
+    elif direction is not None:
+        speed = 300
+    else:
+        direction = 0
+        speed = 0
+
+    if ctrl:
+        rotation = (current_yaw - 10) % 360
+    elif alt:
+        rotation = (current_yaw + 10) % 360
+
+    return direction, speed, rotation
 
 
 BALL_DECELERATION_PER_FRAME = mmps_to_pixels_per_frame(BALL_DECELERATION_SPEED / FPS)
@@ -189,6 +456,29 @@ def check_collision_with_goal_lines(x_pos, y_pos, bot_radius, goal_lines):
         if distance < (bot_radius + line_width / 2):
             return True
     return False
+
+
+def get_bot_boundary_normals(x_pos, y_pos):
+    normals = []
+    if x_pos <= BOT_MIN_X + EPSILON:
+        normals.append((1.0, 0.0))
+    if x_pos >= BOT_MAX_X - EPSILON:
+        normals.append((-1.0, 0.0))
+    if y_pos <= BOT_MIN_Y + EPSILON:
+        normals.append((0.0, 1.0))
+    if y_pos >= BOT_MAX_Y - EPSILON:
+        normals.append((0.0, -1.0))
+
+    for (x1, y1), (x2, y2), line_width in GOAL_LINES:
+        distance, closest_point = point_to_line_segment_distance(x_pos, y_pos, x1, y1, x2, y2)
+        allowed_distance = BOT_RADIUS + line_width / 2.0
+        if distance <= allowed_distance + EPSILON:
+            diff_x = x_pos - closest_point[0]
+            diff_y = y_pos - closest_point[1]
+            norm = math.hypot(diff_x, diff_y)
+            if norm > EPSILON:
+                normals.append((diff_x / norm, diff_y / norm))
+    return normals
 
 
 def calculate_capture_zone_back(x_pos, y_pos, angle_rad):
@@ -308,29 +598,43 @@ def get_capture_geometry(x_pos, y_pos, yaw):
     }
 
 
-def build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bot_coords, robot_color=yellow):
+def build_frame(ball_x, ball_y, bots):
     frame_pitch = base_pitch.copy()
-    pygame.draw.circle(frame_pitch, robot_color, (x_pos, y_pos), ROBOT_RADIUS)
-    geometry = get_capture_geometry(x_pos, y_pos, yaw)
 
     def _int_point(point):
         return (int(point[0]), int(point[1]))
 
-    connector_lines = [
-        (_int_point(start), _int_point(end)) for start, end in geometry["connector_lines"]
-    ]
+    for bot in bots:
+        if isinstance(bot, Bot):
+            bot_data = bot.as_render_state()
+        else:
+            bot_data = bot
 
-    for start, end in geometry["arc_segments"]:
-        pygame.draw.line(frame_pitch, black, _int_point(start), _int_point(end), CAPTURE_LINE_WIDTH)
+        bot_x = bot_data.get("x", 0)
+        bot_y = bot_data.get("y", 0)
+        bot_color = bot_data.get("color", yellow)
+        draw_geometry = bot_data.get("draw_geometry", bot_data.get("yaw") is not None)
+        yaw = bot_data.get("yaw")
 
-    for start, end in connector_lines:
-        pygame.draw.line(frame_pitch, black, start, end, CAPTURE_LINE_WIDTH)
+        pygame.draw.circle(frame_pitch, bot_color, (int(bot_x), int(bot_y)), ROBOT_RADIUS)
 
+        if yaw is None or not draw_geometry:
+            continue
 
-    for bot_x, bot_y in bot_coords:
-        pygame.draw.circle(frame_pitch, cyan, (bot_x, bot_y), 110)
+        geometry = get_capture_geometry(bot_x, bot_y, yaw)
+        connector_lines = [
+            (_int_point(start), _int_point(end)) for start, end in geometry["connector_lines"]
+        ]
 
-    pygame.draw.circle(frame_pitch, orange, (ball_x, ball_y), BALL_RADIUS)
+        for start, end in geometry["arc_segments"]:
+            pygame.draw.line(
+                frame_pitch, black, _int_point(start), _int_point(end), CAPTURE_LINE_WIDTH
+            )
+
+        for start, end in connector_lines:
+            pygame.draw.line(frame_pitch, black, start, end, CAPTURE_LINE_WIDTH)
+
+    pygame.draw.circle(frame_pitch, orange, (int(ball_x), int(ball_y)), BALL_RADIUS)
     return frame_pitch
 
 
@@ -502,158 +806,180 @@ if log_provided:
             bot_x = int(float(line_data[i]))
             bot_y = int(float(line_data[i + 1]))
             bots.append((bot_x, bot_y))
-        frame_pitch = build_frame(x_pos, y_pos, yaw, ball_x, ball_y, bots, yellow)
+        render_bots = [
+            {"x": x_pos, "y": y_pos, "yaw": yaw, "color": yellow, "draw_geometry": True}
+        ]
+        render_bots.extend(
+            {"x": bot_x, "y": bot_y, "yaw": None, "color": cyan, "draw_geometry": False}
+            for bot_x, bot_y in bots
+        )
+        frame_pitch = build_frame(ball_x, ball_y, render_bots)
         blit_frame(frame_pitch)
         clock.tick(FPS)
 else:
-    x_pos = 1500
-    y_pos = pitch.get_height() // 2
     ball_x = pitch.get_width() // 2
     ball_y = pitch.get_height() // 2
     ball_vx = 0.0
     ball_vy = 0.0
-    yaw = 0
-    
-    # Window boundaries (accounting for bot radius of 110 pixels)
-    bot_radius = 110
-    min_x = bot_radius
-    max_x = pitch.get_width() - bot_radius
-    min_y = bot_radius
-    max_y = pitch.get_height() - bot_radius
-    
-    # Goal lines: ((x1, y1), (x2, y2), line_width)
-    goal_lines = [
-        ((300, 685), (222, 685), 10),
-        ((226, 685), (226, 1140), 10),
-        ((226, 1135), (300, 1135), 10),
-        ((2130, 685), (2208, 685), 10),
-        ((2204, 685), (2204, 1140), 10),
-        ((2204, 1135), (2130, 1135), 10),
-    ]
-    
-    # Tracks when the robot came back in bounds so we can keep it red
-    # for a short duration after re-entering.
-    red_until_time = None
-    was_out_of_bounds = False
-    RED_DURATION_MS = 1000
-    
+
+    team_mode = bool(args.team1 or args.team2)
+    bots: List[Bot] = []
+
+    if team_mode:
+        if args.team1:
+            bots.extend(create_team(args.team1, 1))
+        if args.team2:
+            bots.extend(create_team(args.team2, 2))
+        if args.defence or args.goalie:
+            print("Team selections override single-bot '-d'/'-g' flags.")
+    else:
+        start_x = 500
+        start_y = pitch.get_height() // 2
+        controller = None
+        if args.defence:
+            controller = defence
+        elif args.goalie:
+            controller = goalie
+        bots.append(
+            Bot(
+                x=start_x,
+                y=start_y,
+                yaw=0.0,
+                base_color=yellow,
+                controller=controller,
+                manual=controller is None,
+                name="Player",
+            )
+        )
+
     waiting = True
     while waiting:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 waiting = False
             if event.type == pygame.MOUSEBUTTONDOWN:
-                ball_x, ball_y = pygame.mouse.get_pos()[0]*2, pygame.mouse.get_pos()[1]*2
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                ball_x = mouse_x * 2
+                ball_y = mouse_y * 2
                 ball_vx = 0.0
                 ball_vy = 0.0
 
-        if args.defence:
-            # Simulate defence code
-            direction, speed, rotation = defence(x_pos, y_pos, yaw, ball_x, ball_y)
-        elif args.goalie:
-            # Simulate goalie code
-            direction, speed, rotation = goalie(x_pos, y_pos, yaw, ball_x, ball_y)
-        else:
-            keys = pygame.key.get_pressed()
-            up = keys[pygame.K_UP]
-            down = keys[pygame.K_DOWN]
-            left = keys[pygame.K_LEFT]
-            right = keys[pygame.K_RIGHT]
-            ctrl = keys[pygame.K_LCTRL]
-            alt = keys[pygame.K_LALT]
+        manual_keys = pygame.key.get_pressed() if any(bot.manual for bot in bots) else None
 
-            direction = None
-            speed = 0
-            rotation = yaw
+        bot_states = []
+        current_time = pygame.time.get_ticks()
+        for bot in bots:
+            prev_x = bot.x
+            prev_y = bot.y
 
-            if up and not down:
-                if left and not right:
-                    direction = (270 + 180) / 2  # Up + Left
-                elif right and not left:
-                    direction = (270 + 360) / 2    # Up + Right
-                elif not left and not right:
-                    direction = 270              # Up only
-            elif down and not up:
-                if left and not right:
-                    direction = (90 + 180) / 2   # Down + Left
-                elif right and not left:
-                    direction = (90 + 0) / 2     # Down + Right
-                elif not left and not right:
-                    direction = 90               # Down only
-            elif left and not right and not up and not down:
-                direction = 180
-            elif right and not left and not up and not down:
-                direction = 0
-
-            # Check for opposites
-            if (up and down) or (left and right):
-                speed = 0
-                direction = 0  # Arbitrary, since speed is zero
-            elif direction is not None:
-                speed = 300  # Or whatever default speed you wish
+            if bot.manual:
+                if manual_keys is None:
+                    manual_keys = pygame.key.get_pressed()
+                direction, speed, rotation = manual_control_from_keys(manual_keys, bot.yaw)
+            elif bot.controller is not None:
+                direction, speed, rotation = bot.controller(
+                    bot.x, bot.y, bot.yaw, ball_x, ball_y, bot.base_color == yellow
+                )
             else:
-                direction = 0
-                speed = 0
-            
-            if ctrl:
-                rotation = (yaw - 10) % 360
-            elif alt:
-                rotation = (yaw + 10) % 360
+                direction, speed, rotation = 0, 0, bot.yaw
 
-        # Rotate towards target yaw while continuing to move
-        rotation_target = rotation if rotation is not None else yaw
-        yaw_error = shortest_angle_delta(yaw, rotation_target)
-        if abs(yaw_error) > EPSILON:
-            yaw_step = math.copysign(
-                min(abs(yaw_error), YAW_CORRECT_DEG_PER_FRAME),
-                yaw_error,
+            rotation_target = rotation if rotation is not None else bot.yaw
+            yaw_error = shortest_angle_delta(bot.yaw, rotation_target)
+            if abs(yaw_error) > EPSILON:
+                yaw_step = math.copysign(
+                    min(abs(yaw_error), YAW_CORRECT_DEG_PER_FRAME),
+                    yaw_error,
+                )
+                bot.yaw = normalize_angle_deg(bot.yaw + yaw_step)
+
+            effective_direction = (bot.yaw + direction) % 360
+            effective_direction_rad = math.radians(effective_direction)
+            pixels_per_frame = mmps_to_pixels_per_frame(speed)
+            bot_step_x = pixels_per_frame * math.cos(effective_direction_rad)
+            bot_step_y = pixels_per_frame * math.sin(effective_direction_rad)
+
+            bot.x += bot_step_x
+            bot.y += bot_step_y
+
+            if check_collision_with_goal_lines(bot.x, bot.y, BOT_RADIUS, GOAL_LINES):
+                bot.x = prev_x
+                bot.y = prev_y
+
+            bot.x = max(BOT_MIN_X, min(BOT_MAX_X, bot.x))
+            bot.y = max(BOT_MIN_Y, min(BOT_MAX_Y, bot.y))
+            bot_actual_dx = bot.x - prev_x
+            bot_actual_dy = bot.y - prev_y
+            bot.push_speed = math.hypot(bot_actual_dx, bot_actual_dy)
+            bot.desired_velocity = (bot_step_x, bot_step_y)
+
+            is_out_of_bounds = is_out_of_white_boundary(bot.x, bot.y, BOT_RADIUS)
+            if is_out_of_bounds:
+                bot.current_color = red
+                bot.red_until_time = None
+            else:
+                if bot.was_out_of_bounds:
+                    bot.red_until_time = current_time + RED_DURATION_MS
+                bot.current_color = bot.base_color
+                if bot.red_until_time is not None and current_time <= bot.red_until_time:
+                    bot.current_color = red
+                elif bot.red_until_time is not None and current_time > bot.red_until_time:
+                    bot.red_until_time = None
+            bot.was_out_of_bounds = is_out_of_bounds
+
+            bot_states.append(
+                {"bot": bot, "prev": (prev_x, prev_y), "delta": (bot_actual_dx, bot_actual_dy)}
             )
-            yaw = normalize_angle_deg(yaw + yaw_step)
 
-        # Calculate effective direction relative to yaw
-        effective_direction = (yaw + direction) % 360
-        effective_direction_rad = math.radians(effective_direction)
-        
-        # Convert speed from mm/s to pixels per frame
-        pixels_per_frame = mmps_to_pixels_per_frame(speed)
-        
-        # Store position before attempted move
-        prev_x = x_pos
-        prev_y = y_pos
-        
-        bot_step_x = pixels_per_frame * math.cos(effective_direction_rad)
-        bot_step_y = pixels_per_frame * math.sin(effective_direction_rad)
-        
-        # Move bot
-        x_pos += bot_step_x
-        y_pos += bot_step_y
-        
-        # Check for collision with goal
-        if check_collision_with_goal_lines(x_pos, y_pos, bot_radius, goal_lines):
-            # Revert to previous position if collision detected
-            x_pos = prev_x
-            y_pos = prev_y
-        
-        # Clamp position to pitch
-        x_pos = max(min_x, min(max_x, x_pos))
-        y_pos = max(min_y, min(max_y, y_pos))
-        bot_actual_dx = x_pos - prev_x
-        bot_actual_dy = y_pos - prev_y
-        
-        # Update ball position based on current velocity
+        resolve_bot_collisions(bot_states)
+
         ball_x += ball_vx
         ball_y += ball_vy
-        
+
         ball_x, ball_y, ball_vx, ball_vy, boundary_collision_pre = keep_ball_in_pitch_bounds(
             ball_x, ball_y, ball_vx, ball_vy
         )
         ball_x, ball_y, ball_vx, ball_vy, goal_line_collision_pre = resolve_ball_goal_line_collisions(
-            ball_x, ball_y, ball_vx, ball_vy, goal_lines
+            ball_x, ball_y, ball_vx, ball_vy, GOAL_LINES
         )
-        geometry = get_capture_geometry(x_pos, y_pos, yaw)
-        ball_x, ball_y, ball_vx, ball_vy, ball_being_pushed = resolve_ball_capture_collisions(
-            ball_x, ball_y, ball_vx, ball_vy, geometry, (bot_actual_dx, bot_actual_dy)
-        )
+
+        ball_being_pushed = False
+        pushing_states = []
+        for idx, state in enumerate(bot_states):
+            geometry = get_capture_geometry(state["bot"].x, state["bot"].y, state["bot"].yaw)
+            ball_x, ball_y, ball_vx, ball_vy, bot_pushing = resolve_ball_capture_collisions(
+                ball_x,
+                ball_y,
+                ball_vx,
+                ball_vy,
+                geometry,
+                state["delta"],
+            )
+            if bot_pushing:
+                pushing_states.append({"state": state, "geometry": geometry})
+                ball_being_pushed = True
+
+        # Determine if ball is pinched between bots (normals roughly opposing)
+        ball_pinched_between_bots = False
+        if len(pushing_states) >= 2:
+            normals = []
+            for entry in pushing_states:
+                bot = entry["state"]["bot"]
+                geometry = entry["geometry"]
+                # Approximate outward normal from bot to ball
+                diff_x = ball_x - bot.x
+                diff_y = ball_y - bot.y
+                norm = math.hypot(diff_x, diff_y)
+                if norm > EPSILON:
+                    normals.append((diff_x / norm, diff_y / norm))
+            for i in range(len(normals)):
+                for j in range(i + 1, len(normals)):
+                    dot = normals[i][0] * normals[j][0] + normals[i][1] * normals[j][1]
+                    if dot <= -0.3:  # roughly opposing
+                        ball_pinched_between_bots = True
+                        break
+                if ball_pinched_between_bots:
+                    break
+
         ball_x, ball_y, ball_vx, ball_vy, boundary_collision_post = keep_ball_in_pitch_bounds(
             ball_x, ball_y, ball_vx, ball_vy
         )
@@ -663,34 +989,38 @@ else:
             ball_vx,
             ball_vy,
             goal_line_collision_post,
-        ) = resolve_ball_goal_line_collisions(ball_x, ball_y, ball_vx, ball_vy, goal_lines)
+        ) = resolve_ball_goal_line_collisions(ball_x, ball_y, ball_vx, ball_vy, GOAL_LINES)
+
         ball_against_surface = (
             boundary_collision_pre
             or goal_line_collision_pre
             or boundary_collision_post
             or goal_line_collision_post
             or is_ball_touching_pitch_bounds(ball_x, ball_y)
-            or is_ball_touching_goal_lines(ball_x, ball_y, goal_lines)
+            or is_ball_touching_goal_lines(ball_x, ball_y, GOAL_LINES)
         )
-        
-        if (
-            ball_against_surface
-            and ball_being_pushed
-            and (abs(bot_actual_dx) > EPSILON or abs(bot_actual_dy) > EPSILON)
-        ):
-            # Ball is pinned; stop the bot and hold the ball in place
-            x_pos = prev_x
-            y_pos = prev_y
-            bot_actual_dx = 0.0
-            bot_actual_dy = 0.0
+
+        pushing_with_motion = any(
+            abs(entry["state"]["delta"][0]) > EPSILON or abs(entry["state"]["delta"][1]) > EPSILON
+            for entry in pushing_states
+        )
+
+        if (ball_against_surface or ball_pinched_between_bots) and pushing_states and pushing_with_motion:
+            for entry in pushing_states:
+                bot_ref = entry["state"]["bot"]
+                prev_x, prev_y = entry["state"]["prev"]
+                bot_ref.x = prev_x
+                bot_ref.y = prev_y
+                entry["state"]["delta"] = (0.0, 0.0)
             ball_vx = 0.0
             ball_vy = 0.0
-            geometry = get_capture_geometry(x_pos, y_pos, yaw)
-            ball_x, ball_y, ball_vx, ball_vy, _ = resolve_ball_capture_collisions(
-                ball_x, ball_y, ball_vx, ball_vy, geometry, (0.0, 0.0)
-            )
+            for bot in bots:
+                geometry = get_capture_geometry(bot.x, bot.y, bot.yaw)
+                ball_x, ball_y, ball_vx, ball_vy, _ = resolve_ball_capture_collisions(
+                    ball_x, ball_y, ball_vx, ball_vy, geometry, (0.0, 0.0)
+                )
             ball_being_pushed = False
-        
+
         if not ball_being_pushed:
             ball_speed = math.hypot(ball_vx, ball_vy)
             if ball_speed > BALL_DECELERATION_PER_FRAME:
@@ -700,39 +1030,10 @@ else:
             else:
                 ball_vx = 0.0
                 ball_vy = 0.0
-        
-        # Check if robot is out of white boundary
-        current_time = pygame.time.get_ticks()
-        is_out_of_bounds = is_out_of_white_boundary(x_pos, y_pos, bot_radius)
 
-        # Determine robot color:
-        # - Stay red the entire time the robot is out of bounds.
-        # - Once it returns in bounds, start a 5 second timer during which it stays red.
-        if is_out_of_bounds:
-            # While out of bounds, always red and cancel any post-return timer.
-            robot_color = red
-            red_until_time = None
-        else:
-            # Just came back in bounds this frame: start the red timer.
-            if was_out_of_bounds:
-                red_until_time = current_time + RED_DURATION_MS
-
-            # Default color in bounds.
-            robot_color = yellow
-
-            # If a red timer is active, stay red until it expires.
-            if red_until_time is not None and current_time <= red_until_time:
-                robot_color = red
-            elif red_until_time is not None and current_time > red_until_time:
-                red_until_time = None
-
-        # Remember last frame's out-of-bounds state.
-        was_out_of_bounds = is_out_of_bounds
-        
-        # Rebuild and blit frame
-        frame_pitch = build_frame(x_pos, y_pos, yaw, ball_x, ball_y, [], robot_color)
+        frame_pitch = build_frame(ball_x, ball_y, bots)
         blit_frame(frame_pitch)
-        
+
         clock.tick(FPS)
 
 pygame.quit()
