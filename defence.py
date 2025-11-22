@@ -24,13 +24,22 @@ def pid_controller(target, pv, kp, ki, kd, prev_error, integral, dt):
     control = kp * error + ki * integral + kd * derivative
     return control, error, integral
 
-
+# Inputs: 
+# x_pos: x position of the robot
+# y_pos: y position of the robot
+# yaw: yaw value of the robot
+# ball_x: x position of the ball
+# ball_y: y position of the ball
+# yellow: True if the bot is scoring towards yellow, False if the bot is scoring towards cyan
 # Outputs: direction, speed, rotation
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
-def defence(x_pos, y_pos, yaw, ball_x, ball_y):
-    vector = (ball_x - x_pos), (ball_y - y_pos)
+def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True):
+    if yellow:
+        vector = (ball_x - x_pos), (ball_y - y_pos)
+    else:
+        vector = (x_pos - ball_x), (y_pos - ball_y)
     angle = math.degrees(math.atan2(vector[1], vector[0]))
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
     print(angle, dist)
@@ -42,11 +51,11 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y):
             offset = 80
         else:
             offset = -80
-    return angle + offset, 500, 0
+    return angle + offset, 500, yaw
 
 
-def goalie(x_pos, y_pos, yaw, ball_x, ball_y):
-    return 0, 0 # Do nothing
+def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True):
+    return 0, 500, yaw # Do nothing
 
 if __name__ == "__main__":
     # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors
