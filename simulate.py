@@ -74,7 +74,9 @@ yellow = (255, 255, 0)
 orange = (255, 165, 0)
 red = (255, 0, 0)
 
-ControllerFunc = Callable[[float, float, float, float, float], Sequence[float]]
+ControllerFunc = Callable[
+    [float, float, float, float, float, bool, bool], Sequence[float]
+]
 
 ROLE_CONTROLLER_MAP = {
     "d": ("defence", defence),
@@ -598,6 +600,17 @@ def get_capture_geometry(x_pos, y_pos, yaw):
     }
 
 
+def is_ball_touching_capture_zone(ball_x, ball_y, geometry):
+    threshold = BALL_RADIUS + CAPTURE_LINE_HALF_WIDTH
+    for start, end in geometry["connector_lines"]:
+        distance, _ = point_to_line_segment_distance(
+            ball_x, ball_y, start[0], start[1], end[0], end[1]
+        )
+        if distance <= threshold + EPSILON:
+            return True
+    return False
+
+
 def build_frame(ball_x, ball_y, bots):
     frame_pitch = base_pitch.copy()
 
@@ -871,6 +884,11 @@ else:
         for bot in bots:
             prev_x = bot.x
             prev_y = bot.y
+            ball_caputed = False
+            if bot.controller is not None:
+                ball_caputed = is_ball_touching_capture_zone(
+                    ball_x, ball_y, get_capture_geometry(bot.x, bot.y, bot.yaw)
+                )
 
             if bot.manual:
                 if manual_keys is None:
@@ -878,7 +896,13 @@ else:
                 direction, speed, rotation = manual_control_from_keys(manual_keys, bot.yaw)
             elif bot.controller is not None:
                 direction, speed, rotation = bot.controller(
-                    bot.x, bot.y, bot.yaw, ball_x, ball_y, bot.base_color == yellow
+                    bot.x,
+                    bot.y,
+                    bot.yaw,
+                    ball_x,
+                    ball_y,
+                    bot.base_color == yellow,
+                    ball_caputed,
                 )
             else:
                 direction, speed, rotation = 0, 0, bot.yaw
