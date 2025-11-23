@@ -1,4 +1,6 @@
 import math
+from shutil import move
+from movement import Motor
 
 WHEEL_DIAMETER = 50 # mm
 
@@ -6,51 +8,10 @@ KP = 10
 KI = 0.1
 KD = 0.01
 
-a_prev_error = 0
-a_integral = 0
-b_prev_error = 0
-b_integral = 0
-c_prev_error = 0
-c_integral = 0
-d_prev_error = 0
-d_integral = 0
-
-def move(direction, speed, a_speed, b_speed, c_speed, d_speed, dt): # degrees, mm/s
-    direction -= 45
-    a_mult = math.sin(math.radians(direction))
-    b_mult = math.cos(math.radians(direction))
-    c_mult = -math.sin(math.radians(direction))
-    d_mult = -math.cos(math.radians(direction))
-
-    # Values in mm/s
-    a_value = int(a_mult * speed)
-    b_value = int(b_mult * speed)
-    c_value = int(c_mult * speed)
-    d_value = int(d_mult * speed)
-
-    # Values in rpm
-    a_target = a_value / (WHEEL_DIAMETER * math.pi) * 60
-    b_target = b_value / (WHEEL_DIAMETER * math.pi) * 60
-    c_target = c_value / (WHEEL_DIAMETER * math.pi) * 60
-    d_target = d_value / (WHEEL_DIAMETER * math.pi) * 60
-
-    a_control, a_error, a_integral = pid_controller(a_target, a_speed, dt, a_prev_error, a_integral)
-    b_control, b_error, b_integral = pid_controller(b_target, b_speed, dt, b_prev_error, b_integral)
-    c_control, c_error, c_integral = pid_controller(c_target, c_speed, dt, c_prev_error, c_integral)
-    d_control, d_error, d_integral = pid_controller(d_target, d_speed, dt, d_prev_error, d_integral)
-    a_prev_error = a_error
-    b_prev_error = b_error
-    c_prev_error = c_error
-    d_prev_error = d_error
-
-    # TODO: Rotate A, B, C and D with previous duty cycle + control value
-
-def pid_controller(target, current_speed, dt, prev_error, integral):
-    error = target - current_speed
-    integral += error * dt
-    derivative = (error - prev_error) / dt if dt > 0 else 0
-    control = KP * error + KI * integral + KD * derivative
-    return control, error, integral
+motor_a = Motor()
+motor_b = Motor()
+motor_c = Motor()
+motor_d = Motor()
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -95,5 +56,16 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_caputed=False):
     return 0, 500, yaw # Do nothing
 
 if __name__ == "__main__":
-    # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors
-    pass
+    while True:
+        # TODO: Get actual time delta
+        dt = 0.01
+        # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
+        x_pos = 0
+        y_pos = 0
+        yaw = 0
+        ball_x = 0
+        ball_y = 0
+        yellow = True
+        ball_caputed = False
+        direction, speed, rotation = defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow, ball_caputed)
+        move(direction, speed, rotation, [motor_a, motor_b, motor_c, motor_d], dt, WHEEL_DIAMETER, KP, KI, KD)
