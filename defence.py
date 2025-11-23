@@ -35,26 +35,35 @@ def pid_controller(target, pv, kp, ki, kd, prev_error, integral, dt):
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
-def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True):
+# ball_caputed: True when the ball is touching the capture zone
+def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_caputed=False):
     if yellow:
         vector = (ball_x - x_pos), (ball_y - y_pos)
     else:
         vector = (x_pos - ball_x), (y_pos - ball_y)
     angle = math.degrees(math.atan2(vector[1], vector[0]))
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
-    print(angle, dist)
+    angle_to_goal_centre = math.degrees(math.atan2(910 - y_pos, 2200 - x_pos))
+    rotation = 0
+    speed = 500
     offset = 0
     if dist < 200:
         if -10 < angle < 10:
-            offset = 0
+            speed = 700
+            if ball_caputed:
+                if y_pos < 750:
+                    offset = 30
+                elif y_pos > 1050:
+                    offset = -30
         elif 0 < angle < 180:
             offset = 80
         else:
             offset = -80
-    return angle + offset, 500, yaw
+    
+    return angle + offset, speed, rotation
 
 
-def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True):
+def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_caputed=False):
     return 0, 500, yaw # Do nothing
 
 if __name__ == "__main__":
