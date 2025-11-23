@@ -588,6 +588,11 @@ else:
                 direction = 180
             elif right and not left and not up and not down: # Right only
                 direction = 0
+
+            # Check for opposites
+            if (up and down) or (left and right):
+                speed = 0
+                direction = current_direction
             
             if ctrl:
                 rotation = (yaw - 10) % 360
