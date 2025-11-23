@@ -1,27 +1,55 @@
 import math
 
-QUADRANT_FUNCS = [
-lambda r: (r-1, 1, -1, 1-r),    # 0°‑89° N → E
-lambda r: (1, 1-r, r-1, -1),    # 90°‑179° E → S
-lambda r: (1-r, -1, 1, r-1),    # 180°‑270° S → W
-lambda r: (-1, r-1, 1-r, 1),    # 270°‑359° W → N
-]
+WHEEL_DIAMETER = 50 # mm
 
-def move(direction, speed): # degrees, mm/s
-    octant = (direction % 360) // 90
-    ratio = (direction % 90) / 45
-    a_mult, b_mult, c_mult, d_mult = QUADRANT_FUNCS[octant](ratio)
+KP = 10
+KI = 0.1
+KD = 0.01
+
+a_prev_error = 0
+a_integral = 0
+b_prev_error = 0
+b_integral = 0
+c_prev_error = 0
+c_integral = 0
+d_prev_error = 0
+d_integral = 0
+
+def move(direction, speed, a_speed, b_speed, c_speed, d_speed, dt): # degrees, mm/s
+    direction -= 45
+    a_mult = math.sin(math.radians(direction))
+    b_mult = math.cos(math.radians(direction))
+    c_mult = -math.sin(math.radians(direction))
+    d_mult = -math.cos(math.radians(direction))
+
+    # Values in mm/s
     a_value = int(a_mult * speed)
     b_value = int(b_mult * speed)
     c_value = int(c_mult * speed)
     d_value = int(d_mult * speed)
-    pass
 
-def pid_controller(target, pv, kp, ki, kd, prev_error, integral, dt):
-    error = target - pv
+    # Values in rpm
+    a_target = a_value / (WHEEL_DIAMETER * math.pi) * 60
+    b_target = b_value / (WHEEL_DIAMETER * math.pi) * 60
+    c_target = c_value / (WHEEL_DIAMETER * math.pi) * 60
+    d_target = d_value / (WHEEL_DIAMETER * math.pi) * 60
+
+    a_control, a_error, a_integral = pid_controller(a_target, a_speed, dt, a_prev_error, a_integral)
+    b_control, b_error, b_integral = pid_controller(b_target, b_speed, dt, b_prev_error, b_integral)
+    c_control, c_error, c_integral = pid_controller(c_target, c_speed, dt, c_prev_error, c_integral)
+    d_control, d_error, d_integral = pid_controller(d_target, d_speed, dt, d_prev_error, d_integral)
+    a_prev_error = a_error
+    b_prev_error = b_error
+    c_prev_error = c_error
+    d_prev_error = d_error
+
+    # TODO: Rotate A, B, C and D with previous duty cycle + control value
+
+def pid_controller(target, current_speed, dt, prev_error, integral):
+    error = target - current_speed
     integral += error * dt
     derivative = (error - prev_error) / dt if dt > 0 else 0
-    control = kp * error + ki * integral + kd * derivative
+    control = KP * error + KI * integral + KD * derivative
     return control, error, integral
 
 # Inputs: 
