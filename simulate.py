@@ -594,6 +594,11 @@ else:
                 speed = 0
                 direction = current_direction
             
+            if direction is not None:
+                speed = 300
+            else:
+                speed = 0
+            
             if ctrl:
                 rotation = (yaw - 10) % 360
             elif alt:
