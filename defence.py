@@ -33,7 +33,7 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_caputed=False):
     angle = math.degrees(math.atan2(vector[1], vector[0]))
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
     angle_to_goal_centre = math.degrees(math.atan2(910 - y_pos, 2200 - x_pos))
-    rotation = 0
+    rotation = 0 if yellow else 180
     speed = 500
     offset = 0
     if dist < 200:
