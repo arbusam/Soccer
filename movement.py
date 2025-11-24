@@ -46,5 +46,7 @@ def move(direction, speed, rotation, motors, dt, diameter, kp, ki, kd): # degree
 
     # Assuming motors is a list/tuple of 4 Motor objects [a, b, c, d]
     for motor in motors:
-        motor.duty_cycle += motor.pid_controller(motor.target, motor.speed, dt, kp, ki, kd)
+        control = motor.pid_controller(motor.target, motor.speed, dt, kp, ki, kd)
+        motor.duty_cycle += control
+        motor.duty_cycle = max(0, min(100, motor.duty_cycle))
         motor.run()
