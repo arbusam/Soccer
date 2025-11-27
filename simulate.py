@@ -214,8 +214,12 @@ def create_team(role_tokens: Sequence[str], team_number: int) -> List[Bot]:
     bots: List[Bot] = []
     for idx, token in enumerate(role_tokens, start=1):
         role_name, controller = parse_role_token(token)
-        start_x = random.randint(BOT_MIN_X, BOT_MAX_X)
-        start_y = random.randint(BOT_MIN_Y, BOT_MAX_Y)
+        if team_number == 1:
+            start_x = 500
+            start_y = 1200 #base 900
+        else:
+            start_x = 1900
+            start_y = 700
         bots.append(
             Bot(
                 x=start_x,
