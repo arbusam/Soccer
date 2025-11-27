@@ -1,5 +1,4 @@
 import math
-from sympy import *
 
 QUADRANT_FUNCS = [
 lambda r: (r-1, 1, -1, 1-r),    # 0°‑89° N → E
