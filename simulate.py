@@ -106,7 +106,7 @@ BALL_DECELERATION_SPEED = 1000  # mm/s^2
 YAW_CORRECT_SPEED = 200  # mm/s spin speed used when aligning yaw
 WALL_BOUNCE_ENERGY_LOSS = 0.7
 EPSILON = 1e-6
-ACCELERATION = 10000  # mm/s^2
+ACCELERATION = 5000  # mm/s^2
 
 pitch.fill(green)
 
@@ -179,8 +179,8 @@ class Bot:
     current_color: tuple = field(init=False)
     push_speed: float = 0.0
     desired_velocity: tuple = field(default_factory=lambda: (0.0, 0.0))
-    current_speed: float = 0.0
-    current_direction: float = 0.0
+    velocity_x: float = 0.0
+    velocity_y: float = 0.0
     steering: bool = False
 
     def __post_init__(self):
@@ -377,7 +377,7 @@ def manual_control_from_keys(keys, current_yaw):
         direction = 0
 
     if direction is not None:
-        speed = 300
+        speed = 500
 
     if ctrl:
         rotation = (current_yaw - 10) % 360
@@ -916,21 +916,39 @@ else:
             else:
                 direction, speed, rotation = 0, 0, bot.yaw
 
-            # Acceleration limiting: adjust speed by a per‑frame increment that
-            # matches the comparison threshold so we converge smoothly.
-            acceleration_pixels = mmps_to_pixels_per_frame(ACCELERATION / FPS)
-            speed_delta = speed - bot.current_speed
-            if abs(speed_delta) <= acceleration_pixels:
-                bot.current_speed = speed
+            # Determine desired velocity vector in mm/s relative to world axes.
+            if direction is not None:
+                effective_direction = (bot.yaw + direction) % 360
+                effective_direction_rad = math.radians(effective_direction)
+                target_vx = speed * math.cos(effective_direction_rad)
+                target_vy = speed * math.sin(effective_direction_rad)
             else:
-                bot.current_speed += math.copysign(acceleration_pixels, speed_delta)
-            
-            speed = bot.current_speed
-            if direction is None:
-                direction = bot.current_direction
-            else:
-                bot.current_direction = direction
-            
+                if speed <= EPSILON:
+                    target_vx = 0.0
+                    target_vy = 0.0
+                else:
+                    current_velocity_speed = math.hypot(bot.velocity_x, bot.velocity_y)
+                    if current_velocity_speed > EPSILON:
+                        scale = speed / current_velocity_speed
+                        target_vx = bot.velocity_x * scale
+                        target_vy = bot.velocity_y * scale
+                    else:
+                        forward_rad = math.radians(bot.yaw)
+                        target_vx = speed * math.cos(forward_rad)
+                        target_vy = speed * math.sin(forward_rad)
+
+            # Clamp acceleration magnitude so bots decelerate before reversing.
+            acceleration_limit = ACCELERATION / FPS
+            delta_vx = target_vx - bot.velocity_x
+            delta_vy = target_vy - bot.velocity_y
+            delta_magnitude = math.hypot(delta_vx, delta_vy)
+            if delta_magnitude > acceleration_limit and delta_magnitude > EPSILON:
+                scale = acceleration_limit / delta_magnitude
+                delta_vx *= scale
+                delta_vy *= scale
+
+            bot.velocity_x += delta_vx
+            bot.velocity_y += delta_vy
 
             rotation_target = rotation if rotation is not None else bot.yaw
             yaw_error = shortest_angle_delta(bot.yaw, rotation_target)
@@ -941,11 +959,8 @@ else:
                 )
                 bot.yaw = normalize_angle_deg(bot.yaw + yaw_step)
 
-            effective_direction = (bot.yaw + direction) % 360
-            effective_direction_rad = math.radians(effective_direction)
-            pixels_per_frame = mmps_to_pixels_per_frame(speed)
-            bot_step_x = pixels_per_frame * math.cos(effective_direction_rad)
-            bot_step_y = pixels_per_frame * math.sin(effective_direction_rad)
+            bot_step_x = mmps_to_pixels_per_frame(bot.velocity_x)
+            bot_step_y = mmps_to_pixels_per_frame(bot.velocity_y)
 
             bot.x += bot_step_x
             bot.y += bot_step_y
