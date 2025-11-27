@@ -46,7 +46,6 @@ def defence(
     rotation = 0 if yellow else 180
     speed = 500
     offset = 0
-    col = colour
     if dist < 200:
         if -10 < angle < 10:
             speed = 700
@@ -126,4 +125,4 @@ if __name__ == "__main__":
             ball_captured,
             steering_state=steering_state,
         )
-        move(direction, speed, rotation, [motor_a, motor_b, motor_c, motor_d], dt, WHEEL_DIAMETER, KP, KI, KD)
+        run(direction, speed, rotation, [motor_a, motor_b, motor_c, motor_d], dt, WHEEL_DIAMETER, KP, KI, KD)
