@@ -26,7 +26,7 @@ steering = False
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
 # ball_captured: True when the ball is touching the capture zone
-def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
+def defence(x_pos, y_pos, yaw, ball_x, ball_y, colour, yellow=True, ball_captured=False):
     global steering
     if yellow:
         vector = (ball_x - x_pos), (ball_y - y_pos)
@@ -38,6 +38,7 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False)
     rotation = 0 if yellow else 180
     speed = 500
     offset = 0
+    col = colour
     if dist < 200:
         if -10 < angle < 10:
             speed = 700
@@ -61,8 +62,38 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False)
     return angle + offset, speed, rotation
 
 
-def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
-    return 0, 500, yaw # Do nothing
+def goalie(x_pos, y_pos, yaw, ball_x, ball_y, colour, yellow=True, ball_captured=False):
+
+    if yellow:
+        vector = (ball_x - x_pos), (ball_y - y_pos)
+    else:
+        vector = (x_pos - ball_x), (y_pos - ball_y)
+    angle = math.degrees(math.atan2(vector[1], vector[0]))
+    dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
+    rotation = 0 if yellow else 180
+    if dist > 400:
+        if not (1850 < x_pos < 1950  and 850 < y_pos < 900) or (450 < x_pos < 550 and 850 < y_pos < 900):
+            if yellow:
+                vector = (500 - x_pos), (900 - y_pos)
+            else:
+                vector = (x_pos - 1900), (y_pos - 900)
+            angle = math.degrees(math.atan2(vector[1], vector[0]))
+            speed = 400
+        else:
+            speed = 0
+    else:
+        if colour != (0, 0, 0):
+            speed = 500
+        else:
+            if -10 < angle < 10:
+                speed = 0
+            elif angle > 0:
+                angle = 90
+                speed = 500
+            elif angle < 0:
+                angle = -90
+                speed = 500
+    return angle, speed, rotation # Do nothing
 
 if __name__ == "__main__":
     while True:
