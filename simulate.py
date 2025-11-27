@@ -74,9 +74,7 @@ yellow = (255, 255, 0)
 orange = (255, 165, 0)
 red = (255, 0, 0)
 
-ControllerFunc = Callable[
-    [float, float, float, float, float, bool, bool], Sequence[float]
-]
+ControllerFunc = Callable[..., Sequence[float]]
 
 ROLE_CONTROLLER_MAP = {
     "d": ("defence", defence),
@@ -108,7 +106,7 @@ BALL_DECELERATION_SPEED = 1000  # mm/s^2
 YAW_CORRECT_SPEED = 200  # mm/s spin speed used when aligning yaw
 WALL_BOUNCE_ENERGY_LOSS = 0.7
 EPSILON = 1e-6
-ACCELERATION = 2000  # mm/s^2
+ACCELERATION = 10000  # mm/s^2
 
 pitch.fill(green)
 
@@ -181,6 +179,9 @@ class Bot:
     current_color: tuple = field(init=False)
     push_speed: float = 0.0
     desired_velocity: tuple = field(default_factory=lambda: (0.0, 0.0))
+    current_speed: float = 0.0
+    current_direction: float = 0.0
+    steering: bool = False
 
     def __post_init__(self):
         self.current_color = self.base_color
@@ -377,8 +378,6 @@ def manual_control_from_keys(keys, current_yaw):
 
     if direction is not None:
         speed = 300
-    else:
-        direction = 0
 
     if ctrl:
         rotation = (current_yaw - 10) % 360
@@ -862,9 +861,6 @@ else:
             )
         )
 
-    current_speed = 0
-    current_direction = 0
-        
     waiting = True
     while waiting:
         for event in pygame.event.get():
@@ -895,29 +891,45 @@ else:
                     manual_keys = pygame.key.get_pressed()
                 direction, speed, rotation = manual_control_from_keys(manual_keys, bot.yaw)
             elif bot.controller is not None:
-                direction, speed, rotation = bot.controller(
-                    bot.x,
-                    bot.y,
-                    bot.yaw,
-                    ball_x,
-                    ball_y,
-                    bot.base_color == yellow,
-                    ball_caputed,
-                )
+                if bot.controller is defence:
+                    direction, speed, rotation, steering_state = bot.controller(
+                        bot.x,
+                        bot.y,
+                        bot.yaw,
+                        ball_x,
+                        ball_y,
+                        bot.base_color == yellow,
+                        ball_caputed,
+                        bot.steering,
+                    )
+                    bot.steering = steering_state
+                else:
+                    direction, speed, rotation = bot.controller(
+                        bot.x,
+                        bot.y,
+                        bot.yaw,
+                        ball_x,
+                        ball_y,
+                        bot.base_color == yellow,
+                        ball_caputed,
+                    )
             else:
                 direction, speed, rotation = 0, 0, bot.yaw
 
-            #Acceleration code
-            if current_speed > speed + mmps_to_pixels_per_frame(ACCELERATION / FPS):
-                current_speed -= mmps_to_pixels_per_frame(ACCELERATION)
-            elif current_speed < speed - mmps_to_pixels_per_frame(ACCELERATION / FPS):
-                current_speed += mmps_to_pixels_per_frame(ACCELERATION)
-            
-            speed = current_speed
-            if direction is None:
-                direction = current_direction
+            # Acceleration limiting: adjust speed by a per‑frame increment that
+            # matches the comparison threshold so we converge smoothly.
+            acceleration_pixels = mmps_to_pixels_per_frame(ACCELERATION / FPS)
+            speed_delta = speed - bot.current_speed
+            if abs(speed_delta) <= acceleration_pixels:
+                bot.current_speed = speed
             else:
-                current_direction = direction
+                bot.current_speed += math.copysign(acceleration_pixels, speed_delta)
+            
+            speed = bot.current_speed
+            if direction is None:
+                direction = bot.current_direction
+            else:
+                bot.current_direction = direction
             
 
             rotation_target = rotation if rotation is not None else bot.yaw
