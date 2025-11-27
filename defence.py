@@ -12,6 +12,8 @@ motor_b = Motor()
 motor_c = Motor()
 motor_d = Motor()
 
+steering = False
+
 # Inputs: 
 # x_pos: x position of the robot
 # y_pos: y position of the robot
@@ -25,6 +27,7 @@ motor_d = Motor()
 # rotation: yaw value to rotate towards
 # ball_captured: True when the ball is touching the capture zone
 def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
+    global steering
     if yellow:
         vector = (ball_x - x_pos), (ball_y - y_pos)
     else:
@@ -38,11 +41,18 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False)
     if dist < 200:
         if -10 < angle < 10:
             speed = 700
-            if ball_captured:
-                if y_pos < 750:
-                    offset = 30
-                elif y_pos > 1050:
-                    offset = -30
+            if steering and y_pos < 850 and dist < 200:
+                offset = 30
+            elif steering and y_pos > 1050 and dist < 200:
+                offset = -30
+            if y_pos < 800 and ball_captured:
+                offset = 30
+                steering = True
+            elif y_pos > 1000 and ball_captured:
+                offset = -30
+                steering = True
+            else:
+                steering = False
         elif 0 < angle < 180:
             offset = 80
         else:
