@@ -1,13 +1,13 @@
 import math
 
 QUADRANT_FUNCS = [
-lambda r: (r-1, 1, -1, 1-r),    # 0°‑89° N → E
-lambda r: (1, 1-r, r-1, -1),    # 90°‑179° E → S
-lambda r: (1-r, -1, 1, r-1),    # 180°‑270° S → W
-lambda r: (-1, r-1, 1-r, 1),    # 270°‑359° W → N
+    lambda r: (r-1, 1, -1, 1-r),    # 0°‑89° N → E
+    lambda r: (1, 1-r, r-1, -1),    # 90°‑179° E → S
+    lambda r: (1-r, -1, 1, r-1),    # 180°‑270° S → W
+    lambda r: (-1, r-1, 1-r, 1),    # 270°‑359° W → N
 ]
 
-def run(direction, speed): # degrees, mm/s
+def move(direction, speed): # degrees, mm/s
     octant = (direction % 360) // 90
     ratio = (direction % 90) / 45
     a_mult, b_mult, c_mult, d_mult = QUADRANT_FUNCS[octant](ratio)
@@ -121,4 +121,4 @@ if __name__ == "__main__":
             ball_captured,
             steering_state=steering_state,
         )
-        run(direction, speed, rotation, [motor_a, motor_b, motor_c, motor_d], dt, WHEEL_DIAMETER, KP, KI, KD)
+        move(direction, speed, rotation, [motor_a, motor_b, motor_c, motor_d], dt, WHEEL_DIAMETER, KP, KI, KD)
