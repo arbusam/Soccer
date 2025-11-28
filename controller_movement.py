@@ -1,5 +1,8 @@
 import pygame
 from math import atan2, degrees, hypot
+from movement import move, init_motors
+
+WHEEL_DIAMETER = 50 # mm
 
 pygame.init()
 joysticks = []
@@ -9,6 +12,8 @@ for i in range(pygame.joystick.get_count()):
     joystick.init()
     joysticks.append(joystick)
     print(f"Detected joystick: {joystick.get_name()}")
+
+motors, motor_modes = init_motors()
 
 while True:
     direction_degrees = 0.0
@@ -33,4 +38,4 @@ while True:
                 rotation_magnitude = 0.0
             rotation_degrees = (degrees(atan2(rotation_y, rotation_x)) + 360) % 360
             rotation_degrees = (rotation_degrees + 90) % 360
-    # TODO: Move towards direction_degrees with direction_magnitude, and yaw correct to yaw - rotation_degrees with a speed of rotation_magnitude
+    move(direction_degrees, direction_magnitude, rotation_degrees, motors, motor_modes, WHEEL_DIAMETER)

@@ -1,0 +1,4 @@
+pygame
+opencv-python
+pybind11
+git+https://github.com/Aw3someAndrew/SteelBar_CircuitPython_powerful_bldc_driver
