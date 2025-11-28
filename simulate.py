@@ -884,9 +884,9 @@ else:
         for bot in bots:
             prev_x = bot.x
             prev_y = bot.y
-            ball_caputed = False
+            ball_captured = False
             if bot.controller is not None:
-                ball_caputed = is_ball_touching_capture_zone(
+                ball_captured = is_ball_touching_capture_zone(
                     ball_x, ball_y, get_capture_geometry(bot.x, bot.y, bot.yaw)
                 )
 
@@ -903,7 +903,7 @@ else:
                         ball_x,
                         ball_y,
                         bot.base_color == yellow,
-                        ball_caputed,
+                        ball_captured,
                         bot.steering,
                     )
                     bot.steering = steering_state
@@ -915,7 +915,7 @@ else:
                         ball_x,
                         ball_y,
                         bot.base_color == yellow,
-                        ball_caputed,
+                        ball_captured,
                     )
             else:
                 direction, speed, rotation = 0, 0, bot.yaw

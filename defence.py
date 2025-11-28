@@ -1,11 +1,6 @@
 import math
-from movement import init_motors, move
 
 WHEEL_DIAMETER = 50 # mm
-
-KP = 10
-KI = 0.1
-KD = 0.01
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -67,7 +62,7 @@ def defence(
     return angle + offset, speed, rotation, steering
 
 
-def goalie(x_pos, y_pos, yaw, ball_x, ball_y, colour, yellow=True, ball_captured=False):
+def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
 
     if yellow:
         vector = (ball_x - x_pos), (ball_y - y_pos)
@@ -87,20 +82,23 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, colour, yellow=True, ball_captured
         else:
             speed = 0
     else:
-        if colour != (0, 0, 0):
+        # TODO: Redo this code as colour won't be an input when playing physically.
+        # if colour != (0, 0, 0):
+        #     speed = 500
+        # else:
+        if -10 < angle < 10:
+            speed = 0
+        elif angle > 0:
+            angle = 90
             speed = 500
-        else:
-            if -10 < angle < 10:
-                speed = 0
-            elif angle > 0:
-                angle = 90
-                speed = 500
-            elif angle < 0:
-                angle = -90
-                speed = 500
+        elif angle < 0:
+            angle = -90
+            speed = 500
     return angle, speed, rotation # Do nothing
 
 if __name__ == "__main__":
+    from movement import init_motors, move
+
     motors, motor_modes = init_motors()
     steering_state = False
     while True:
