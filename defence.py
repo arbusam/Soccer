@@ -1,16 +1,11 @@
 import math
-from movement import Motor, move
+from movement import init_motors, move
 
 WHEEL_DIAMETER = 50 # mm
 
 KP = 10
 KI = 0.1
 KD = 0.01
-
-motor_a = Motor()
-motor_b = Motor()
-motor_c = Motor()
-motor_d = Motor()
 
 steering = False
 
@@ -26,7 +21,7 @@ steering = False
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
 # ball_captured: True when the ball is touching the capture zone
-def defence(x_pos, y_pos, yaw, ball_x, ball_y, colour, yellow=True, ball_captured=False):
+def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
     global steering
     if yellow:
         vector = (ball_x - x_pos), (ball_y - y_pos)
@@ -38,7 +33,6 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, colour, yellow=True, ball_capture
     rotation = 0 if yellow else 180
     speed = 500
     offset = 0
-    col = colour
     if dist < 200:
         if -10 < angle < 10:
             speed = 700
@@ -54,6 +48,9 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, colour, yellow=True, ball_capture
                 steering = True
             else:
                 steering = False
+
+            if not yellow:
+                offset = -offset
         elif 0 < angle < 180:
             offset = 80
         else:
@@ -96,6 +93,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, colour, yellow=True, ball_captured
     return angle, speed, rotation # Do nothing
 
 if __name__ == "__main__":
+    motors, motor_modes = init_motors()
     while True:
         # TODO: Get actual time delta
         dt = 0.01
@@ -107,5 +105,13 @@ if __name__ == "__main__":
         ball_y = 0
         yellow = True
         ball_captured = False
-        direction, speed, rotation = defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow, ball_captured)
-        move(direction, speed, rotation, [motor_a, motor_b, motor_c, motor_d], dt, WHEEL_DIAMETER, KP, KI, KD)
+        direction, speed, rotation = defence(
+            x_pos,
+            y_pos,
+            yaw,
+            ball_x,
+            ball_y,
+            yellow,
+            ball_captured,
+        )
+        move(direction, speed, rotation, motors, motor_modes, WHEEL_DIAMETER)
