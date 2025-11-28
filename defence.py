@@ -61,6 +61,9 @@ def defence(
                 steering = True
             else:
                 steering = False
+                
+            if not yellow:
+                offset = -offset
         elif 0 < angle < 180:
             offset = 80
         else:
