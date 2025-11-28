@@ -1,16 +1,11 @@
 import math
-from movement import Motor, run
+from movement import init_motors, move
 
 WHEEL_DIAMETER = 50 # mm
 
 KP = 10
 KI = 0.1
 KD = 0.01
-
-motor_a = Motor()
-motor_b = Motor()
-motor_c = Motor()
-motor_d = Motor()
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -61,7 +56,7 @@ def defence(
                 steering = True
             else:
                 steering = False
-                
+
             if not yellow:
                 offset = -offset
         elif 0 < angle < 180:
@@ -106,6 +101,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, colour, yellow=True, ball_captured
     return angle, speed, rotation # Do nothing
 
 if __name__ == "__main__":
+    motors, motor_modes = init_motors()
     steering_state = False
     while True:
         # TODO: Get actual time delta
@@ -128,4 +124,5 @@ if __name__ == "__main__":
             ball_captured,
             steering_state=steering_state,
         )
-        run(direction, speed, rotation, [motor_a, motor_b, motor_c, motor_d], dt, WHEEL_DIAMETER, KP, KI, KD)
+        move(direction, speed, rotation, motors, motor_modes, WHEEL_DIAMETER)
+
