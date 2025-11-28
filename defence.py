@@ -2,8 +2,6 @@ import math
 
 WHEEL_DIAMETER = 50 # mm
 
-steering = False
-
 # Inputs: 
 # x_pos: x position of the robot
 # y_pos: y position of the robot
@@ -16,8 +14,18 @@ steering = False
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
 # ball_captured: True when the ball is touching the capture zone
-def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
-    global steering
+# steering_state: caller-provided flag indicating if this bot is currently steering
+def defence(
+    x_pos,
+    y_pos,
+    yaw,
+    ball_x,
+    ball_y,
+    yellow=True,
+    ball_captured=False,
+    steering_state=False,
+):
+    steering = bool(steering_state)
     if yellow:
         vector = (ball_x - x_pos), (ball_y - y_pos)
     else:
@@ -51,7 +59,7 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False)
         else:
             offset = -80
     
-    return angle + offset, speed, rotation
+    return angle + offset, speed, rotation, steering
 
 
 def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
@@ -92,6 +100,7 @@ if __name__ == "__main__":
     from movement import init_motors, move
 
     motors, motor_modes = init_motors()
+    steering_state = False
     while True:
         # TODO: Get actual time delta
         dt = 0.01
@@ -103,7 +112,7 @@ if __name__ == "__main__":
         ball_y = 0
         yellow = True
         ball_captured = False
-        direction, speed, rotation = defence(
+        direction, speed, rotation, steering_state = defence(
             x_pos,
             y_pos,
             yaw,
@@ -111,5 +120,7 @@ if __name__ == "__main__":
             ball_y,
             yellow,
             ball_captured,
+            steering_state=steering_state,
         )
         move(direction, speed, rotation, motors, motor_modes, WHEEL_DIAMETER)
+
