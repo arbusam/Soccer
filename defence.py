@@ -105,6 +105,10 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
             if intercept_x < 430:
                 intercept_x = 430
                 intercept_y = ball_gradient * intercept_x + ball_line_c
+            if intercept_y < 910 and intercept_y > 460:
+                angle = 270
+            elif intercept_y > 910 and intercept_y < 1360:
+                angle = 90
 
             dif_x = intercept_x - x_pos
             dif_y = intercept_y - y_pos
@@ -125,6 +129,10 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
             if intercept_x > 2000:
                 intercept_x = 2000
                 intercept_y = ball_gradient * intercept_x + ball_line_c
+            if intercept_y < 910 and intercept_y > 460:
+                angle = 90
+            elif intercept_y > 910 and intercept_y < 1360:
+                angle = 270
 
             dif_x = intercept_x - x_pos
             dif_y = intercept_y - y_pos
