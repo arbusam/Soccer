@@ -1,6 +1,7 @@
 import math
 
 WHEEL_DIAMETER = 50 # mm
+YAW_CORRECT_SPEED = 500 # deg/s
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -134,5 +135,5 @@ if __name__ == "__main__":
             ball_captured,
             steering_state=steering_state,
         )
-        move(direction, speed, rotation, motors, motor_modes, WHEEL_DIAMETER)
+        move(direction, speed, rotation, yaw, motors, motor_modes, WHEEL_DIAMETER, YAW_CORRECT_SPEED)
 
