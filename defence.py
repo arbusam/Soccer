@@ -9,11 +9,12 @@ WHEEL_DIAMETER = 50 # mm
 # ball_x: x position of the ball
 # ball_y: y position of the ball
 # yellow: True if the bot is scoring towards yellow, False if the bot is scoring towards cyan
+# ball_captured: True when the ball is touching the capture zone
+# steering_state: caller-provided flag indicating if this bot is currently steering
 # Outputs: direction, speed, rotation
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
-# ball_captured: True when the ball is touching the capture zone
 # steering_state: caller-provided flag indicating if this bot is currently steering
 def defence(
     x_pos,
@@ -61,7 +62,18 @@ def defence(
     
     return angle + offset, speed, rotation, steering
 
-
+# Inputs: 
+# x_pos: x position of the robot
+# y_pos: y position of the robot
+# yaw: yaw value of the robot
+# ball_x: x position of the ball
+# ball_y: y position of the ball
+# yellow: True if the bot is scoring towards yellow, False if the bot is scoring towards cyan
+# ball_captured: True when the ball is touching the capture zone
+# Outputs: direction, speed, rotation
+# direction: degrees to move in
+# speed: mm/s to move at
+# rotation: yaw value to rotate towards
 def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
 
     if yellow:
