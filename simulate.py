@@ -84,7 +84,7 @@ ROLE_CONTROLLER_MAP = {
 }
 
 TEAM_DEFAULTS = {
-    1: {"color": yellow, "yaw": 100.0},
+    1: {"color": yellow, "yaw": 0.0},
     2: {"color": cyan, "yaw": 180.0},
 }
 
