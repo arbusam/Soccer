@@ -38,4 +38,4 @@ while True:
                 rotation_magnitude = 0.0
             rotation_degrees = (degrees(atan2(rotation_y, rotation_x)) + 360) % 360
             rotation_degrees = (rotation_degrees + 90) % 360
-    move(direction_degrees, direction_magnitude, rotation_degrees, motors, motor_modes, WHEEL_DIAMETER)
+    move(direction_degrees, direction_magnitude, rotation_degrees, 0.0, motors, motor_modes, WHEEL_DIAMETER)

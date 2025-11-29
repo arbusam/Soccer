@@ -65,12 +65,19 @@ def init_motors():
     return motors, motor_modes
 
 # TODO: Add dynamic yaw correction. Ensure global movement vector is maintained.
-def move(direction, speed, rotation, motors, motor_modes, diameter): # degrees, mm/s
-    direction -= 45
-    a_mult = math.sin(math.radians(direction))
-    b_mult = math.cos(math.radians(direction))
-    c_mult = -math.sin(math.radians(direction))
-    d_mult = -math.cos(math.radians(direction))
+def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, yaw_correct_speed): # degrees, mm/s
+    if 5 < yaw < 180:
+        yaw_correct_speed = -yaw_correct_speed
+    elif 180 <= yaw < 355:
+        yaw_correct_speed = yaw_correct_speed
+    else:
+        yaw_correct_speed = 0
+
+    local_direction = direction - yaw - 45
+    a_mult = math.sin(math.radians(local_direction))
+    b_mult = math.cos(math.radians(local_direction))
+    c_mult = -math.sin(math.radians(local_direction))
+    d_mult = -math.cos(math.radians(local_direction))
 
     # Values in mm/s
     a_value = int(a_mult * speed)
@@ -79,10 +86,10 @@ def move(direction, speed, rotation, motors, motor_modes, diameter): # degrees, 
     d_value = int(d_mult * speed)
 
     # Values in rpm
-    a_speed = a_value / (diameter * math.pi) * 60
-    b_speed = b_value / (diameter * math.pi) * 60
-    c_speed = c_value / (diameter * math.pi) * 60
-    d_speed = d_value / (diameter * math.pi) * 60
+    a_speed = a_value / (diameter * math.pi) * 60 + yaw_correct_speed
+    b_speed = b_value / (diameter * math.pi) * 60 + yaw_correct_speed
+    c_speed = c_value / (diameter * math.pi) * 60 + yaw_correct_speed
+    d_speed = d_value / (diameter * math.pi) * 60 + yaw_correct_speed
 
     motors[0].set_speed(motor_modes[0], a_speed)
     motors[1].set_speed(motor_modes[1], b_speed)
