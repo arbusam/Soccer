@@ -84,7 +84,7 @@ ROLE_CONTROLLER_MAP = {
 }
 
 TEAM_DEFAULTS = {
-    1: {"color": yellow, "yaw": 0.0},
+    1: {"color": yellow, "yaw": 100.0},
     2: {"color": cyan, "yaw": 180.0},
 }
 
@@ -922,10 +922,9 @@ else:
 
             # Determine desired velocity vector in mm/s relative to world axes.
             if direction is not None:
-                effective_direction = (bot.yaw + direction) % 360
-                effective_direction_rad = math.radians(effective_direction)
-                target_vx = speed * math.cos(effective_direction_rad)
-                target_vy = speed * math.sin(effective_direction_rad)
+                direction_rad = math.radians(direction)
+                target_vx = speed * math.cos(direction_rad)
+                target_vy = speed * math.sin(direction_rad)
             else:
                 if speed <= EPSILON:
                     target_vx = 0.0
