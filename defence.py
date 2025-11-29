@@ -90,53 +90,67 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
     rotation = 0 if yellow else 180
     speed = 500
     if yellow:
-        if ball_y == 910 or ball_x == 226:
-            dif_x = CYAN_GOAL_CENTRE_X - x_pos
-            dif_y = CYAN_GOAL_CENTRE_Y - y_pos
-            angle = math.degrees(math.atan2(dif_y, dif_x))
+        if y_pos > 1360:
+            angle = 90
+        elif y_pos < 460:
+            angle = 270
+        elif x_pos < 630:
+            angle = 180
         else:
-            ball_gradient = (CYAN_GOAL_CENTRE_Y - ball_y) / (226 - ball_x)
-            ball_line_c = ball_y - (ball_gradient * ball_x)
-            bot_gradient = -1 / ball_gradient
-            bot_line_c = y_pos - (bot_gradient * x_pos)
-            intercept_x = (bot_line_c - ball_line_c) / (ball_gradient - bot_gradient)
-            intercept_y = (bot_gradient * intercept_x) + bot_line_c
+            if ball_y == 910 or ball_x == 226:
+                dif_x = CYAN_GOAL_CENTRE_X - x_pos
+                dif_y = CYAN_GOAL_CENTRE_Y - y_pos
+                angle = math.degrees(math.atan2(dif_y, dif_x))
+            else:
+                ball_gradient = (CYAN_GOAL_CENTRE_Y - ball_y) / (226 - ball_x)
+                ball_line_c = ball_y - (ball_gradient * ball_x)
+                bot_gradient = -1 / ball_gradient
+                bot_line_c = y_pos - (bot_gradient * x_pos)
+                intercept_x = (bot_line_c - ball_line_c) / (ball_gradient - bot_gradient)
+                intercept_y = (bot_gradient * intercept_x) + bot_line_c
 
-            if intercept_x < 430:
-                intercept_x = 430
-                intercept_y = ball_gradient * intercept_x + ball_line_c
-            if intercept_y < 910 and intercept_y > 460:
-                angle = 270
-            elif intercept_y > 910 and intercept_y < 1360:
-                angle = 90
+                if intercept_x < 430:
+                    intercept_x = 430
+                    intercept_y = ball_gradient * intercept_x + ball_line_c
+                if intercept_y < 910 and intercept_y > 460:
+                    angle = 270
+                elif intercept_y > 910 and intercept_y < 1360:
+                    angle = 90
 
-            dif_x = intercept_x - x_pos
-            dif_y = intercept_y - y_pos
-            angle = math.degrees(math.atan2(dif_y, dif_x))
+                dif_x = intercept_x - x_pos
+                dif_y = intercept_y - y_pos
+                angle = math.degrees(math.atan2(dif_y, dif_x))
     else:
-        if ball_y == 910 or ball_x == 2204:
-            dif_x = YELLOW_GOAL_CENTRE_X - x_pos
-            dif_y = YELLOW_GOAL_CENTRE_Y - y_pos
-            angle = math.degrees(math.atan2(dif_y, dif_x))
+        if y_pos > 1360:
+            angle = 270
+        elif y_pos < 460:
+            angle = 90
+        elif x_pos > 1850:
+            angle = 180
         else:
-            ball_gradient = (YELLOW_GOAL_CENTRE_Y - ball_y) / (2204 - ball_x)
-            ball_line_c = ball_y - (ball_gradient * ball_x)
-            bot_gradient = -1 / ball_gradient
-            bot_line_c = y_pos - (bot_gradient * x_pos)
-            intercept_x = (bot_line_c - ball_line_c) / (ball_gradient - bot_gradient)
-            intercept_y = (bot_gradient * intercept_x) + bot_line_c
+            if ball_y == 910 or ball_x == 2204:
+                dif_x = YELLOW_GOAL_CENTRE_X - x_pos
+                dif_y = YELLOW_GOAL_CENTRE_Y - y_pos
+                angle = math.degrees(math.atan2(dif_y, dif_x))
+            else:
+                ball_gradient = (YELLOW_GOAL_CENTRE_Y - ball_y) / (2204 - ball_x)
+                ball_line_c = ball_y - (ball_gradient * ball_x)
+                bot_gradient = -1 / ball_gradient
+                bot_line_c = y_pos - (bot_gradient * x_pos)
+                intercept_x = (bot_line_c - ball_line_c) / (ball_gradient - bot_gradient)
+                intercept_y = (bot_gradient * intercept_x) + bot_line_c
 
-            if intercept_x > 2000:
-                intercept_x = 2000
-                intercept_y = ball_gradient * intercept_x + ball_line_c
-            if intercept_y < 910 and intercept_y > 460:
-                angle = 90
-            elif intercept_y > 910 and intercept_y < 1360:
-                angle = 270
+                if intercept_x > 2000:
+                    intercept_x = 2000
+                    intercept_y = ball_gradient * intercept_x + ball_line_c
+                if intercept_y < 910 and intercept_y > 460:
+                    angle = 90
+                elif intercept_y > 910 and intercept_y < 1360:
+                    angle = 270
 
-            dif_x = intercept_x - x_pos
-            dif_y = intercept_y - y_pos
-            angle = math.degrees(math.atan2(dif_y, dif_x))
+                dif_x = intercept_x - x_pos
+                dif_y = intercept_y - y_pos
+                angle = math.degrees(math.atan2(dif_y, dif_x))
 
     return angle, speed, rotation # Do nothing
 
