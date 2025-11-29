@@ -64,6 +64,10 @@ def defence(
             offset = 80
         else:
             offset = -80
+
+    if not yellow:
+        angle -= 180
+        angle %= 360
     
     return angle + offset, speed, rotation, steering
 
@@ -91,10 +95,10 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
     speed = 500
     if yellow:
         if y_pos > 1360:
-            angle = 90
-        elif y_pos < 460:
             angle = 270
-        elif x_pos < 630:
+        elif y_pos < 460:
+            angle = 90
+        elif x_pos < 226:
             angle = 180
         else:
             if ball_y == 910 or ball_x == 226:
@@ -112,9 +116,9 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
                 if intercept_x < 430:
                     intercept_x = 430
                     intercept_y = ball_gradient * intercept_x + ball_line_c
-                if intercept_y < 910 and intercept_y > 460:
+                if (intercept_y < 910 and intercept_y > 460) or ball_y < 250:
                     angle = 270
-                elif intercept_y > 910 and intercept_y < 1360:
+                elif (intercept_y > 910 and intercept_y < 1360) or ball_y > 1570:
                     angle = 90
 
                 dif_x = intercept_x - x_pos
@@ -125,7 +129,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
             angle = 270
         elif y_pos < 460:
             angle = 90
-        elif x_pos > 1850:
+        elif x_pos > 2204:
             angle = 180
         else:
             if ball_y == 910 or ball_x == 2204:
