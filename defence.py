@@ -1,8 +1,11 @@
 import math
 
 WHEEL_DIAMETER = 50 # mm
-CYAN_GOAL_CENTRE_X = 1980
+CYAN_GOAL_CENTRE_X = 400
 CYAN_GOAL_CENTRE_Y = 910
+YELLOW_GOAL_CENTRE_X = 1980
+YELLOW_GOAL_CENTRE_Y = 910
+YAW_CORRECT_SPEED = 500 # deg/s
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -81,83 +84,52 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         vector = (ball_x - x_pos), (ball_y - y_pos)
     else:
         vector = (x_pos - ball_x), (y_pos - ball_y)
-    angle = math.degrees(math.atan2(vector[1], vector[0]))
+    # angle = math.degrees(math.atan2(vector[1], vector[0]))
+    angle = None
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
     rotation = 0 if yellow else 180
-    if dist < 1215:
-        if yellow:
-            if ball_y == 910 or ball_x == 2204:
-                dif_x = abs(CYAN_GOAL_CENTRE_X - x_pos)
-                dif_y = abs(CYAN_GOAL_CENTRE_Y - y_pos)
-                direction = math.degrees(math.atan2(dif_x, dif_y))
-                if x_pos < CYAN_GOAL_CENTRE_X and y_pos < CYAN_GOAL_CENTRE_Y:
-                    angle = direction + 90
-                elif x_pos < CYAN_GOAL_CENTRE_X and y_pos > CYAN_GOAL_CENTRE_Y:
-                    angle = 270 - direction
-                elif x_pos > CYAN_GOAL_CENTRE_X and y_pos < CYAN_GOAL_CENTRE_Y:
-                    angle = direction
-                elif x_pos > CYAN_GOAL_CENTRE_X and y_pos > CYAN_GOAL_CENTRE_Y:
-                    angle = 270 + direction
-            else:
-                m = -1/((910 - ball_y)/(2204 - ball_x))
-                c = ball_y - ((m)*ball_x)
-                y = (m)*1900 + c
-                dif_x = abs(1900 - ball_x)
-                dif_y = abs(y - ball_y)
-                angle = math.degrees(math.atan2(dif_y, dif_x))
-        # elif not yellow:
-        #     if ball_y == 910 or ball_x == 2204:
-        #         dif_x = abs(CYAN_GOAL_CENTRE_X - x_pos)
-        #         dif_y = abs(CYAN_GOAL_CENTRE_Y - y_pos)
-        #         direction = math.degrees(math.atan2(dif_x, dif_y))
-        #         if x_pos < CYAN_GOAL_CENTRE_X and y_pos < CYAN_GOAL_CENTRE_Y:
-        #             angle = direction + 90
-        #         elif x_pos < CYAN_GOAL_CENTRE_X and y_pos > CYAN_GOAL_CENTRE_Y:
-        #             angle = 270 - direction
-        #         elif x_pos > CYAN_GOAL_CENTRE_X and y_pos < CYAN_GOAL_CENTRE_Y:
-        #             angle = direction
-        #         elif x_pos > CYAN_GOAL_CENTRE_X and y_pos > CYAN_GOAL_CENTRE_Y:
-        #             angle = 270 + direction
-        #     else:
-        #         m = -1/((910 - ball_y)/(226 - ball_x))
-        #         c = ball_y - ((m)*ball_x)
-        #         y = (m)*600 + c
-        #         dif_x = abs(226 - ball_x)
-        #         dif_y = abs(y - ball_y)
-        #         angle = math.degrees(math.atan2(dif_y, dif_x)) + 270
-
-    if dist > 400:
-        if not (1850 < x_pos < 1950  and 850 < y_pos < 900) or (450 < x_pos < 550 and 850 < y_pos < 900):
-            if yellow:
-                vector = (500 - x_pos), (900 - y_pos)
-            else:
-                vector = (x_pos - 1900), (y_pos - 900)
-            angle = math.degrees(math.atan2(vector[1], vector[0]))
-            speed = 400
+    speed = 500
+    if yellow:
+        if ball_y == 910 or ball_x == 226:
+            dif_x = CYAN_GOAL_CENTRE_X - x_pos
+            dif_y = CYAN_GOAL_CENTRE_Y - y_pos
+            angle = math.degrees(math.atan2(dif_y, dif_x))
         else:
-            speed = 0
-    else:
-        # TODO: Redo this code as colour won't be an input when playing physically.
-        # if colour != (0, 0, 0):
-        #     speed = 500
-        # else:
+            ball_gradient = (CYAN_GOAL_CENTRE_Y - ball_y) / (226 - ball_x)
+            ball_line_c = ball_y - (ball_gradient * ball_x)
+            bot_gradient = -1 / ball_gradient
+            bot_line_c = y_pos - (bot_gradient * x_pos)
+            intercept_x = (bot_line_c - ball_line_c) / (ball_gradient - bot_gradient)
+            intercept_y = (bot_gradient * intercept_x) + bot_line_c
 
-        #TODO: work on this code
-        # if yellow: #goalie is on cyan side
-        #     if x_pos < 1880:
-        #         angle = 180
-        #     if y_pos < 460:
-        #         angle = 90
-        #     elif y_pos > 1360:
-        #         angle = 270
-        if -10 < angle < 10:
-            speed = 0
-        elif angle > 0:
-            angle = 90
-            speed = 500
-        elif angle < 0:
-            angle = -90
-            speed = 500
+            if intercept_x < 430:
+                intercept_x = 430
+                intercept_y = ball_gradient * intercept_x + ball_line_c
+
+            dif_x = intercept_x - x_pos
+            dif_y = intercept_y - y_pos
+            angle = math.degrees(math.atan2(dif_y, dif_x))
+    else:
+        if ball_y == 910 or ball_x == 2204:
+            dif_x = YELLOW_GOAL_CENTRE_X - x_pos
+            dif_y = YELLOW_GOAL_CENTRE_Y - y_pos
+            angle = math.degrees(math.atan2(dif_y, dif_x))
+        else:
+            ball_gradient = (YELLOW_GOAL_CENTRE_Y - ball_y) / (2204 - ball_x)
+            ball_line_c = ball_y - (ball_gradient * ball_x)
+            bot_gradient = -1 / ball_gradient
+            bot_line_c = y_pos - (bot_gradient * x_pos)
+            intercept_x = (bot_line_c - ball_line_c) / (ball_gradient - bot_gradient)
+            intercept_y = (bot_gradient * intercept_x) + bot_line_c
+
+            if intercept_x > 2000:
+                intercept_x = 2000
+                intercept_y = ball_gradient * intercept_x + ball_line_c
+
+            dif_x = intercept_x - x_pos
+            dif_y = intercept_y - y_pos
+            angle = math.degrees(math.atan2(dif_y, dif_x))
+
     return angle, speed, rotation # Do nothing
 
 if __name__ == "__main__":
