@@ -30,14 +30,12 @@ using namespace sl;
 #define _countof(_Array) (int)(sizeof(_Array) / sizeof(_Array[0]))
 #endif
 
-// Global state
 static ILidarDriver* g_driver = nullptr;
 static IChannel* g_channel = nullptr;
 static std::atomic<bool> g_running{false};
 static std::thread g_scan_thread;
 static std::mutex g_data_mutex;
 
-// Scan data storage (angle in degrees, distance in mm)
 struct ScanPoint {
     float angle_deg;
     float distance_mm;
@@ -47,7 +45,6 @@ struct ScanPoint {
 static std::vector<ScanPoint> g_latest_scan;
 static std::atomic<bool> g_scan_ready{false};
 
-// Helper to release driver/channel resources when no scan thread is running
 static void release_driver_resources() {
     if (g_driver) {
         delete g_driver;
@@ -59,7 +56,6 @@ static void release_driver_resources() {
     }
 }
 
-// Background scanning thread
 void scan_thread_func() {
     sl_lidar_response_measurement_node_hq_t nodes[8192];
     
@@ -70,7 +66,6 @@ void scan_thread_func() {
         if (SL_IS_OK(op_result)) {
             g_driver->ascendScanData(nodes, count);
             
-            // Convert to our format
             std::vector<ScanPoint> new_scan;
             new_scan.reserve(count);
             
@@ -78,7 +73,7 @@ void scan_thread_func() {
                 if (nodes[i].dist_mm_q2 == 0) continue;
                 
                 int quality = nodes[i].quality >> SL_LIDAR_RESP_MEASUREMENT_QUALITY_SHIFT;
-                if (quality < 5) continue;  // Skip very low quality
+                if (quality < 5) continue;
                 
                 ScanPoint pt;
                 pt.angle_deg = (nodes[i].angle_z_q14 * 90.0f) / 16384.0f;
@@ -87,7 +82,6 @@ void scan_thread_func() {
                 new_scan.push_back(pt);
             }
             
-            // Update latest scan with lock
             {
                 std::lock_guard<std::mutex> lock(g_data_mutex);
                 g_latest_scan = std::move(new_scan);
@@ -95,12 +89,11 @@ void scan_thread_func() {
             }
         }
         
-        // Small sleep to prevent CPU spinning
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 }
 
-// Initialize the LIDAR
+// NOTE: Call this earlier as the lidar gets more accurate after spinning for a while.
 bool init_lidar(const std::string& port, int baudrate) {
     if (g_driver != nullptr) {
         throw std::runtime_error("LIDAR already initialized. Call shutdown_lidar() first.");
@@ -113,7 +106,6 @@ bool init_lidar(const std::string& port, int baudrate) {
     }
     
     try {
-        // Create channel and connect
         g_channel = *createSerialPortChannel(port.c_str(), baudrate);
         if (!g_channel) {
             throw std::runtime_error("Failed to create LIDAR channel");
@@ -123,30 +115,26 @@ bool init_lidar(const std::string& port, int baudrate) {
             throw std::runtime_error("Failed to connect to LIDAR at " + port);
         }
         
-        // Get device info
         sl_lidar_response_device_info_t devinfo;
         sl_result op_result = g_driver->getDeviceInfo(devinfo);
         if (SL_IS_FAIL(op_result)) {
             throw std::runtime_error("Failed to get LIDAR device info");
         }
         
-        // Check health
         sl_lidar_response_device_health_t healthinfo;
         op_result = g_driver->getHealth(healthinfo);
         if (SL_IS_FAIL(op_result) || healthinfo.status == SL_LIDAR_STATUS_ERROR) {
             throw std::runtime_error("LIDAR health check failed");
         }
         
-        // Start motor and scanning
+        // Start motor
         g_driver->setMotorSpeed();
         g_driver->startScan(0, 1);
     } catch (...) {
-        // Ensure we don't leak driver/channel when unexpected exceptions escape
         release_driver_resources();
         throw;
     }
     
-    // Start background thread
     g_running.store(true);
     g_scan_thread = std::thread(scan_thread_func);
     
@@ -154,26 +142,22 @@ bool init_lidar(const std::string& port, int baudrate) {
     return true;
 }
 
-// Shutdown the LIDAR
 void shutdown_lidar() {
     if (g_driver == nullptr) {
         return;
     }
     
-    // Stop background thread
     g_running.store(false);
     if (g_scan_thread.joinable()) {
         g_scan_thread.join();
     }
     
-    // Stop LIDAR
     g_driver->stop();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     g_driver->setMotorSpeed(0);
     
     release_driver_resources();
 
-    // Clear scan data
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
         g_latest_scan.clear();
@@ -183,12 +167,10 @@ void shutdown_lidar() {
     printf("LIDAR shutdown complete\n");
 }
 
-// Check if LIDAR is initialized
 bool is_initialized() {
     return g_driver != nullptr && g_running.load();
 }
 
-// Check if scan data is ready
 bool is_scan_ready() {
     return g_scan_ready.load();
 }
@@ -198,7 +180,6 @@ py::array_t<float> get_scan_numpy() {
     std::lock_guard<std::mutex> lock(g_data_mutex);
     
     if (g_latest_scan.empty()) {
-        // Return empty array
         std::vector<ssize_t> empty_shape = {0, 3};
         return py::array_t<float>(empty_shape);
     }
@@ -217,7 +198,7 @@ py::array_t<float> get_scan_numpy() {
     return result;
 }
 
-// Get a list of (angle_deg, distance_mm) tuples
+// Output: angle_deg, distance_mm, quality
 py::list get_scan_list() {
     std::lock_guard<std::mutex> lock(g_data_mutex);
     
@@ -228,8 +209,6 @@ py::list get_scan_list() {
     return result;
 }
 
-// Get the distance at a specific angle (finds closest angle match)
-// Returns distance in mm, or -1 if no valid reading
 float get_distance_at_angle(float target_angle) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
     
@@ -237,7 +216,6 @@ float get_distance_at_angle(float target_angle) {
         return -1.0f;
     }
     
-    // Normalize target angle to 0-360
     while (target_angle < 0) target_angle += 360.0f;
     while (target_angle >= 360) target_angle -= 360.0f;
     
@@ -250,7 +228,7 @@ float get_distance_at_angle(float target_angle) {
         while (angle >= 360) angle -= 360.0f;
         
         float diff = fabs(angle - target_angle);
-        if (diff > 180.0f) diff = 360.0f - diff;  // Handle wraparound
+        if (diff > 180.0f) diff = 360.0f - diff;
         
         if (diff < min_angle_diff) {
             min_angle_diff = diff;
@@ -261,8 +239,6 @@ float get_distance_at_angle(float target_angle) {
     return best_distance;
 }
 
-// Get distances in angular sectors (for obstacle detection)
-// Returns a list of (sector_center_angle, min_distance) for each sector
 py::list get_sector_distances(int num_sectors) {
     if (num_sectors <= 0) {
         throw std::invalid_argument("num_sectors must be positive");
@@ -294,13 +270,12 @@ py::list get_sector_distances(int num_sectors) {
     return result;
 }
 
-// Get number of points in latest scan
 int get_scan_count() {
     std::lock_guard<std::mutex> lock(g_data_mutex);
     return (int)g_latest_scan.size();
 }
 
-// Python module definition
+// Python bindings
 PYBIND11_MODULE(lidar, m) {
     m.doc() = "RPLidar C1 Python module - provides real-time LIDAR scan data";
     
