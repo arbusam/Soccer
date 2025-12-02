@@ -93,9 +93,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
     angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
     rotation = angle_to_ball
-    if not yellow:
-        angle_to_ball -= 180
-        angle_to_ball %= 360
+    angle_to_ball %= 360
     speed = 700
     if yellow:
         if y_pos > 1360:
@@ -107,8 +105,8 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         elif x_pos > 800 and not ball_captured:
             angle = 180
         else:
-            if dist < 500 and -10 < angle_to_ball < 10:
-                angle = 0
+            if dist < 500 and -10 < angle_to_ball - yaw < 10:
+                angle = yaw
             else:
                 if ball_y == 910 or ball_x == 226:
                     dif_x = CYAN_GOAL_CENTRE_X - x_pos
@@ -143,8 +141,8 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         elif x_pos < 1630 and not ball_captured:
             angle = 0
         else:
-            if dist < 500 and -10 < angle_to_ball < 10:
-                angle = 180
+            if dist < 500 and -10 < angle_to_ball - yaw < 10:
+                angle = yaw
             else:
                 if ball_y == 910 or ball_x == 2204:
                     dif_x = YELLOW_GOAL_CENTRE_X - x_pos
@@ -178,8 +176,6 @@ if __name__ == "__main__":
     motors, motor_modes = init_motors()
     steering_state = False
     while True:
-        # TODO: Get actual time delta
-        dt = 0.01
         # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
         x_pos = 0
         y_pos = 0
