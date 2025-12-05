@@ -1,4 +1,6 @@
 import math
+import time
+import numpy as np
 
 WHEEL_DIAMETER = 50 # mm
 CYAN_GOAL_CENTRE_X = 400
@@ -6,6 +8,8 @@ CYAN_GOAL_CENTRE_Y = 910
 YELLOW_GOAL_CENTRE_X = 1980
 YELLOW_GOAL_CENTRE_Y = 910
 YAW_CORRECT_SPEED = 500 # deg/s
+LIDAR_PORT = "/dev/ttyUSB1"
+LIDAR_BAUDRATE = 460800
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -170,16 +174,118 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
 
     return angle, speed, rotation
 
+def get_mean_distance(values):
+    if not values:
+        return None
+    if len(values) < 4:
+        return np.mean(values)
+    q75 = np.percentile(values, 75)
+    q25 = np.percentile(values, 25)
+    iqr = q75 - q25
+    upper_fence = q75 + 1.5 * iqr
+    lower_fence = q25 - 1.5 * iqr
+    filtered = [x for x in values if lower_fence <= x <= upper_fence]
+    if not filtered:
+        return None
+    return np.mean(filtered)
+
+
+def get_coordinates(yaw):
+    import lidar
+    yaw = float(yaw)
+
+    # Grab the full scan once (far cheaper than hundreds of per-angle calls)
+    scan = lidar.get_scan_numpy()
+    if scan.size == 0:
+        return None, None
+
+    distances = scan[:, 1]
+    angles = scan[:, 0]
+    valid_mask = distances > 0
+    if not np.any(valid_mask):
+        return None, None
+
+    distances = distances[valid_mask]
+    angles = angles[valid_mask]
+
+    # Convert to signed angles then shift by yaw to align with world frame
+    angles_signed = ((angles + 180) % 360) - 180  # [-180, 180)
+    world_angles = ((angles_signed + yaw + 180) % 360) - 180
+    world_radians = np.radians(world_angles)
+
+    def project_and_mean(mask, projection_values):
+        if not np.any(mask):
+            return None
+        return get_mean_distance(projection_values[mask].tolist())
+
+    # Right wall (world -45°..45°)
+    right_mask = (world_angles >= -45) & (world_angles <= 45)
+    right_proj = distances * np.cos(world_radians)
+    top_x_distance = project_and_mean(right_mask, right_proj)
+
+    # Left wall (world 135°..180° and -180°..-135°)
+    left_mask = (world_angles >= 135) | (world_angles <= -135)
+    left_proj = distances * -np.cos(world_radians)
+    bottom_x_distance = project_and_mean(left_mask, left_proj)
+
+    # Top wall (world -135°..-45°)
+    top_mask = (world_angles >= -135) & (world_angles <= -45)
+    top_proj = distances * -np.sin(world_radians)
+    left_y_distance = project_and_mean(top_mask, top_proj)
+
+    # Bottom wall (world 45°..135°)
+    bottom_mask = (world_angles >= 45) & (world_angles <= 135)
+    bottom_proj = distances * np.sin(world_radians)
+    right_y_distance = project_and_mean(bottom_mask, bottom_proj)
+
+    top_x_valid = top_x_distance is not None and 0 <= top_x_distance <= 2430
+    bottom_x_valid = bottom_x_distance is not None and 0 <= bottom_x_distance <= 2430
+
+    if top_x_valid and bottom_x_valid:
+        x_pos = (bottom_x_distance + (2430 - top_x_distance)) / 2
+    elif bottom_x_valid:
+        x_pos = bottom_x_distance
+    elif top_x_valid:
+        x_pos = 2430 - top_x_distance
+    else:
+        x_pos = None
+
+    left_y_valid = left_y_distance is not None and 0 <= left_y_distance <= 1820
+    right_y_valid = right_y_distance is not None and 0 <= right_y_distance <= 1820
+
+    if left_y_valid and right_y_valid:
+        y_pos = (left_y_distance + (1820 - right_y_distance)) / 2
+    elif left_y_valid:
+        y_pos = left_y_distance
+    elif right_y_valid:
+        y_pos = 1820 - right_y_distance
+    else:
+        y_pos = None
+
+    return x_pos, y_pos
+
 if __name__ == "__main__":
     from movement import init_motors, move
+
+    print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
+    try:
+        lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize LIDAR: {e}")
+    
+    print("LIDAR initialized successfully!")
+    print()
+    
+    print("Waiting for first scan data...")
+    while not lidar.is_scan_ready():
+        time.sleep(0.1)
 
     motors, motor_modes = init_motors()
     steering_state = False
     while True:
         # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
-        x_pos = 0
-        y_pos = 0
         yaw = 0
+        x_pos, y_pos = get_coordinates(yaw)
         ball_x = 0
         ball_y = 0
         yellow = True

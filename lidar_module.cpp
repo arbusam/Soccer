@@ -216,16 +216,15 @@ float get_distance_at_angle(float target_angle) {
         return -1.0f;
     }
     
-    while (target_angle < 0) target_angle += 360.0f;
-    while (target_angle >= 360) target_angle -= 360.0f;
+    target_angle = fmodf(target_angle, 360.0f);
+    if (target_angle < 0) target_angle += 360.0f;
     
     float best_distance = -1.0f;
     float min_angle_diff = 360.0f;
     
     for (const auto& pt : g_latest_scan) {
-        float angle = pt.angle_deg;
-        while (angle < 0) angle += 360.0f;
-        while (angle >= 360) angle -= 360.0f;
+        float angle = fmodf(pt.angle_deg, 360.0f);
+        if (angle < 0) angle += 360.0f;
         
         float diff = fabs(angle - target_angle);
         if (diff > 180.0f) diff = 360.0f - diff;
@@ -250,9 +249,8 @@ py::list get_sector_distances(int num_sectors) {
     std::vector<float> min_distances(num_sectors, -1.0f);
     
     for (const auto& pt : g_latest_scan) {
-        float angle = pt.angle_deg;
-        while (angle < 0) angle += 360.0f;
-        while (angle >= 360) angle -= 360.0f;
+        float angle = fmodf(pt.angle_deg, 360.0f);
+        if (angle < 0) angle += 360.0f;
         
         int sector = (int)(angle / sector_size);
         if (sector >= num_sectors) sector = num_sectors - 1;
