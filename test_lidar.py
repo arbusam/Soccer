@@ -14,9 +14,11 @@ def main():
     print("=" * 40)
     
     # Initialize LIDAR
-    print("Initializing LIDAR on /dev/ttyUSB1 at 460800 baud...")
+    lidar_port = "/dev/ttyUSB1"
+    lidar_baudrate = 460800
+    print(f"Initializing LIDAR on {lidar_port} at {lidar_baudrate} baud...")
     try:
-        lidar.init("/dev/ttyUSB1", 460800)
+        lidar.init(lidar_port, lidar_baudrate)
     except Exception as e:
         print(f"Failed to initialize LIDAR: {e}")
         return
