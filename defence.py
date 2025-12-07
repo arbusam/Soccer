@@ -42,13 +42,12 @@ def defence(
         vector = (x_pos - ball_x), (y_pos - ball_y)
     angle = math.degrees(math.atan2(vector[1], vector[0]))
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
-    angle_to_goal_centre = math.degrees(math.atan2(910 - y_pos, 2200 - x_pos))
     rotation = 0 if yellow else 180
     speed = 500
     offset = 0
     if dist < 200:
         if -10 < angle < 10:
-            speed = 700
+            speed = 1000
             if steering and y_pos < 850 and dist < 200:
                 offset = 30
             elif steering and y_pos > 1050 and dist < 200:
@@ -68,12 +67,14 @@ def defence(
             offset = 80
         else:
             offset = -80
+    elif dist > 500:
+        speed = 1000
 
     if not yellow:
         angle -= 180
         angle %= 360
     
-    return angle + offset, speed, rotation, steering
+    return angle + offset, speed, rotation, steering, False
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -172,7 +173,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
                     dif_y = intercept_y - y_pos
                     angle = math.degrees(math.atan2(dif_y, dif_x))
 
-    return angle, speed, rotation
+    return angle, speed, rotation, False
 
 def get_mean_distance(values):
     if not values:
@@ -290,7 +291,7 @@ if __name__ == "__main__":
         ball_y = 0
         yellow = True
         ball_captured = False
-        direction, speed, rotation, steering_state = defence(
+        direction, speed, rotation, steering_state, _ = defence(
             x_pos,
             y_pos,
             yaw,
