@@ -102,12 +102,12 @@ CUTOUT_ARC_SEGMENTS = 50
 CAPTURE_LINE_WIDTH = 4
 CAPTURE_LINE_HALF_WIDTH = CAPTURE_LINE_WIDTH / 2.0
 BALL_RADIUS = 21
-BALL_DECELERATION_SPEED = 10  # mm/s^2
+BALL_DECELERATION_SPEED = 1000  # mm/s^2
 YAW_CORRECT_SPEED = 200  # mm/s spin speed used when aligning yaw
 WALL_BOUNCE_ENERGY_LOSS = 0.7
 EPSILON = 1e-6
 ACCELERATION = 3000  # mm/s^2
-KICK_SPEED = 25
+KICK_SPEED = 2000
 
 pitch.fill(green)
 
@@ -155,7 +155,7 @@ clock = pygame.time.Clock()
 # Pitch playable area is approximately 1930x1320 pixels
 # Adjust this constant based on real-world pitch dimensions
 MM_PER_PIXEL = 1.0  # Default: 1mm per pixel (adjust as needed)
-FPS = 1000
+FPS = 120
 
 BOT_RADIUS = ROBOT_RADIUS
 BOT_MIN_X = BOT_RADIUS
@@ -398,7 +398,6 @@ def manual_control_from_keys(keys, current_yaw):
 
 
 # Precompute per-second values for reuse; per-frame scaling uses actual dt.
-BALL_DECELERATION_PIXELS_PER_S2 = BALL_DECELERATION_SPEED / MM_PER_PIXEL
 YAW_CORRECT_PIXELS_PER_S = YAW_CORRECT_SPEED / MM_PER_PIXEL
 
 # Game log format: x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,...
@@ -873,6 +872,7 @@ else:
     waiting = True
     while waiting:
         dt_seconds = clock.tick(FPS) / 1000.0
+        dt_safe = max(dt_seconds, EPSILON)
         yaw_correction_deg_per_frame = math.degrees(
             (YAW_CORRECT_PIXELS_PER_S * dt_seconds) / ROBOT_RADIUS
         )
@@ -988,6 +988,8 @@ else:
             bot.y = max(BOT_MIN_Y, min(BOT_MAX_Y, bot.y))
             bot_actual_dx = bot.x - prev_x
             bot_actual_dy = bot.y - prev_y
+            bot.velocity_x = (bot_actual_dx * MM_PER_PIXEL) / dt_safe
+            bot.velocity_y = (bot_actual_dy * MM_PER_PIXEL) / dt_safe
             bot.push_speed = math.hypot(bot_actual_dx, bot_actual_dy)
             bot.desired_velocity = (bot_step_x, bot_step_y)
 
@@ -1010,16 +1012,38 @@ else:
             )
 
         resolve_bot_collisions(bot_states)
+        for state in bot_states:
+            bot_ref = state["bot"]
+            prev_x, prev_y = state["prev"]
+            bot_actual_dx = bot_ref.x - prev_x
+            bot_actual_dy = bot_ref.y - prev_y
+            bot_ref.velocity_x = (bot_actual_dx * MM_PER_PIXEL) / dt_safe
+            bot_ref.velocity_y = (bot_actual_dy * MM_PER_PIXEL) / dt_safe
+            bot_ref.push_speed = math.hypot(bot_actual_dx, bot_actual_dy)
+            state["delta"] = (bot_actual_dx, bot_actual_dy)
 
-        ball_x += ball_vx
-        ball_y += ball_vy
+        # Sub-step the ball movement so it cannot tunnel through thin walls/backboards
+        ball_speed_pixels = mmps_to_pixels(math.hypot(ball_vx, ball_vy), 1.0)
+        max_ball_step = max(BALL_RADIUS, 1.0)
+        substeps = max(1, math.ceil((ball_speed_pixels * dt_seconds) / max_ball_step))
+        sub_dt = dt_seconds / substeps if substeps > 0 else dt_seconds
 
-        ball_x, ball_y, ball_vx, ball_vy, boundary_collision_pre = keep_ball_in_pitch_bounds(
-            ball_x, ball_y, ball_vx, ball_vy
-        )
-        ball_x, ball_y, ball_vx, ball_vy, goal_line_collision_pre = resolve_ball_goal_line_collisions(
-            ball_x, ball_y, ball_vx, ball_vy, GOAL_LINES
-        )
+        boundary_collision = False
+        goal_line_collision = False
+
+        for _ in range(substeps):
+            ball_x += mmps_to_pixels(ball_vx, sub_dt)
+            ball_y += mmps_to_pixels(ball_vy, sub_dt)
+
+            ball_x, ball_y, ball_vx, ball_vy, boundary_hit = keep_ball_in_pitch_bounds(
+                ball_x, ball_y, ball_vx, ball_vy
+            )
+            ball_x, ball_y, ball_vx, ball_vy, goal_hit = resolve_ball_goal_line_collisions(
+                ball_x, ball_y, ball_vx, ball_vy, GOAL_LINES
+            )
+
+            boundary_collision = boundary_collision or boundary_hit
+            goal_line_collision = goal_line_collision or goal_hit
 
         ball_being_pushed = False
         pushing_states = []
@@ -1031,7 +1055,7 @@ else:
                 ball_vx,
                 ball_vy,
                 geometry,
-                state["delta"],
+                (state["bot"].velocity_x, state["bot"].velocity_y),
             )
             if bot_pushing:
                 pushing_states.append({"state": state, "geometry": geometry})
@@ -1059,22 +1083,9 @@ else:
                 if ball_pinched_between_bots:
                     break
 
-        ball_x, ball_y, ball_vx, ball_vy, boundary_collision_post = keep_ball_in_pitch_bounds(
-            ball_x, ball_y, ball_vx, ball_vy
-        )
-        (
-            ball_x,
-            ball_y,
-            ball_vx,
-            ball_vy,
-            goal_line_collision_post,
-        ) = resolve_ball_goal_line_collisions(ball_x, ball_y, ball_vx, ball_vy, GOAL_LINES)
-
         ball_against_surface = (
-            boundary_collision_pre
-            or goal_line_collision_pre
-            or boundary_collision_post
-            or goal_line_collision_post
+            boundary_collision
+            or goal_line_collision
             or is_ball_touching_pitch_bounds(ball_x, ball_y)
             or is_ball_touching_goal_lines(ball_x, ball_y, GOAL_LINES)
         )
@@ -1102,7 +1113,7 @@ else:
 
         if not ball_being_pushed:
             ball_speed = math.hypot(ball_vx, ball_vy)
-            ball_deceleration = BALL_DECELERATION_PIXELS_PER_S2 * dt_seconds
+            ball_deceleration = BALL_DECELERATION_SPEED * dt_seconds
             if ball_speed > ball_deceleration:
                 scale = (ball_speed - ball_deceleration) / ball_speed
                 ball_vx *= scale
