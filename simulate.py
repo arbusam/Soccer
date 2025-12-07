@@ -147,6 +147,13 @@ GOAL_LINES = [
     ((2204, 1135), (2130, 1135), 10),
 ]
 
+BLACK_POINTS = [
+    (1215, 610),
+    (1215, 1210),
+]
+
+CENTRE_POINT = (1215, 910)
+
 base_pitch = pitch.copy()
 
 clock = pygame.time.Clock()
@@ -217,11 +224,11 @@ def create_team(role_tokens: Sequence[str], team_number: int) -> List[Bot]:
     for idx, token in enumerate(role_tokens, start=1):
         role_name, controller = parse_role_token(token)
         if team_number == 1:
-            start_x = 500
-            start_y = 1200 #base 900
+            start_x = random.randint(450, 600)
+            start_y = random.randint(510, 1410)
         else:
-            start_x = 1900
-            start_y = 700
+            start_x = random.randint(1830, 1980)
+            start_y = random.randint(510, 1410)
         bots.append(
             Bot(
                 x=start_x,
@@ -598,6 +605,8 @@ def get_capture_geometry(x_pos, y_pos, yaw):
         "line_start": line_start,
         "line_end": line_end,
         "robot_center": robot_center,
+        "left_circle": left_circle,
+        "right_circle": right_circle,
         "connector_lines": connector_lines,
         "arc_segments": arc_segments,
         "segments": segments,
@@ -613,6 +622,64 @@ def is_ball_touching_capture_zone(ball_x, ball_y, geometry):
         if distance <= threshold + EPSILON:
             return True
     return False
+
+
+def is_point_in_polygon(point, polygon):
+    x, y = point
+    inside = False
+    num_points = len(polygon)
+    if num_points < 3:
+        return False
+
+    j = num_points - 1
+    for i in range(num_points):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        intersects = (yi > y) != (yj > y)
+        if intersects:
+            x_intersect = (xj - xi) * (y - yi) / ((yj - yi) + EPSILON) + xi
+            if x < x_intersect:
+                inside = not inside
+        j = i
+    return inside
+
+
+def is_point_in_capture_zone(ball_x, ball_y, geometry):
+    left_circle = geometry.get("left_circle")
+    right_circle = geometry.get("right_circle")
+    if left_circle is None or right_circle is None:
+        return False
+
+    polygon = [left_circle, geometry["line_start"], geometry["line_end"], right_circle]
+    return is_point_in_polygon((ball_x, ball_y), polygon)
+
+
+def is_ball_inside_bot_body(ball_x, ball_y, bot):
+    dist_to_center = math.hypot(ball_x - bot.x, ball_y - bot.y)
+    if dist_to_center >= ROBOT_RADIUS - BALL_RADIUS - EPSILON:
+        return False
+
+    geometry = get_capture_geometry(bot.x, bot.y, bot.yaw)
+    if is_point_in_capture_zone(ball_x, ball_y, geometry):
+        return False
+
+    return True
+
+
+def find_nearest_free_black_point(ball_x, ball_y, bots):
+    available_points = []
+    for point in BLACK_POINTS:
+        covered = any(math.hypot(bot.x - point[0], bot.y - point[1]) <= BOT_RADIUS for bot in bots)
+        if not covered:
+            available_points.append(point)
+
+    if not available_points:
+        centre_covered = any(math.hypot(bot.x - CENTRE_POINT[0], bot.y - CENTRE_POINT[1]) <= BOT_RADIUS for bot in bots)
+        if not centre_covered:
+            return CENTRE_POINT
+        return None
+
+    return min(available_points, key=lambda p: math.hypot(p[0] - ball_x, p[1] - ball_y))
 
 
 def build_frame(ball_x, ball_y, bots):
@@ -1121,6 +1188,27 @@ else:
             else:
                 ball_vx = 0.0
                 ball_vy = 0.0
+
+        for bot in bots:
+            if is_ball_inside_bot_body(ball_x, ball_y, bot):
+                diff_x = ball_x - bot.x
+                diff_y = ball_y - bot.y
+                norm = math.hypot(diff_x, diff_y)
+                if norm < EPSILON:
+                    diff_x, diff_y, norm = 1.0, 0.0, 1.0
+                normal_x = diff_x / norm
+                normal_y = diff_y / norm
+                push_dist = ROBOT_RADIUS + BALL_RADIUS + CAPTURE_LINE_HALF_WIDTH
+                ball_x = bot.x + normal_x * push_dist
+                ball_y = bot.y + normal_y * push_dist
+        for bot in bots:
+            if is_ball_inside_bot_body(ball_x, ball_y, bot):
+                reset_point = find_nearest_free_black_point(ball_x, ball_y, bots)
+                if reset_point is not None:
+                    ball_x, ball_y = reset_point
+                ball_vx = 0.0
+                ball_vy = 0.0
+                break
 
         frame_pitch = build_frame(ball_x, ball_y, bots)
         blit_frame(frame_pitch)
