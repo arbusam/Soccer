@@ -7,6 +7,12 @@ CYAN_GOAL_CENTRE_X = 400
 CYAN_GOAL_CENTRE_Y = 910
 YELLOW_GOAL_CENTRE_X = 1980
 YELLOW_GOAL_CENTRE_Y = 910
+YELLOW_GOAL_BACK_X = 226
+YELLOW_GOAL_BACK_Y_MIN = 685
+YELLOW_GOAL_BACK_Y_MAX = 1140
+CYAN_GOAL_BACK_X = 2204
+CYAN_GOAL_BACK_Y_MIN = 685
+CYAN_GOAL_BACK_Y_MAX = 1140
 YAW_CORRECT_SPEED = 500 # deg/s
 LIDAR_PORT = "/dev/ttyUSB1"
 LIDAR_BAUDRATE = 460800
@@ -73,8 +79,31 @@ def defence(
     if not yellow:
         angle -= 180
         angle %= 360
-    
-    return angle + offset, speed, rotation, steering, False
+
+    kick = False
+    if ball_captured:
+        if yellow:
+            target_x = CYAN_GOAL_BACK_X
+            target_y_min = CYAN_GOAL_BACK_Y_MIN
+            target_y_max = CYAN_GOAL_BACK_Y_MAX
+        else:
+            target_x = YELLOW_GOAL_BACK_X
+            target_y_min = YELLOW_GOAL_BACK_Y_MIN
+            target_y_max = YELLOW_GOAL_BACK_Y_MAX
+
+        yaw_rad = math.radians(yaw % 360)
+        dir_x = math.cos(yaw_rad)
+        dir_y = math.sin(yaw_rad)
+        epsilon = 1e-6
+
+        if abs(dir_x) > epsilon:
+            t = (target_x - ball_x) / dir_x
+            if t >= 0:
+                y_hit = ball_y + t * dir_y
+                if target_y_min <= y_hit <= target_y_max:
+                    kick = True
+
+    return angle + offset, speed, rotation, steering, kick
 
 # Inputs: 
 # x_pos: x position of the robot
