@@ -132,7 +132,10 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         elif y_pos < 460:
             direction = 90
         elif x_pos < 300:
-            direction = 90
+            if y_pos < 910:
+                direction = 270
+            else:
+                direction = 90
         elif x_pos > 600 and not ball_captured:
             direction = 180
         else:
@@ -170,7 +173,10 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         elif y_pos < 460:
             direction = 90
         elif x_pos > 2130:
-            direction = 90
+            if y_pos < 910:
+                direction = 270
+            else:
+                direction = 90
         elif x_pos < 1830 and not ball_captured:
             direction = 0
         else:

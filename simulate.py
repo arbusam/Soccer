@@ -222,24 +222,37 @@ def create_team(role_tokens: Sequence[str], team_number: int) -> List[Bot]:
     defaults = TEAM_DEFAULTS.get(team_number, TEAM_DEFAULTS[1])
     bots: List[Bot] = []
     for idx, token in enumerate(role_tokens, start=1):
-        role_name, controller = parse_role_token(token)
         if team_number == 1:
             start_x = random.randint(450, 600)
             start_y = random.randint(510, 1410)
         else:
             start_x = random.randint(1830, 1980)
             start_y = random.randint(510, 1410)
-        bots.append(
-            Bot(
-                x=start_x,
-                y=start_y,
-                yaw=defaults["yaw"],
-                base_color=defaults["color"],
-                controller=controller,
-                manual=False,
-                name=f"Team {team_number} {role_name.title()} #{idx}",
+        if token == "m":
+            bots.append(
+                Bot(
+                    x=start_x,
+                    y=start_y,
+                    yaw=defaults["yaw"],
+                    base_color=defaults["color"],
+                    controller=None,
+                    manual=True,
+                    name=f"Team {team_number} Manual #{idx}",
+                )
             )
-        )
+        else:
+            role_name, controller = parse_role_token(token)
+            bots.append(
+                Bot(
+                    x=start_x,
+                    y=start_y,
+                    yaw=defaults["yaw"],
+                    base_color=defaults["color"],
+                    controller=controller,
+                    manual=False,
+                    name=f"Team {team_number} {role_name.title()} #{idx}",
+                )
+            )
     return bots
 
 
@@ -394,7 +407,7 @@ def manual_control_from_keys(keys, current_yaw):
         direction = 0
 
     if direction is not None:
-        speed = 500
+        speed = 700
 
     if ctrl:
         rotation = (current_yaw - 10) % 360
