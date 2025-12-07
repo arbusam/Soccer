@@ -8,11 +8,9 @@ CYAN_GOAL_CENTRE_Y = 910
 YELLOW_GOAL_CENTRE_X = 1980
 YELLOW_GOAL_CENTRE_Y = 910
 YELLOW_GOAL_BACK_X = 226
-YELLOW_GOAL_BACK_Y_MIN = 685
-YELLOW_GOAL_BACK_Y_MAX = 1140
+GOAL_BACK_Y_MIN = 700
+GOAL_BACK_Y_MAX = 1125
 CYAN_GOAL_BACK_X = 2204
-CYAN_GOAL_BACK_Y_MIN = 685
-CYAN_GOAL_BACK_Y_MAX = 1140
 YAW_CORRECT_SPEED = 500 # deg/s
 LIDAR_PORT = "/dev/ttyUSB1"
 LIDAR_BAUDRATE = 460800
@@ -46,13 +44,13 @@ def defence(
         vector = (ball_x - x_pos), (ball_y - y_pos)
     else:
         vector = (x_pos - ball_x), (y_pos - ball_y)
-    angle = math.degrees(math.atan2(vector[1], vector[0]))
+    direction = math.degrees(math.atan2(vector[1], vector[0]))
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
     rotation = 0 if yellow else 180
     speed = 500
     offset = 0
     if dist < 200:
-        if -10 < angle < 10:
+        if -10 < direction < 10:
             speed = 1000
             if steering and y_pos < 850 and dist < 200:
                 offset = 30
@@ -69,7 +67,7 @@ def defence(
 
             if not yellow:
                 offset = -offset
-        elif 0 < angle < 180:
+        elif 0 < direction < 180:
             offset = 80
         else:
             offset = -80
@@ -77,19 +75,19 @@ def defence(
         speed = 1000
 
     if not yellow:
-        angle -= 180
-        angle %= 360
+        direction -= 180
+        direction %= 360
 
     kick = False
     if ball_captured:
         if yellow:
             target_x = CYAN_GOAL_BACK_X
-            target_y_min = CYAN_GOAL_BACK_Y_MIN
-            target_y_max = CYAN_GOAL_BACK_Y_MAX
+            target_y_min = GOAL_BACK_Y_MIN
+            target_y_max = GOAL_BACK_Y_MAX
         else:
             target_x = YELLOW_GOAL_BACK_X
-            target_y_min = YELLOW_GOAL_BACK_Y_MIN
-            target_y_max = YELLOW_GOAL_BACK_Y_MAX
+            target_y_min = GOAL_BACK_Y_MIN
+            target_y_max = GOAL_BACK_Y_MAX
 
         yaw_rad = math.radians(yaw % 360)
         dir_x = math.cos(yaw_rad)
@@ -103,7 +101,7 @@ def defence(
                 if target_y_min <= y_hit <= target_y_max:
                     kick = True
 
-    return angle + offset, speed, rotation, steering, kick
+    return direction + offset, speed, rotation, steering, kick
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -122,8 +120,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         vector = (ball_x - x_pos), (ball_y - y_pos)
     else:
         vector = (x_pos - ball_x), (y_pos - ball_y)
-    # angle = math.degrees(math.atan2(vector[1], vector[0]))
-    angle = None
+    direction = None
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
     angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
     rotation = angle_to_ball
@@ -131,21 +128,21 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
     speed = 700
     if yellow:
         if y_pos > 1360:
-            angle = 270
+            direction = 270
         elif y_pos < 460:
-            angle = 90
+            direction = 90
         elif x_pos < 300:
-            angle = 90
-        elif x_pos > 800 and not ball_captured:
-            angle = 180
+            direction = 90
+        elif x_pos > 600 and not ball_captured:
+            direction = 180
         else:
             if dist < 500 and -10 < angle_to_ball - yaw < 10:
-                angle = yaw
+                direction = yaw
             else:
                 if ball_y == 910 or ball_x == 226:
                     dif_x = CYAN_GOAL_CENTRE_X - x_pos
                     dif_y = CYAN_GOAL_CENTRE_Y - y_pos
-                    angle = math.degrees(math.atan2(dif_y, dif_x))
+                    direction = math.degrees(math.atan2(dif_y, dif_x))
                 else:
                     ball_gradient = (CYAN_GOAL_CENTRE_Y - ball_y) / (226 - ball_x)
                     ball_line_c = ball_y - (ball_gradient * ball_x)
@@ -158,30 +155,32 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
                         intercept_x = 430
                         intercept_y = ball_gradient * intercept_x + ball_line_c
                     if (intercept_y < 910 and intercept_y > 460) or ball_y < 250:
-                        angle = 270
+                        direction = 270
                     elif (intercept_y > 910 and intercept_y < 1360) or ball_y > 1570:
-                        angle = 90
+                        direction = 90
 
                     dif_x = intercept_x - x_pos
                     dif_y = intercept_y - y_pos
-                    angle = math.degrees(math.atan2(dif_y, dif_x))
+                    if math.hypot(dif_x, dif_y) < 10:
+                        speed = 0
+                    direction = math.degrees(math.atan2(dif_y, dif_x))
     else:
         if y_pos > 1360:
-            angle = 270
+            direction = 270
         elif y_pos < 460:
-            angle = 90
+            direction = 90
         elif x_pos > 2130:
-            angle = 90
-        elif x_pos < 1630 and not ball_captured:
-            angle = 0
+            direction = 90
+        elif x_pos < 1830 and not ball_captured:
+            direction = 0
         else:
             if dist < 500 and -10 < angle_to_ball - yaw < 10:
-                angle = yaw
+                direction = yaw
             else:
                 if ball_y == 910 or ball_x == 2204:
                     dif_x = YELLOW_GOAL_CENTRE_X - x_pos
                     dif_y = YELLOW_GOAL_CENTRE_Y - y_pos
-                    angle = math.degrees(math.atan2(dif_y, dif_x))
+                    direction = math.degrees(math.atan2(dif_y, dif_x))
                 else:
                     ball_gradient = (YELLOW_GOAL_CENTRE_Y - ball_y) / (2204 - ball_x)
                     ball_line_c = ball_y - (ball_gradient * ball_x)
@@ -194,15 +193,17 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
                         intercept_x = 2000
                         intercept_y = ball_gradient * intercept_x + ball_line_c
                     if intercept_y < 910 and intercept_y > 460:
-                        angle = 90
+                        direction = 90
                     elif intercept_y > 910 and intercept_y < 1360:
-                        angle = 270
+                        direction = 270
 
                     dif_x = intercept_x - x_pos
                     dif_y = intercept_y - y_pos
-                    angle = math.degrees(math.atan2(dif_y, dif_x))
+                    if math.hypot(dif_x, dif_y) < 10:
+                        speed = 0
+                    direction = math.degrees(math.atan2(dif_y, dif_x))
 
-    return angle, speed, rotation, False
+    return direction, speed, rotation, False
 
 def get_mean_distance(values):
     if not values:
