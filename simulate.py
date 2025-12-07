@@ -102,11 +102,12 @@ CUTOUT_ARC_SEGMENTS = 50
 CAPTURE_LINE_WIDTH = 4
 CAPTURE_LINE_HALF_WIDTH = CAPTURE_LINE_WIDTH / 2.0
 BALL_RADIUS = 21
-BALL_DECELERATION_SPEED = 1000  # mm/s^2
+BALL_DECELERATION_SPEED = 10  # mm/s^2
 YAW_CORRECT_SPEED = 200  # mm/s spin speed used when aligning yaw
 WALL_BOUNCE_ENERGY_LOSS = 0.7
 EPSILON = 1e-6
-ACCELERATION = 5000  # mm/s^2
+ACCELERATION = 3000  # mm/s^2
+KICK_SPEED = 25
 
 pitch.fill(green)
 
@@ -154,7 +155,7 @@ clock = pygame.time.Clock()
 # Pitch playable area is approximately 1930x1320 pixels
 # Adjust this constant based on real-world pitch dimensions
 MM_PER_PIXEL = 1.0  # Default: 1mm per pixel (adjust as needed)
-FPS = 30
+FPS = 1000
 
 BOT_RADIUS = ROBOT_RADIUS
 BOT_MIN_X = BOT_RADIUS
@@ -196,8 +197,9 @@ class Bot:
         }
 
 
-def mmps_to_pixels_per_frame(value_mm_per_s):
-    return (value_mm_per_s / MM_PER_PIXEL) / FPS
+def mmps_to_pixels(value_mm_per_s, dt_seconds):
+    """Convert a mm/s value to pixels travelled during this frame."""
+    return (value_mm_per_s / MM_PER_PIXEL) * dt_seconds
 
 
 def parse_role_token(token):
@@ -356,10 +358,14 @@ def manual_control_from_keys(keys, current_yaw):
     right = keys[pygame.K_RIGHT]
     ctrl = keys[pygame.K_LCTRL]
     alt = keys[pygame.K_LALT]
+    space = keys[pygame.K_SPACE]
 
     direction = None
     speed = 0
     rotation = current_yaw
+    kick_state = False
+    if space:
+        kick_state = True
 
     if up and not down:
         if left and not right:
@@ -388,13 +394,12 @@ def manual_control_from_keys(keys, current_yaw):
     elif alt:
         rotation = (current_yaw + 10) % 360
 
-    return direction, speed, rotation
+    return direction, speed, rotation, kick_state
 
 
-BALL_DECELERATION_PER_FRAME = mmps_to_pixels_per_frame(BALL_DECELERATION_SPEED / FPS)
-YAW_CORRECT_DEG_PER_FRAME = math.degrees(
-    mmps_to_pixels_per_frame(YAW_CORRECT_SPEED) / ROBOT_RADIUS
-)
+# Precompute per-second values for reuse; per-frame scaling uses actual dt.
+BALL_DECELERATION_PIXELS_PER_S2 = BALL_DECELERATION_SPEED / MM_PER_PIXEL
+YAW_CORRECT_PIXELS_PER_S = YAW_CORRECT_SPEED / MM_PER_PIXEL
 
 # Game log format: x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,...
 
@@ -867,6 +872,10 @@ else:
 
     waiting = True
     while waiting:
+        dt_seconds = clock.tick(FPS) / 1000.0
+        yaw_correction_deg_per_frame = math.degrees(
+            (YAW_CORRECT_PIXELS_PER_S * dt_seconds) / ROBOT_RADIUS
+        )
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 waiting = False
@@ -885,18 +894,17 @@ else:
             prev_x = bot.x
             prev_y = bot.y
             ball_captured = False
-            if bot.controller is not None:
-                ball_captured = is_ball_touching_capture_zone(
-                    ball_x, ball_y, get_capture_geometry(bot.x, bot.y, bot.yaw)
-                )
+            ball_captured = is_ball_touching_capture_zone(
+                ball_x, ball_y, get_capture_geometry(bot.x, bot.y, bot.yaw)
+            )
 
             if bot.manual:
                 if manual_keys is None:
                     manual_keys = pygame.key.get_pressed()
-                direction, speed, rotation = manual_control_from_keys(manual_keys, bot.yaw)
+                direction, speed, rotation, kick_state = manual_control_from_keys(manual_keys, bot.yaw)
             elif bot.controller is not None:
                 if bot.controller is defence:
-                    direction, speed, rotation, steering_state = bot.controller(
+                    direction, speed, rotation, steering_state, kick_state = bot.controller(
                         bot.x,
                         bot.y,
                         bot.yaw,
@@ -908,7 +916,7 @@ else:
                     )
                     bot.steering = steering_state
                 else:
-                    direction, speed, rotation = bot.controller(
+                    direction, speed, rotation, kick_state = bot.controller(
                         bot.x,
                         bot.y,
                         bot.yaw,
@@ -919,6 +927,10 @@ else:
                     )
             else:
                 direction, speed, rotation = 0, 0, bot.yaw
+
+            if kick_state and ball_captured:
+                ball_vx += KICK_SPEED * math.cos(math.radians(bot.yaw))
+                ball_vy += KICK_SPEED * math.sin(math.radians(bot.yaw))
 
             # Determine desired velocity vector in mm/s relative to world axes.
             if direction is not None:
@@ -941,7 +953,7 @@ else:
                         target_vy = speed * math.sin(forward_rad)
 
             # Clamp acceleration magnitude so bots decelerate before reversing.
-            acceleration_limit = ACCELERATION / FPS
+            acceleration_limit = ACCELERATION * dt_seconds
             delta_vx = target_vx - bot.velocity_x
             delta_vy = target_vy - bot.velocity_y
             delta_magnitude = math.hypot(delta_vx, delta_vy)
@@ -957,13 +969,13 @@ else:
             yaw_error = shortest_angle_delta(bot.yaw, rotation_target)
             if abs(yaw_error) > EPSILON:
                 yaw_step = math.copysign(
-                    min(abs(yaw_error), YAW_CORRECT_DEG_PER_FRAME),
+                    min(abs(yaw_error), yaw_correction_deg_per_frame),
                     yaw_error,
                 )
                 bot.yaw = normalize_angle_deg(bot.yaw + yaw_step)
 
-            bot_step_x = mmps_to_pixels_per_frame(bot.velocity_x)
-            bot_step_y = mmps_to_pixels_per_frame(bot.velocity_y)
+            bot_step_x = mmps_to_pixels(bot.velocity_x, dt_seconds)
+            bot_step_y = mmps_to_pixels(bot.velocity_y, dt_seconds)
 
             bot.x += bot_step_x
             bot.y += bot_step_y
@@ -1090,8 +1102,9 @@ else:
 
         if not ball_being_pushed:
             ball_speed = math.hypot(ball_vx, ball_vy)
-            if ball_speed > BALL_DECELERATION_PER_FRAME:
-                scale = (ball_speed - BALL_DECELERATION_PER_FRAME) / ball_speed
+            ball_deceleration = BALL_DECELERATION_PIXELS_PER_S2 * dt_seconds
+            if ball_speed > ball_deceleration:
+                scale = (ball_speed - ball_deceleration) / ball_speed
                 ball_vx *= scale
                 ball_vy *= scale
             else:
@@ -1100,8 +1113,6 @@ else:
 
         frame_pitch = build_frame(ball_x, ball_y, bots)
         blit_frame(frame_pitch)
-
-        clock.tick(FPS)
 
 pygame.quit()
 exit()
