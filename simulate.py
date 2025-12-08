@@ -3,9 +3,12 @@ import math
 import random
 import sys
 from dataclasses import dataclass, field
+import asyncio
+import threading
 from typing import Callable, List, Optional, Sequence
 
 import pygame
+import websockets
 
 from defence import defence, goalie
 
@@ -20,6 +23,12 @@ parser.add_argument(
     "log_file",
     nargs="?",
     help="Path to the game log file (CSV format) containing frame-by-frame positions.",
+)
+parser.add_argument(
+    "-c",
+    "--connect",
+    metavar="ADDR",
+    help="Connect to the log server at ADDR (IP:PORT), e.g. -c 127.0.0.1:8765",
 )
 parser.add_argument(
     "-d",
@@ -108,6 +117,8 @@ WALL_BOUNCE_ENERGY_LOSS = 0.7
 EPSILON = 1e-6
 ACCELERATION = 3000  # mm/s^2
 KICK_SPEED = 2000
+
+log_line = None
 
 pitch.fill(green)
 
@@ -885,33 +896,89 @@ def blit_frame(frame_surface):
     display.blit(scaled, (0, 0))
     pygame.display.flip()
 
+log_client_error: Optional[Exception] = None
+log_client_stop_event = threading.Event()
 
-if log_provided:
+
+async def connect_to_log_server(addr, stop_event):
+    global log_line, log_client_error
+    retry_delay = 1.0
+    while not stop_event.is_set():
+        try:
+            print(f"[log-client] connecting to ws://{addr} ...")
+            async with websockets.connect(f"ws://{addr}") as websocket:
+                print("[log-client] connected")
+                log_client_error = None
+                async for message in websocket:
+                    log_line = message
+                    if stop_event.is_set():
+                        break
+            if stop_event.is_set():
+                break
+            print("[log-client] connection closed, retrying ...")
+        except Exception as exc:
+            log_client_error = exc
+            if stop_event.is_set():
+                break
+            print(f"[log-client] error: {exc} ; retrying in {retry_delay:.1f}s")
+        await asyncio.sleep(retry_delay)
+    print("[log-client] stopped")
+
+
+def start_log_client(addr, stop_event):
+    def _runner():
+        asyncio.run(connect_to_log_server(addr, stop_event))
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    return thread
+
+def render_line(line_data):
+    x_pos = int(float(line_data[0]))
+    y_pos = int(float(line_data[1]))
+    yaw = float(line_data[2])
+    ball_x = int(float(line_data[3]))
+    ball_y = int(float(line_data[4]))
+    bots = []
+    for i in range(5, len(line_data), 2):
+        bot_x = int(float(line_data[i]))
+        bot_y = int(float(line_data[i + 1]))
+        bots.append((bot_x, bot_y))
+    render_bots = [
+        {"x": x_pos, "y": y_pos, "yaw": yaw, "color": yellow, "draw_geometry": True}
+    ]
+    render_bots.extend(
+        {"x": bot_x, "y": bot_y, "yaw": None, "color": cyan, "draw_geometry": False}
+        for bot_x, bot_y in bots
+    )
+    frame_pitch = build_frame(ball_x, ball_y, render_bots)
+    blit_frame(frame_pitch)
+
+if args.connect:
+    log_client_stop_event.clear()
+    log_thread = start_log_client(args.connect, log_client_stop_event)
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+        if log_line is not None:
+            line_data = log_line.strip().split(",")
+            render_line(line_data)
+            log_line = None
+        clock.tick(FPS)
+    log_client_stop_event.set()
+    log_thread.join(timeout=2.0)
+    pygame.quit()
+    exit()
+elif log_provided:
     for line in lines:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
                 exit()
         line_data = line.strip().split(",")
-        x_pos = int(float(line_data[0]))
-        y_pos = int(float(line_data[1]))
-        yaw = float(line_data[2])
-        ball_x = int(float(line_data[3]))
-        ball_y = int(float(line_data[4]))
-        bots = []
-        for i in range(5, len(line_data), 2):
-            bot_x = int(float(line_data[i]))
-            bot_y = int(float(line_data[i + 1]))
-            bots.append((bot_x, bot_y))
-        render_bots = [
-            {"x": x_pos, "y": y_pos, "yaw": yaw, "color": yellow, "draw_geometry": True}
-        ]
-        render_bots.extend(
-            {"x": bot_x, "y": bot_y, "yaw": None, "color": cyan, "draw_geometry": False}
-            for bot_x, bot_y in bots
-        )
-        frame_pitch = build_frame(ball_x, ball_y, render_bots)
-        blit_frame(frame_pitch)
+        render_line(line_data)
         clock.tick(FPS)
 else:
     ball_x = pitch.get_width() // 2
@@ -921,7 +988,6 @@ else:
 
     team_mode = bool(args.team1 or args.team2)
     bots: List[Bot] = []
-
     if team_mode:
         if args.team1:
             bots.extend(create_team(args.team1, 1))
