@@ -140,6 +140,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
     angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
     rotation = angle_to_ball
     angle_to_ball %= 360
+    angle_error = ((angle_to_ball - yaw + 180) % 360) - 180
     speed = 700
     if yellow:
         if y_pos > 1360:
@@ -162,7 +163,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         elif x_pos > 600 and not ball_captured:
             direction = 180
         else:
-            if dist < 500 and -10 < angle_to_ball - yaw < 10:
+            if dist < 500 and abs(angle_error) < 10:
                 direction = yaw
             elif is_ball_out(ball_x, ball_y):
                 if abs(y_pos - 910) > 5:
@@ -220,7 +221,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         elif x_pos < 1830 and not ball_captured:
             direction = 0
         else:
-            if dist < 500 and -10 < angle_to_ball - yaw < 10:
+            if dist < 500 and abs(angle_error) < 10:
                 direction = yaw
             elif is_ball_out(ball_x, ball_y):
                 if abs(y_pos - 910) > 5:
@@ -351,6 +352,7 @@ def get_coordinates(yaw):
     return x_pos, y_pos
 
 if __name__ == "__main__":
+    import lidar
     from movement import init_motors, move
 
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
