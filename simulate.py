@@ -301,12 +301,39 @@ def resolve_bot_collisions(bot_states):
                 mag_b = math.hypot(dx_b, dy_b)
 
                 if mag_a < EPSILON and mag_b < EPSILON:
-                    bot_a.x, bot_a.y = state_a["prev"]
-                    bot_b.x, bot_b.y = state_b["prev"]
-                    state_a["delta"] = (0.0, 0.0)
-                    state_b["delta"] = (0.0, 0.0)
-                    bot_a.push_speed = 0.0
-                    bot_b.push_speed = 0.0
+                    overlap = BOT_DIAMETER - distance if distance > EPSILON else BOT_DIAMETER
+                    if overlap <= 0:
+                        continue
+                    if distance > EPSILON:
+                        dir_x = dx / distance
+                        dir_y = dy / distance
+                    else:
+                        dir_x, dir_y = 1.0, 0.0
+                    shift = overlap / 2.0
+                    bot_a.x -= dir_x * shift
+                    bot_a.y -= dir_y * shift
+                    bot_b.x += dir_x * shift
+                    bot_b.y += dir_y * shift
+
+                    bot_a.x = max(BOT_MIN_X, min(BOT_MAX_X, bot_a.x))
+                    bot_a.y = max(BOT_MIN_Y, min(BOT_MAX_Y, bot_a.y))
+                    bot_b.x = max(BOT_MIN_X, min(BOT_MAX_X, bot_b.x))
+                    bot_b.y = max(BOT_MIN_Y, min(BOT_MAX_Y, bot_b.y))
+
+                    # If separation pushes into goal hardware, revert to previous positions.
+                    if check_collision_with_goal_lines(bot_a.x, bot_a.y, BOT_RADIUS, GOAL_LINES) or check_collision_with_goal_lines(bot_b.x, bot_b.y, BOT_RADIUS, GOAL_LINES):
+                        bot_a.x, bot_a.y = state_a["prev"]
+                        bot_b.x, bot_b.y = state_b["prev"]
+                        state_a["delta"] = (0.0, 0.0)
+                        state_b["delta"] = (0.0, 0.0)
+                        bot_a.push_speed = 0.0
+                        bot_b.push_speed = 0.0
+                        continue
+
+                    state_a["delta"] = (bot_a.x - state_a["prev"][0], bot_a.y - state_a["prev"][1])
+                    state_b["delta"] = (bot_b.x - state_b["prev"][0], bot_b.y - state_b["prev"][1])
+                    bot_a.push_speed = math.hypot(*state_a["delta"])
+                    bot_b.push_speed = math.hypot(*state_b["delta"])
                     continue
 
                 dot_product = dx_a * dx_b + dy_a * dy_b
