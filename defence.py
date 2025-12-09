@@ -15,6 +15,21 @@ YAW_CORRECT_SPEED = 500 # deg/s
 LIDAR_PORT = "/dev/ttyUSB1"
 LIDAR_BAUDRATE = 460800
 
+# White boundary rectangle taken from simulate.py
+WHITE_MIN_X = 250
+WHITE_MAX_X = 2180
+WHITE_MIN_Y = 250
+WHITE_MAX_Y = 1570
+BALL_RADIUS = 21
+
+def is_ball_out(ball_x, ball_y):
+    closest_x = max(WHITE_MIN_X, min(ball_x, WHITE_MAX_X))
+    closest_y = max(WHITE_MIN_Y, min(ball_y, WHITE_MAX_Y))
+    dx = ball_x - closest_x
+    dy = ball_y - closest_y
+    distance = math.hypot(dx, dy)
+    return distance > BALL_RADIUS
+
 # Inputs: 
 # x_pos: x position of the robot
 # y_pos: y position of the robot
@@ -131,16 +146,33 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
             direction = 270
         elif y_pos < 460:
             direction = 90
+        elif x_pos < 420:
+            direction = 0
         elif x_pos < 300:
             if y_pos < 910:
-                direction = 270
+                if y_pos < 560:
+                    direction = 0
+                else:
+                    direction = 270
             else:
-                direction = 90
+                if y_pos > 1260:
+                    direction = 0
+                else:
+                    direction = 90
         elif x_pos > 600 and not ball_captured:
             direction = 180
         else:
             if dist < 500 and -10 < angle_to_ball - yaw < 10:
                 direction = yaw
+            elif is_ball_out(ball_x, ball_y):
+                if abs(y_pos - 910) > 5:
+                    if y_pos < 910:
+                        direction = 90
+                    else:
+                        direction = 270
+                else:
+                    direction = yaw
+                    speed = 0
             else:
                 if ball_y == 910 or ball_x == 226:
                     dif_x = CYAN_GOAL_CENTRE_X - x_pos
@@ -172,16 +204,33 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
             direction = 270
         elif y_pos < 460:
             direction = 90
+        elif x_pos > 1980:
+            direction = 180
         elif x_pos > 2130:
             if y_pos < 910:
-                direction = 270
+                if y_pos < 560:
+                    direction = 180
+                else:
+                    direction = 270
             else:
-                direction = 90
+                if y_pos > 1260:
+                    direction = 180
+                else:
+                    direction = 90
         elif x_pos < 1830 and not ball_captured:
             direction = 0
         else:
             if dist < 500 and -10 < angle_to_ball - yaw < 10:
                 direction = yaw
+            elif is_ball_out(ball_x, ball_y):
+                if abs(y_pos - 910) > 5:
+                    if y_pos < 910:
+                        direction = 90
+                    else:
+                        direction = 270
+                else:
+                    direction = yaw
+                    speed = 0
             else:
                 if ball_y == 910 or ball_x == 2204:
                     dif_x = YELLOW_GOAL_CENTRE_X - x_pos
