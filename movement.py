@@ -64,14 +64,14 @@ def init_motors():
         setup_motor_count += 1
     return motors, motor_modes
 
-# TODO: Add dynamic yaw correction. Ensure global movement vector is maintained.
-def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, yaw_correct_speed): # degrees, mm/s
-    if 5 < yaw < 180:
-        yaw_correct_speed = -yaw_correct_speed
-    elif 180 <= yaw < 355:
-        yaw_correct_speed = yaw_correct_speed
+def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, lever_arm, max_yaw_rpm, max_rpm, yaw_correct_threshold):
+    yaw_error = ((rotation - yaw + 180) % 360) - 180
+
+    if abs(yaw_error) > yaw_correct_threshold:
+        # Map heading error to a yaw RPM request (60 deg error -> max_yaw_rpm)
+        yaw_correct_rpm_component = max_yaw_rpm * (yaw_error / 60.0)
     else:
-        yaw_correct_speed = 0
+        yaw_correct_rpm_component = 0.0
 
     local_direction = direction - yaw - 45
     a_mult = math.sin(math.radians(local_direction))
@@ -80,16 +80,53 @@ def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, yaw_cor
     d_mult = -math.cos(math.radians(local_direction))
 
     # Values in mm/s
-    a_value = int(a_mult * speed)
-    b_value = int(b_mult * speed)
-    c_value = int(c_mult * speed)
-    d_value = int(d_mult * speed)
+    a_value = a_mult * speed
+    b_value = b_mult * speed
+    c_value = c_mult * speed
+    d_value = d_mult * speed
 
     # Values in rpm
-    a_speed = a_value / (diameter * math.pi) * 60 + yaw_correct_speed
-    b_speed = b_value / (diameter * math.pi) * 60 + yaw_correct_speed
-    c_speed = c_value / (diameter * math.pi) * 60 + yaw_correct_speed
-    d_speed = d_value / (diameter * math.pi) * 60 + yaw_correct_speed
+    mmps_to_rpm = 60.0 / (diameter * math.pi)
+    a_speed = a_value * mmps_to_rpm
+    b_speed = b_value * mmps_to_rpm
+    c_speed = c_value * mmps_to_rpm
+    d_speed = d_value * mmps_to_rpm
+
+    max_trans_rpm = max(abs(a_speed), abs(b_speed), abs(c_speed), abs(d_speed), 1e-6)
+    if max_trans_rpm > max_rpm:
+        scale = max_rpm / max_trans_rpm
+        a_speed *= scale
+        b_speed *= scale
+        c_speed *= scale
+        d_speed *= scale
+
+    # Clamp to max motor rpm
+    yaw_correct_rpm_component = max(min(yaw_correct_rpm_component, max_yaw_rpm), -max_yaw_rpm)
+
+    bounds = []
+    for base, k in ((a_speed, 1), (b_speed, -1), (c_speed, 1), (d_speed, -1)):
+        if k == 1:
+            upper = max_rpm - base
+            lower = -max_rpm - base
+        else:
+            upper = max_rpm + base
+            lower = base - max_rpm
+        bounds.append((lower, upper))
+
+    lower_bound = max(b[0] for b in bounds)
+    upper_bound = min(b[1] for b in bounds)
+    w_cmd = max(min(yaw_correct_rpm_component, upper_bound), lower_bound)
+
+    a_speed += w_cmd
+    c_speed += w_cmd
+    b_speed -= w_cmd
+    d_speed -= w_cmd
+
+    # Clamp between -max_rpm to max_rpm
+    a_speed = max(min(a_speed, max_rpm), -max_rpm)
+    b_speed = max(min(b_speed, max_rpm), -max_rpm)
+    c_speed = max(min(c_speed, max_rpm), -max_rpm)
+    d_speed = max(min(d_speed, max_rpm), -max_rpm)
 
     motors[0].set_speed(motor_modes[0], a_speed)
     motors[1].set_speed(motor_modes[1], b_speed)

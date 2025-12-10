@@ -6,6 +6,8 @@ import asyncio
 import send_log
 
 WHEEL_DIAMETER = 50 # mm
+WHEEL_LEVER_ARM = 100 # mm (distance from center to wheel contact)
+MAX_YAW_RPM = 100
 CYAN_GOAL_CENTRE_X = 400
 YELLOW_GOAL_CENTRE_X = 1980
 GOAL_CENTRE_Y = 910
@@ -13,7 +15,7 @@ YELLOW_GOAL_BACK_X = 226
 GOAL_BACK_Y_MIN = 700
 GOAL_BACK_Y_MAX = 1125
 CYAN_GOAL_BACK_X = 2204
-YAW_CORRECT_SPEED = 500 # deg/s
+MAX_MOTOR_RPM = 400
 LIDAR_PORT = "/dev/ttyUSB1"
 LIDAR_BAUDRATE = 460800
 
@@ -23,6 +25,8 @@ WHITE_MAX_X = 2180
 WHITE_MIN_Y = 250
 WHITE_MAX_Y = 1570
 BALL_RADIUS = 21
+
+YAW_CORRECT_THRESHOLD = 3 # deg
 
 def is_ball_out(ball_x, ball_y):
     closest_x = max(WHITE_MIN_X, min(ball_x, WHITE_MAX_X))
@@ -416,5 +420,5 @@ if __name__ == "__main__":
             ball_captured,
             steering_state=steering_state,
         )
-        move(direction, speed, rotation, yaw, motors, motor_modes, WHEEL_DIAMETER, YAW_CORRECT_SPEED)
+        move(direction, speed, rotation, yaw, motors, motor_modes, WHEEL_DIAMETER, WHEEL_LEVER_ARM, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
 
