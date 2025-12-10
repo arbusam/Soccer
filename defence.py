@@ -1,12 +1,14 @@
 import math
 import time
 import numpy as np
+import asyncio
+
+import send_log
 
 WHEEL_DIAMETER = 50 # mm
 CYAN_GOAL_CENTRE_X = 400
-CYAN_GOAL_CENTRE_Y = 910
 YELLOW_GOAL_CENTRE_X = 1980
-YELLOW_GOAL_CENTRE_Y = 910
+GOAL_CENTRE_Y = 910
 YELLOW_GOAL_BACK_X = 226
 GOAL_BACK_Y_MIN = 700
 GOAL_BACK_Y_MAX = 1125
@@ -44,6 +46,7 @@ def is_ball_out(ball_x, ball_y):
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
 # steering_state: caller-provided flag indicating if this bot is currently steering
+# kick: True if the bot wants to kick the ball
 def defence(
     x_pos,
     y_pos,
@@ -54,6 +57,16 @@ def defence(
     ball_captured=False,
     steering_state=False,
 ):
+    if ball_x is None or ball_y is None:
+        target_x = 1215
+        target_y = 910
+        vector = (target_x - x_pos), (target_y - y_pos)
+        direction = math.degrees(math.atan2(vector[1], vector[0]))
+        speed = 600
+        rotation = 0 if yellow else 180
+        steering = False
+        kick = False
+        return direction, speed, rotation, steering, kick
     steering = bool(steering_state)
     if yellow:
         vector = (ball_x - x_pos), (ball_y - y_pos)
@@ -130,7 +143,18 @@ def defence(
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
+# kick: True if the bot wants to kick the ball
 def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
+    if ball_x is None or ball_y is None:
+        target_x = YELLOW_GOAL_CENTRE_X if yellow else CYAN_GOAL_CENTRE_X
+        target_y = GOAL_CENTRE_Y
+        vector = (target_x - x_pos), (target_y - y_pos)
+        direction = math.degrees(math.atan2(vector[1], vector[0]))
+        speed = 600
+        rotation = 0 if yellow else 180
+        steering = False
+        kick = False
+        return direction, speed, rotation, steering, kick
     if yellow:
         vector = (ball_x - x_pos), (ball_y - y_pos)
     else:
@@ -163,9 +187,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         elif x_pos > 600 and not ball_captured:
             direction = 180
         else:
-            if dist < 500 and abs(angle_error) < 10:
-                direction = yaw
-            elif is_ball_out(ball_x, ball_y):
+            if is_ball_out(ball_x, ball_y):
                 if abs(y_pos - 910) > 5:
                     if y_pos < 910:
                         direction = 90
@@ -174,13 +196,15 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
                 else:
                     direction = yaw
                     speed = 0
+            elif dist < 500 and abs(angle_error) < 10:
+                direction = yaw
             else:
                 if ball_y == 910 or ball_x == 226:
                     dif_x = CYAN_GOAL_CENTRE_X - x_pos
-                    dif_y = CYAN_GOAL_CENTRE_Y - y_pos
+                    dif_y = GOAL_CENTRE_Y - y_pos
                     direction = math.degrees(math.atan2(dif_y, dif_x))
                 else:
-                    ball_gradient = (CYAN_GOAL_CENTRE_Y - ball_y) / (226 - ball_x)
+                    ball_gradient = (GOAL_CENTRE_Y - ball_y) / (226 - ball_x)
                     ball_line_c = ball_y - (ball_gradient * ball_x)
                     bot_gradient = -1 / ball_gradient
                     bot_line_c = y_pos - (bot_gradient * x_pos)
@@ -221,9 +245,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
         elif x_pos < 1830 and not ball_captured:
             direction = 0
         else:
-            if dist < 500 and abs(angle_error) < 10:
-                direction = yaw
-            elif is_ball_out(ball_x, ball_y):
+            if is_ball_out(ball_x, ball_y):
                 if abs(y_pos - 910) > 5:
                     if y_pos < 910:
                         direction = 90
@@ -232,13 +254,15 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
                 else:
                     direction = yaw
                     speed = 0
+            elif dist < 500 and abs(angle_error) < 10:
+                direction = yaw
             else:
                 if ball_y == 910 or ball_x == 2204:
                     dif_x = YELLOW_GOAL_CENTRE_X - x_pos
-                    dif_y = YELLOW_GOAL_CENTRE_Y - y_pos
+                    dif_y = GOAL_CENTRE_Y - y_pos
                     direction = math.degrees(math.atan2(dif_y, dif_x))
                 else:
-                    ball_gradient = (YELLOW_GOAL_CENTRE_Y - ball_y) / (2204 - ball_x)
+                    ball_gradient = (GOAL_CENTRE_Y - ball_y) / (2204 - ball_x)
                     ball_line_c = ball_y - (ball_gradient * ball_x)
                     bot_gradient = -1 / ball_gradient
                     bot_line_c = y_pos - (bot_gradient * x_pos)
@@ -355,6 +379,9 @@ if __name__ == "__main__":
     import lidar
     from movement import init_motors, move
 
+    server_task = asyncio.create_task(send_log.init_server())
+    time.sleep(0.05)
+
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
         lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
@@ -374,10 +401,11 @@ if __name__ == "__main__":
         # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
         yaw = 0
         x_pos, y_pos = get_coordinates(yaw)
-        ball_x = 0
-        ball_y = 0
+        ball_x = None
+        ball_y = None
         yellow = True
         ball_captured = False
+        send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
         direction, speed, rotation, steering_state, _ = defence(
             x_pos,
             y_pos,

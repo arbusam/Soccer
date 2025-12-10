@@ -184,6 +184,19 @@ RED_DURATION_MS = 1000
 BOT_DIAMETER = BOT_RADIUS * 2
 
 
+def parse_optional_float(token: Optional[str]) -> Optional[float]:
+    """Return float(token) or None if token is missing/None/empty/'None'."""
+    if token is None:
+        return None
+    token = token.strip()
+    if token == "" or token.lower() == "none":
+        return None
+    try:
+        return float(token)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class Bot:
     x: float
@@ -961,16 +974,34 @@ def start_log_client(addr, stop_event):
     return thread
 
 def render_line(line_data):
-    x_pos = int(float(line_data[0]))
-    y_pos = int(float(line_data[1]))
-    yaw = float(line_data[2])
-    ball_x = int(float(line_data[3]))
-    ball_y = int(float(line_data[4]))
+    tokens = list(line_data)
+    if len(tokens) < 3:
+        return
+
+    x_raw = parse_optional_float(tokens[0])
+    y_raw = parse_optional_float(tokens[1])
+    yaw_raw = parse_optional_float(tokens[2])
+
+    if x_raw is None or y_raw is None or yaw_raw is None:
+        return
+
+    x_pos = int(x_raw)
+    y_pos = int(y_raw)
+    yaw = float(yaw_raw)
+
+    ball_x_raw = parse_optional_float(tokens[3]) if len(tokens) > 3 else None
+    ball_y_raw = parse_optional_float(tokens[4]) if len(tokens) > 4 else None
+    ball_x = int(ball_x_raw) if ball_x_raw is not None else CENTRE_POINT[0]
+    ball_y = int(ball_y_raw) if ball_y_raw is not None else CENTRE_POINT[1]
+
     bots = []
-    for i in range(5, len(line_data), 2):
-        bot_x = int(float(line_data[i]))
-        bot_y = int(float(line_data[i + 1]))
-        bots.append((bot_x, bot_y))
+    for i in range(5, len(tokens), 2):
+        bot_x_raw = parse_optional_float(tokens[i])
+        bot_y_raw = parse_optional_float(tokens[i + 1]) if i + 1 < len(tokens) else None
+        if bot_x_raw is None or bot_y_raw is None:
+            continue
+        bots.append((int(bot_x_raw), int(bot_y_raw)))
+
     render_bots = [
         {"x": x_pos, "y": y_pos, "yaw": yaw, "color": yellow, "draw_geometry": True}
     ]
