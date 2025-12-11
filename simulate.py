@@ -1,5 +1,6 @@
 import argparse
 import math
+import queue
 import random
 import sys
 from dataclasses import dataclass, field
@@ -938,10 +939,13 @@ def blit_frame(frame_surface):
 
 log_client_error: Optional[Exception] = None
 log_client_stop_event = threading.Event()
+log_client_websocket: Optional[websockets.WebSocketClientProtocol] = None
+# Thread-safe queue for ball clicks (main thread -> async thread)
+ball_click_queue: Optional[queue.Queue] = None
 
 
-async def connect_to_log_server(addr, stop_event):
-    global log_line, log_client_error
+async def connect_to_log_server(addr, stop_event, click_queue):
+    global log_line, log_client_error, log_client_websocket
     retry_delay = 1.0
     while not stop_event.is_set():
         try:
@@ -949,29 +953,66 @@ async def connect_to_log_server(addr, stop_event):
             async with websockets.connect(f"ws://{addr}") as websocket:
                 print("[log-client] connected")
                 log_client_error = None
-                async for message in websocket:
-                    log_line = message
-                    if stop_event.is_set():
-                        break
+                log_client_websocket = websocket
+
+                async def receive_messages():
+                    global log_line
+                    try:
+                        async for message in websocket:
+                            log_line = message
+                            if stop_event.is_set():
+                                break
+                    except websockets.ConnectionClosed:
+                        pass
+
+                async def send_clicks():
+                    while not stop_event.is_set():
+                        try:
+                            # Non-blocking check of thread-safe queue
+                            click_msg = click_queue.get_nowait()
+                            await websocket.send(click_msg)
+                        except queue.Empty:
+                            await asyncio.sleep(0.05)
+                        except websockets.ConnectionClosed:
+                            break
+
+                await asyncio.gather(receive_messages(), send_clicks())
+
+            log_client_websocket = None
             if stop_event.is_set():
                 break
             print("[log-client] connection closed, retrying ...")
         except Exception as exc:
             log_client_error = exc
+            log_client_websocket = None
             if stop_event.is_set():
                 break
             print(f"[log-client] error: {exc} ; retrying in {retry_delay:.1f}s")
         await asyncio.sleep(retry_delay)
+    log_client_websocket = None
     print("[log-client] stopped")
 
 
 def start_log_client(addr, stop_event):
+    global ball_click_queue
+    ball_click_queue = queue.Queue()
+
     def _runner():
-        asyncio.run(connect_to_log_server(addr, stop_event))
+        asyncio.run(connect_to_log_server(addr, stop_event, ball_click_queue))
 
     thread = threading.Thread(target=_runner, daemon=True)
     thread.start()
     return thread
+
+
+def send_ball_click(x: float, y: float):
+    """Queue a ball position to be sent to the server."""
+    global ball_click_queue
+    if ball_click_queue is not None:
+        try:
+            ball_click_queue.put_nowait(f"ball:{x},{y}")
+        except queue.Full:
+            pass
 
 def render_line(line_data):
     tokens = list(line_data)
@@ -1020,6 +1061,13 @@ if args.connect:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                # Send clicked position as ball position to the server
+                mouse_x, mouse_y = pygame.mouse.get_pos()
+                # Scale from display coordinates to pitch coordinates
+                ball_x = mouse_x * 2
+                ball_y = mouse_y * 2
+                send_ball_click(ball_x, ball_y)
         if log_line is not None:
             line_data = log_line.strip().split(",")
             render_line(line_data)

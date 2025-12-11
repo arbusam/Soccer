@@ -8,6 +8,9 @@ latest_log: str | None = None  # only ever keep the newest log
 new_log_event: asyncio.Event = asyncio.Event()
 clients: set[websockets.WebSocketServerProtocol] = set()
 
+# Ball position received from clients (e.g., from mouse clicks in simulate.py)
+ball_position: tuple[float | None, float | None] = (None, None)
+
 async def send_log():
     while True:
         await new_log_event.wait()
@@ -22,11 +25,28 @@ async def send_log():
             )
 
 async def handle_client(ws, path=None):
+    global ball_position
     clients.add(ws)
     try:
-        await ws.wait_closed()
+        async for message in ws:
+            # Expect messages in format "ball:x,y"
+            if message.startswith("ball:"):
+                try:
+                    coords = message[5:].split(",")
+                    x = float(coords[0])
+                    y = float(coords[1])
+                    ball_position = (x, y)
+                except (ValueError, IndexError):
+                    pass
+    except websockets.ConnectionClosed:
+        pass
     finally:
         clients.discard(ws)
+
+
+def get_ball_position() -> tuple[float | None, float | None]:
+    """Return the current ball position as set by clients."""
+    return ball_position
 
 def update_latest_log(log: str) -> None:
     global latest_log

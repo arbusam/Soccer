@@ -405,8 +405,7 @@ if __name__ == "__main__":
         # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
         yaw = 0
         x_pos, y_pos = get_coordinates(yaw)
-        ball_x = None
-        ball_y = None
+        ball_x, ball_y = send_log.get_ball_position()
         yellow = True
         ball_captured = False
         send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
