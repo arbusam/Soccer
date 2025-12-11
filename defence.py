@@ -379,6 +379,25 @@ def get_coordinates(yaw):
 
     return x_pos, y_pos
 
+def _prompt_i2c_addresses():
+    print("Please enter the number of motor drivers you want to control:")
+    tempuint32 = int(input())
+    if tempuint32 == 0 or tempuint32 > 8:
+        print("Error motor count out of range, please reboot microcontroller to try again.")
+        quit()
+
+    addresses = []
+    setup_motor_count = 0
+    while setup_motor_count < tempuint32:
+        print(f"Please enter the i2c address of motor driver number {setup_motor_count}:")
+        address = int(input())
+        if address <= 7 or address >= 120:
+            print("Error invalid i2c address, please reboot microcontroller to try again.")
+            quit()
+        addresses.append(address)
+        setup_motor_count += 1
+    return addresses
+
 if __name__ == "__main__":
     import lidar
     from movement import init_motors, move
@@ -399,7 +418,7 @@ if __name__ == "__main__":
     while not lidar.is_scan_ready():
         time.sleep(0.1)
 
-    motors, motor_modes = init_motors()
+    motors, motor_modes = init_motors(_prompt_i2c_addresses())
     steering_state = False
     while True:
         # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
