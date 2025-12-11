@@ -7,34 +7,33 @@ import busio
 
 i2c = busio.I2C(board.SCL, board.SDA)
 
-def init_motors():
-    motors = [None] * 8
-    motor_modes = [None] * 8
-    print("Please enter the number of motor drivers you want to control:")
-    tempuint32 = int(input())
-    if tempuint32 == 0 or tempuint32 > 8:
+def init_motors(i2c_addresses):
+    try:
+        normalized_addresses = [int(addr) for addr in i2c_addresses]
+    except (TypeError, ValueError):
+        print("Error invalid i2c address list, please verify inputs and try again.")
+        quit()
+
+    motor_count = len(normalized_addresses)
+    if motor_count == 0 or motor_count > 8:
         print("Error motor count out of range, please reboot microcontroller to try again.")
         quit()
-    motor_count = tempuint32
 
-    setup_motor_count = 0
-    while setup_motor_count < motor_count:
-        print(f"Please enter the i2c address of motor driver number {setup_motor_count}:")
-        tempuint32 = int(input())
-        if tempuint32 <= 7 or tempuint32 >= 120:
+    motors = [None] * 8
+    motor_modes = [None] * 8
+
+    for setup_motor_count, address in enumerate(normalized_addresses):
+        if address <= 7 or address >= 120:
             print("Error invalid i2c address, please reboot microcontroller to try again.")
             quit()
-        motors[setup_motor_count] = PowerfulBLDCDriver(i2c, tempuint32)
+        motors[setup_motor_count] = PowerfulBLDCDriver(i2c, address)
         
         print(f"The firmware version of motor driver number {setup_motor_count} is: {motors[setup_motor_count].get_firmware_version()}")
         if motors[setup_motor_count].get_firmware_version() != 3:
             print("Error unsupported motor driver version, please check for updates, maybe check wiring and i2c configuration, reboot microcontroller to try again.")
             quit()
 
-        setup_motor_count += 1
-
-    setup_motor_count = 0
-    while setup_motor_count < motor_count:
+    for setup_motor_count in range(motor_count):
         motors[setup_motor_count].set_current_limit_foc(65536)  # set current limit to 1 amp (only works in FOC mode)
         motors[setup_motor_count].set_id_pid_constants(1500, 200)
         motors[setup_motor_count].set_iq_pid_constants(1500, 200)
@@ -60,8 +59,6 @@ def init_motors():
         motors[setup_motor_count].configure_operating_mode_and_sensor(3, 1)  # configure FOC mode and sin/cos encoder
         motors[setup_motor_count].configure_command_mode(12)  # configure speed command mode
         motor_modes[setup_motor_count] = 12
-        
-        setup_motor_count += 1
     return motors, motor_modes
 
 def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, lever_arm, max_yaw_rpm, max_rpm, yaw_correct_threshold):
@@ -138,5 +135,24 @@ def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, lever_a
     
     print(motors[0].get_speed_QDR())
 
+def _prompt_i2c_addresses():
+    print("Please enter the number of motor drivers you want to control:")
+    tempuint32 = int(input())
+    if tempuint32 == 0 or tempuint32 > 8:
+        print("Error motor count out of range, please reboot microcontroller to try again.")
+        quit()
+
+    addresses = []
+    setup_motor_count = 0
+    while setup_motor_count < tempuint32:
+        print(f"Please enter the i2c address of motor driver number {setup_motor_count}:")
+        address = int(input())
+        if address <= 7 or address >= 120:
+            print("Error invalid i2c address, please reboot microcontroller to try again.")
+            quit()
+        addresses.append(address)
+        setup_motor_count += 1
+    return addresses
+
 if __name__ == "__main__":
-    init_motors()
+    init_motors(_prompt_i2c_addresses())
