@@ -31,7 +31,7 @@
 #endif
 
 // Configuration
-#define SERIAL_PORT "/dev/ttyUSB1"
+#define SERIAL_PORT "/dev/ttyUSB0"
 #define BAUDRATE 460800
 
 // Window settings
