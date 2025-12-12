@@ -14,7 +14,7 @@ def main():
     print("=" * 40)
     
     # Initialize LIDAR
-    lidar_port = "/dev/ttyUSB1"
+    lidar_port = "/dev/ttyUSB0"
     lidar_baudrate = 460800
     print(f"Initializing LIDAR on {lidar_port} at {lidar_baudrate} baud...")
     try:
