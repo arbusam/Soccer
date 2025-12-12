@@ -402,7 +402,8 @@ if __name__ == "__main__":
     import lidar
     from movement import init_motors, move
 
-    server_task = asyncio.create_task(send_log.init_server())
+    # Start websocket log server in the background (it runs its own asyncio loop).
+    send_log.start_server_background()
     time.sleep(0.05)
 
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
