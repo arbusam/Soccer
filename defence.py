@@ -1,7 +1,6 @@
 import math
 import time
 import numpy as np
-import asyncio
 
 import send_log
 
