@@ -3,7 +3,7 @@ import send_log
 
 
 async def main():
-    server_task = asyncio.create_task(send_log.init_server())
+    server_thread = send_log.start_server_background()
     await asyncio.sleep(0.05)
 
     try:
@@ -12,11 +12,9 @@ async def main():
                 send_log.update_latest_log(line)
                 await asyncio.sleep(0.1)
     finally:
-        server_task.cancel()
-        try:
-            await server_task
-        except asyncio.CancelledError:
-            pass
+        # Server runs in a background thread/event-loop and is daemonized by default.
+        # Nothing to await/cancel here.
+        _ = server_thread
 
 
 if __name__ == "__main__":
