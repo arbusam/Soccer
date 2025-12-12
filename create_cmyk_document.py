@@ -28,7 +28,7 @@ def build_pdf_bytes() -> bytes:
         return content
 
     obj(b"<< /Type /Catalog /Pages 2 0 R >>")
-    obj(f"<< /Type /Pages /Count 2 /Kids [3 0 R 5 0 R] >>".encode())
+    obj("<< /Type /Pages /Count 2 /Kids [3 0 R 5 0 R] >>".encode())
     obj(
         f"<< /Type /Page /Parent 2 0 R /MediaBox {media_box} /Resources <<>> "
         f"/Contents 4 0 R >>".encode()
