@@ -16,7 +16,7 @@ GOAL_BACK_Y_MIN = 700
 GOAL_BACK_Y_MAX = 1125
 CYAN_GOAL_BACK_X = 2204
 MAX_MOTOR_RPM = 400
-LIDAR_PORT = "/dev/ttyUSB1"
+LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
 # White boundary rectangle taken from simulate.py
