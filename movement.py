@@ -125,10 +125,10 @@ def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, lever_a
     c_speed = max(min(c_speed, max_rpm), -max_rpm)
     d_speed = max(min(d_speed, max_rpm), -max_rpm)
 
-    motors[0].set_speed(motor_modes[0], a_speed)
-    motors[1].set_speed(motor_modes[1], b_speed)
-    motors[2].set_speed(motor_modes[2], c_speed)
-    motors[3].set_speed(motor_modes[3], d_speed)
+    motors[0].set_speed(a_speed)
+    motors[1].set_speed(b_speed)
+    motors[2].set_speed(c_speed)
+    motors[3].set_speed(d_speed)
 
     for motor in motors:
         motor.update_quick_data_readout()
