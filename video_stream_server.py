@@ -16,7 +16,6 @@ from flask import Flask, Response, render_template_string
 from picamera2 import Picamera2
 from PIL import Image
 import io
-import time
 
 app = Flask(__name__)
 
