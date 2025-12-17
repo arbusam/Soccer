@@ -16,6 +16,9 @@ from flask import Flask, Response, render_template_string
 from picamera2 import Picamera2
 from PIL import Image
 import io
+import os
+import numpy as np
+import cv2 as cv
 
 app = Flask(__name__)
 
@@ -29,12 +32,52 @@ camera_config = picam2.create_video_configuration(
 picam2.configure(camera_config)
 picam2.start()
 
+# Load calibration data if available
+CALIBRATION_FILE = "calibration_data.npz"
+calibration = None
+new_camera_mtx = None
+roi = None
+
+if os.path.exists(CALIBRATION_FILE):
+    try:
+        data = np.load(CALIBRATION_FILE, allow_pickle=True)
+        calibration = {
+            "mtx": data["mtx"],
+            "dist": data["dist"],
+        }
+        print(f"Loaded calibration data from {CALIBRATION_FILE}")
+    except Exception as exc:
+        print(f"Warning: Failed to load calibration data: {exc}")
+else:
+    print(f"Calibration file '{CALIBRATION_FILE}' not found. Streaming without undistortion.")
+
 
 def generate_frames():
     """Generator function that yields video frames."""
+    global calibration, new_camera_mtx, roi
     while True:
         # Capture frame from camera (using lores stream for better performance)
         frame = picam2.capture_array("lores")
+
+        # Apply undistortion if calibration is available
+        if calibration is not None:
+            if new_camera_mtx is None or roi is None:
+                h, w = frame.shape[:2]
+                new_mtx, region = cv.getOptimalNewCameraMatrix(
+                    calibration["mtx"],
+                    calibration["dist"],
+                    (w, h),
+                    1,
+                    (w, h),
+                )
+                new_camera_mtx = new_mtx
+                roi = region
+
+            undistorted = cv.undistort(
+                frame, calibration["mtx"], calibration["dist"], None, new_camera_mtx
+            )
+            x, y, w, h = roi
+            frame = undistorted[y : y + h, x : x + w]
         
         # Convert numpy array to JPEG bytes
         img = Image.fromarray(frame)
