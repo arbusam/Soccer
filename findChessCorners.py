@@ -1,37 +1,69 @@
 import numpy as np
 import cv2 as cv
 import glob
+import os
 
-# termination criteria
-criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+# Calibration file path
+CALIBRATION_FILE = 'calibration_data.npz'
 
-# prepare object points, like (0,0,0), (1,0,0), (2,0,0) ....,(6,5,0)
-objp = np.zeros((6*7,3), np.float32)
-objp[:,:2] = np.mgrid[0:7,0:6].T.reshape(-1,2)
+# Check if calibration file already exists
+if os.path.exists(CALIBRATION_FILE):
+    print("Loading calibration data from file...")
+    calibration_data = np.load(CALIBRATION_FILE, allow_pickle=True)
+    mtx = calibration_data['mtx']
+    dist = calibration_data['dist']
+    rvecs = calibration_data['rvecs']
+    tvecs = calibration_data['tvecs']
+    print("Calibration data loaded successfully")
+    print("Camera matrix:\n", mtx)
+    print("Distortion coefficients:\n", dist)
+else:
+    print("Calibration file not found. Performing calibration...")
+    
+    # termination criteria
+    criteria = (cv.TERM_CRITERIA_EPS + cv.TERM_CRITERIA_MAX_ITER, 30, 0.001)
 
-# Arrays to store object points and image points from all the images.
-objpoints = [] # 3d point in real world space
-imgpoints = [] # 2d points in image plane.
+    # prepare object points, like (0,0,0), (1,0,0), (2,0,0) ....,(6,5,0)
+    grid_size = (9, 6)
+    objp = np.zeros((grid_size[0] * grid_size[1], 3), np.float32)
+    objp[:, :2] = np.mgrid[0:grid_size[0], 0:grid_size[1]].T.reshape(-1, 2)
 
-images = glob.glob('*.jpg')
+    # Arrays to store object points and image points from all the images.
+    objpoints = [] # 3d point in real world space
+    imgpoints = [] # 2d points in image plane.
 
-for fname in images:
-    img = cv.imread(fname)
-    gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+    images = glob.glob('chess/*.jpg')
 
-    # Find the chess board corners
-    ret, corners = cv.findChessboardCorners(gray, (7,6), None)
+    for fname in images:
+        img = cv.imread(fname)
+        gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
 
-    # If found, add object points, image points (after refining them)
-    if ret:
-        objpoints.append(objp)
+        # Find the chess board corners
+        ret, corners = cv.findChessboardCorners(gray, grid_size, None)
 
-        corners2 = cv.cornerSubPix(gray,corners, (11,11), (-1,-1), criteria)
-        imgpoints.append(corners2)
+        # If found, add object points, image points (after refining them)
+        if ret:
+            objpoints.append(objp)
 
-        # Draw and display the corners
-        cv.drawChessboardCorners(img, (7,6), corners2, ret)
-        cv.imshow('img', img)
-        cv.waitKey(500)
+            corners2 = cv.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+            imgpoints.append(corners2)
+
+            # Draw and display the corners
+            cv.drawChessboardCorners(img, grid_size, corners2, ret)
+
+    if objpoints:
+        ret, mtx, dist, rvecs, tvecs = cv.calibrateCamera(objpoints, imgpoints, gray.shape[::-1], None, None)
+        if ret:
+            print("Calibration successful")
+            print("Camera matrix:\n", mtx)
+            print("Distortion coefficients:\n", dist)
+            
+            # Save calibration results to file
+            np.savez(CALIBRATION_FILE, mtx=mtx, dist=dist, rvecs=rvecs, tvecs=tvecs)
+            print(f"Calibration data saved to {CALIBRATION_FILE}")
+        else:
+            print("Calibration failed")
+    else:
+        print("No corners found in any images. Check the grid_size and image paths.")
 
 cv.destroyAllWindows()
