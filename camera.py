@@ -10,6 +10,7 @@ import os
 import json
 import threading
 import asyncio
+import math
 
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
@@ -28,6 +29,9 @@ class Camera:
         self.output = self.StreamingOutput()
         self.server = None
         self.user_callback = None
+        
+        # Enable color detection callback by default
+        self.picam2.pre_callback = self._proxy_callback
 
         # # print camera modes
         # print(self.picam2.sensor_modes)
@@ -89,7 +93,38 @@ class Camera:
         with MappedArray(request, "main") as m:
             # Convert the image to HSV
             hsv = cv2.cvtColor(m.array, cv2.COLOR_BGR2HSV)
+
+            # # Print the colour of the pixel at the center of the image
+            # print(hsv[m.array.shape[0] // 2, m.array.shape[1] // 2])
             
+            # # Draw a small crosshair in the center of the image
+            # cv2.line(m.array, (m.array.shape[1] // 2, m.array.shape[0] // 2 - 10), (m.array.shape[1] // 2, m.array.shape[0] // 2 + 10), (0, 0, 255), 2)
+            # cv2.line(m.array, (m.array.shape[1] // 2 - 10, m.array.shape[0] // 2), (m.array.shape[1] // 2 + 10, m.array.shape[0] // 2), (0, 0, 255), 2)
+
+            redLowerBound = (0, 185, 140)
+            redUpperBound = (10, 210, 200)
+
+            redMask = cv2.inRange(hsv, redLowerBound, redUpperBound)
+            redContours, _ = cv2.findContours(redMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in redContours:
+                area = cv2.contourArea(contour)
+                if area > 200:
+                    x, y, w, h = cv2.boundingRect(contour)
+                    cv2.drawContours(m.array, [contour], -1, (0, 0, 255), 2)
+            # print(redContours)
+            biggestContour = max(redContours, key=cv2.contourArea) if redContours else None
+            if biggestContour is not None:
+                x, y, w, h = cv2.boundingRect(biggestContour)
+                cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 0, 255), 2)
+            
+                biggestContourAreaCentre = (x + w // 2, y + h // 2)
+                
+                # Find the bearing of biggestContourAreaCentre from the centre of the image
+                bearing = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
+                bearing = math.degrees(bearing)
+                print(bearing)
+                
+
             # Call the user-specified callback with both the original and HSV arrays
             if self.user_callback:
                 self.user_callback(m.array, hsv)
