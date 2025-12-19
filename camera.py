@@ -2,12 +2,8 @@ import io
 import logging
 import socketserver
 from http import server
-from threading import Condition, Thread, Lock
-import time
+from threading import Condition
 import cv2
-import numpy as np
-import os
-import json
 import threading
 import asyncio
 import math
