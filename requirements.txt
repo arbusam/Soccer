@@ -5,3 +5,4 @@ git+https://github.com/Aw3someAndrew/SteelBar_CircuitPython_powerful_bldc_driver
 numpy
 websockets
 smbus2
+picamera2
