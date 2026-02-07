@@ -61,7 +61,7 @@ def init_motors(i2c_addresses):
         motor_modes[setup_motor_count] = 12
     return motors, motor_modes
 
-def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, lever_arm, max_yaw_rpm, max_rpm, yaw_correct_threshold):
+def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold):
     yaw_error = ((rotation - yaw + 180) % 360) - 180
 
     if abs(yaw_error) > yaw_correct_threshold:
