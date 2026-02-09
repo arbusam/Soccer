@@ -49,7 +49,7 @@ def _stop_all(motors) -> None:
 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description="Run motors forward at a fixed RPM until Enter is pressed.")
-    parser.add_argument("--rpm", type=int, default=100, help="Motor RPM to command (default: 100).")
+    parser.add_argument("--rpm", type=int, default=100000, help="Motor RPM to command (default: 100).")
     args = parser.parse_args(argv)
 
     motors, _motor_modes = init_motors(_prompt_i2c_addresses())

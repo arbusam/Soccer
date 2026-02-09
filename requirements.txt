@@ -6,3 +6,4 @@ numpy
 websockets
 smbus2
 picamera2
+adafruit-blinka
