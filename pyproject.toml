@@ -1,2 +1,2 @@
 [tool.ruff]
-extend-exclude = ["motor_driver.py"]
+extend-exclude = []
