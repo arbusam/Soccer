@@ -1,13 +1,17 @@
+import json
 import math
+import os
 import sys
-import time 
+import time
 from steelbar_powerful_bldc_driver import PowerfulBLDCDriver
 import board
 import busio
 
 i2c = busio.I2C(board.SCL, board.SDA)
 
-def init_motors(i2c_addresses):
+
+def get_motors_for_calibration(i2c_addresses):
+    """Create motor drivers and set PID/limits (no calibration or FOC). Returns (motors, motor_count, normalized_addresses)."""
     try:
         normalized_addresses = [int(addr) for addr in i2c_addresses]
     except (TypeError, ValueError):
@@ -20,14 +24,11 @@ def init_motors(i2c_addresses):
         quit()
 
     motors = [None] * 8
-    motor_modes = [None] * 8
-
     for setup_motor_count, address in enumerate(normalized_addresses):
         if address <= 7 or address >= 120:
             print("Error invalid i2c address, please reboot microcontroller to try again.")
             quit()
         motors[setup_motor_count] = PowerfulBLDCDriver(i2c, address)
-        
         print(f"The firmware version of motor driver number {setup_motor_count} is: {motors[setup_motor_count].get_firmware_version()}")
         if motors[setup_motor_count].get_firmware_version() != 3:
             print("Error unsupported motor driver version, please check for updates, maybe check wiring and i2c configuration, reboot microcontroller to try again.")
@@ -37,29 +38,64 @@ def init_motors(i2c_addresses):
         motors[setup_motor_count].set_current_limit_foc(65536)  # set current limit to 1 amp (only works in FOC mode)
         motors[setup_motor_count].set_id_pid_constants(1500, 200)
         motors[setup_motor_count].set_iq_pid_constants(1500, 200)
-        motors[setup_motor_count].set_speed_pid_constants(4e-2, 4e-4, 3e-2)  # Constants valid for FOC and Robomaster M2006 P36 motor only, see tuning constants document for more details
+        motors[setup_motor_count].set_speed_pid_constants(4e-2, 4e-4, 3e-2)  # Constants valid for FOC and Robomaster M2006 P36 motor only
         motors[setup_motor_count].set_position_pid_constants(275, 0, 0)
         motors[setup_motor_count].set_position_region_boundary(250000)
         motors[setup_motor_count].set_speed_limit(10000000)
-        
-        motors[setup_motor_count].configure_operating_mode_and_sensor(15, 1)  # configure calibration mode and sin/cos encoder
-        motors[setup_motor_count].configure_command_mode(15)  # configure calibration mode
-        motors[setup_motor_count].set_calibration_options(300, 2097152, 50000, 500000)  # set calibration voltage to 300/3399*vcc volts, speed to 2097152/65536 elecangle/s, settling time to 50000/50000 seconds, calibration time to 500000/50000 seconds
-        
-        motors[setup_motor_count].start_calibration()  # start the calibration
-        print(f"Starting calibration of motor {setup_motor_count}")
-        while not motors[setup_motor_count].is_calibration_finished():  # wait for the calibration to finish, do not call any other motor driver functions while calibration is ongoing
-            print(".", end="")
-            sys.stdout.flush()
-            time.sleep(0.5)
-        print()  # print out the calibration results
-        print(f"ELECANGLEOFFSET: {motors[setup_motor_count].get_calibration_ELECANGLEOFFSET()}")
-        print(f"SINCOSCENTRE: {motors[setup_motor_count].get_calibration_SINCOSCENTRE()}")
+    return motors, motor_count, normalized_addresses
 
+
+def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
+    motors, motor_count, normalized_addresses = get_motors_for_calibration(i2c_addresses)
+    motor_modes = [None] * 8
+
+    if not os.path.isfile(calibration_file):
+        print(f"Error: calibration file '{calibration_file}' not found. Run calibrate.py first to create it.")
+        quit()
+
+    with open(calibration_file) as f:
+        cal_data = json.load(f)
+    if len(cal_data["motors"]) < motor_count:
+        print(f"Error: calibration file has {len(cal_data['motors'])} motor(s), but {motor_count} motor(s) were requested.")
+        quit()
+    for setup_motor_count in range(motor_count):
+        motor_cal = cal_data["motors"][setup_motor_count]
+        motors[setup_motor_count].set_ELECANGLEOFFSET(motor_cal["elecangleoffset"])
+        motors[setup_motor_count].set_SINCOSCENTRE(motor_cal["sincoscentre"])
         motors[setup_motor_count].configure_operating_mode_and_sensor(3, 1)  # configure FOC mode and sin/cos encoder
         motors[setup_motor_count].configure_command_mode(12)  # configure speed command mode
         motor_modes[setup_motor_count] = 12
     return motors, motor_modes
+
+
+def calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calibration_data.json"):
+    """Run physical calibration on each motor and save results to a JSON file."""
+    cal_data = {"motors": []}
+    for setup_motor_count in range(motor_count):
+        motors[setup_motor_count].configure_operating_mode_and_sensor(15, 1)  # calibration mode and sin/cos encoder
+        motors[setup_motor_count].configure_command_mode(15)  # calibration mode
+        motors[setup_motor_count].set_calibration_options(300, 2097152, 50000, 500000)
+        motors[setup_motor_count].start_calibration()
+        print(f"Starting calibration of motor {setup_motor_count}")
+        while not motors[setup_motor_count].is_calibration_finished():
+            print(".", end="")
+            sys.stdout.flush()
+            time.sleep(0.5)
+        print()
+        elecangleoffset = motors[setup_motor_count].get_calibration_ELECANGLEOFFSET()
+        sincoscentre = motors[setup_motor_count].get_calibration_SINCOSCENTRE()
+        print(f"ELECANGLEOFFSET: {elecangleoffset}")
+        print(f"SINCOSCENTRE: {sincoscentre}")
+        cal_data["motors"].append({
+            "address": int(i2c_addresses[setup_motor_count]),
+            "elecangleoffset": elecangleoffset,
+            "sincoscentre": sincoscentre,
+        })
+    with open(calibration_file, "w") as f:
+        json.dump(cal_data, f, indent=2)
+    print(f"Calibration data saved to {calibration_file}")
+    return cal_data
+
 
 def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold):
     yaw_error = ((rotation - yaw + 180) % 360) - 180
