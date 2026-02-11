@@ -5,8 +5,6 @@ Usage:
     python setup.py build_ext --inplace
 """
 
-import os
-import sys
 from setuptools import setup, Extension
 import pybind11
 

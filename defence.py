@@ -1,7 +1,6 @@
 import math
 import time
 import numpy as np
-import asyncio
 
 import send_log
 
@@ -16,7 +15,7 @@ GOAL_BACK_Y_MIN = 700
 GOAL_BACK_Y_MAX = 1125
 CYAN_GOAL_BACK_X = 2204
 MAX_MOTOR_RPM = 400
-LIDAR_PORT = "/dev/ttyUSB1"
+LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
 # White boundary rectangle taken from simulate.py
@@ -379,11 +378,31 @@ def get_coordinates(yaw):
 
     return x_pos, y_pos
 
+def _prompt_i2c_addresses():
+    print("Please enter the number of motor drivers you want to control:")
+    tempuint32 = int(input())
+    if tempuint32 == 0 or tempuint32 > 8:
+        print("Error motor count out of range, please reboot microcontroller to try again.")
+        quit()
+
+    addresses = []
+    setup_motor_count = 0
+    while setup_motor_count < tempuint32:
+        print(f"Please enter the i2c address of motor driver number {setup_motor_count}:")
+        address = int(input())
+        if address <= 7 or address >= 120:
+            print("Error invalid i2c address, please reboot microcontroller to try again.")
+            quit()
+        addresses.append(address)
+        setup_motor_count += 1
+    return addresses
+
 if __name__ == "__main__":
     import lidar
     from movement import init_motors, move
 
-    server_task = asyncio.create_task(send_log.init_server())
+    # Start websocket log server in the background (it runs its own asyncio loop).
+    send_log.start_server_background()
     time.sleep(0.05)
 
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
@@ -399,7 +418,7 @@ if __name__ == "__main__":
     while not lidar.is_scan_ready():
         time.sleep(0.1)
 
-    motors, motor_modes = init_motors()
+    motors, motor_modes = init_motors(_prompt_i2c_addresses())
     steering_state = False
     while True:
         # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
