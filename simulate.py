@@ -70,11 +70,17 @@ if log_provided:
 
 pygame.init()
 
-display = pygame.display.set_mode((1215, 910))
+DISPLAY_WIDTH = 1215
+DISPLAY_HEIGHT = 910
+display = pygame.display.set_mode((DISPLAY_WIDTH, DISPLAY_HEIGHT))
 
-pitch = pygame.Surface((2430, 1820))
-PITCH_WIDTH = pitch.get_width()
-PITCH_HEIGHT = pitch.get_height()
+PITCH_WIDTH = 2430
+PITCH_HEIGHT = 1820
+pitch = pygame.Surface((PITCH_WIDTH, PITCH_HEIGHT))
+
+# Scale from display coordinates to pitch coordinates (used for mouse→pitch and blit target size)
+DISPLAY_TO_PITCH_SCALE_X = PITCH_WIDTH / DISPLAY_WIDTH
+DISPLAY_TO_PITCH_SCALE_Y = PITCH_HEIGHT / DISPLAY_HEIGHT
 
 green = (20, 110, 44)
 white = (255, 255, 255)
@@ -933,7 +939,7 @@ def resolve_ball_goal_line_collisions(ball_x, ball_y, ball_vx, ball_vy, goal_lin
         against_goal_line = True
     return ball_x, ball_y, ball_vx, ball_vy, against_goal_line
 def blit_frame(frame_surface):
-    scaled = pygame.transform.smoothscale(frame_surface, (1215, 910))
+    scaled = pygame.transform.smoothscale(frame_surface, (DISPLAY_WIDTH, DISPLAY_HEIGHT))
     display.blit(scaled, (0, 0))
     pygame.display.flip()
 
@@ -1064,9 +1070,8 @@ if args.connect:
             if event.type == pygame.MOUSEBUTTONDOWN:
                 # Send clicked position as ball position to the server
                 mouse_x, mouse_y = pygame.mouse.get_pos()
-                # Scale from display coordinates to pitch coordinates
-                ball_x = mouse_x * 2
-                ball_y = mouse_y * 2
+                ball_x = mouse_x * DISPLAY_TO_PITCH_SCALE_X
+                ball_y = mouse_y * DISPLAY_TO_PITCH_SCALE_Y
                 send_ball_click(ball_x, ball_y)
         if log_line is not None:
             line_data = log_line.strip().split(",")
@@ -1133,8 +1138,8 @@ else:
                 waiting = False
             if event.type == pygame.MOUSEBUTTONDOWN:
                 mouse_x, mouse_y = pygame.mouse.get_pos()
-                ball_x = mouse_x * 2
-                ball_y = mouse_y * 2
+                ball_x = mouse_x * DISPLAY_TO_PITCH_SCALE_X
+                ball_y = mouse_y * DISPLAY_TO_PITCH_SCALE_Y
                 ball_vx = 0.0
                 ball_vy = 0.0
 
