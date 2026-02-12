@@ -439,5 +439,5 @@ if __name__ == "__main__":
             ball_captured,
             steering_state=steering_state,
         )
-        move(direction, speed, rotation, yaw, motors, motor_modes, WHEEL_DIAMETER, WHEEL_LEVER_ARM, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+        move(direction, speed, rotation, yaw, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
 
