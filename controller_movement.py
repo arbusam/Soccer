@@ -47,6 +47,8 @@ while True:
     for event in pygame.event.get():
         axis_values = [joystick.get_axis(a) for a in range(joystick.get_numaxes())]
         x, y = axis_values[:2]
+        if not x or not y:
+            continue
         direction_magnitude = min(1.0, hypot(x, y))
         if direction_magnitude < 0.1:
             direction_magnitude = 0.0
