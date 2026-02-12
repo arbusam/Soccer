@@ -7,7 +7,7 @@ import cv2
 import threading
 import asyncio
 import math
-
+# change to picamzero
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
 from picamera2.outputs import FileOutput
