@@ -63,4 +63,4 @@ while True:
             rotation_degrees = (degrees(atan2(rotation_y, rotation_x)) + 360) % 360
             rotation_degrees = (rotation_degrees + 90) % 360
     direction_magnitude *= SPEED
-    move(direction_degrees, direction_magnitude, rotation_degrees, 0.0, motors, motor_modes, WHEEL_DIAMETER, WHEEL_LEVER_ARM, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+    move(direction_degrees, direction_magnitude, rotation_degrees, 0.0, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
