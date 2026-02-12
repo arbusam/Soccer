@@ -35,13 +35,13 @@ def get_motors_for_calibration(i2c_addresses):
             quit()
 
     for setup_motor_count in range(motor_count):
-        motors[setup_motor_count].set_current_limit_foc(65536)  # set current limit to 1 amp (only works in FOC mode)
+        motors[setup_motor_count].set_current_limit_foc(524288)  # set current limit to 8 amp (only works in FOC mode)
         motors[setup_motor_count].set_id_pid_constants(1500, 200)
         motors[setup_motor_count].set_iq_pid_constants(1500, 200)
         motors[setup_motor_count].set_speed_pid_constants(4e-2, 4e-4, 3e-2)  # Constants valid for FOC and Robomaster M2006 P36 motor only
         motors[setup_motor_count].set_position_pid_constants(275, 0, 0)
         motors[setup_motor_count].set_position_region_boundary(250000)
-        motors[setup_motor_count].set_speed_limit(10000000)
+        motors[setup_motor_count].set_speed_limit(546133333)
     return motors, motor_count, normalized_addresses
 
 
