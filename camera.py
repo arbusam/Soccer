@@ -140,6 +140,7 @@ class Camera:
             # Keep the task alive
             while True:
                 await asyncio.sleep(1)
+                self.set_callback(None)
         except asyncio.CancelledError:
             self.stop()
 
