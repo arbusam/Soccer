@@ -182,8 +182,8 @@ def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw
     else:
         drive_motors[3].set_speed(int(d_speed*10000/3))
 
-    for motor in drive_motors:
-        motor.update_quick_data_readout()
+    # for motor in drive_motors:
+    #     motor.update_quick_data_readout()
     
     print(drive_motors[0].get_speed_QDR())
 
