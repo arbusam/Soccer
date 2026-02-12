@@ -44,24 +44,23 @@ direction_magnitude = 0.0
 rotation_degrees = 0.0
 rotation_magnitude = 0.0
 while True:
-    axis_values = [joystick.get_axis(a) for a in range(joystick.get_numaxes())]
-    x, y = axis_values[:2]
-    if not x or not y:
-        continue
-    direction_magnitude = min(1.0, hypot(x, y))
-    if direction_magnitude < 0.1:
-        direction_magnitude = 0.0
-    direction_degrees = (degrees(atan2(y, x)) + 360) % 360
-    direction_degrees += 90
-    direction_degrees %= 360
+    for event in pygame.event.get():
+        if event.type == pygame.JOYAXISMOTION:
+            axis_values = [joystick.get_axis(a) for a in range(joystick.get_numaxes())]
+            x, y = axis_values[:2]
+            direction_magnitude = min(1.0, hypot(x, y))
+            if direction_magnitude < 0.1:
+                direction_magnitude = 0.0
+            direction_degrees = (degrees(atan2(y, x)) + 360) % 360
+            direction_degrees += 90
+            direction_degrees %= 360
 
-    rotation_x = axis_values[2] if len(axis_values) > 2 else 0.0
-    rotation_y = axis_values[3] if len(axis_values) > 3 else 0.0
-    rotation_magnitude = min(1.0, hypot(rotation_x, rotation_y))
-    if rotation_magnitude < 0.1:
-        rotation_magnitude = 0.0
-    rotation_degrees = (degrees(atan2(rotation_y, rotation_x)) + 360) % 360
-    rotation_degrees = (rotation_degrees + 90) % 360
-    print(f"Direction: {direction_degrees}, Direction Magnitude: {direction_magnitude}, Rotation: {rotation_degrees}, Rotation Magnitude: {rotation_magnitude}")
+            rotation_x = axis_values[2] if len(axis_values) > 2 else 0.0
+            rotation_y = axis_values[3] if len(axis_values) > 3 else 0.0
+            rotation_magnitude = min(1.0, hypot(rotation_x, rotation_y))
+            if rotation_magnitude < 0.1:
+                rotation_magnitude = 0.0
+            rotation_degrees = (degrees(atan2(rotation_y, rotation_x)) + 360) % 360
+            rotation_degrees = (rotation_degrees + 90) % 360
     direction_magnitude *= SPEED
     move(direction_degrees, direction_magnitude, rotation_degrees, 0.0, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
