@@ -98,6 +98,10 @@ def calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calib
 
 
 def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold):
+    drive_motors = motors[:4]
+    if any(motor is None for motor in drive_motors):
+        raise ValueError("move() requires 4 initialized drive motors in motors[0:4].")
+
     yaw_error = ((rotation - yaw + 180) % 360) - 180
 
     if abs(yaw_error) > yaw_correct_threshold:
@@ -161,15 +165,15 @@ def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw
     c_speed = max(min(c_speed, max_rpm), -max_rpm)
     d_speed = max(min(d_speed, max_rpm), -max_rpm)
 
-    motors[0].set_speed(int(a_speed*1000000/3))
-    motors[1].set_speed(int(b_speed*1000000/3))
-    motors[2].set_speed(int(c_speed*1000000/3))
-    motors[3].set_speed(int(d_speed*1000000/3))
+    drive_motors[0].set_speed(int(a_speed*1000000/3))
+    drive_motors[1].set_speed(int(b_speed*1000000/3))
+    drive_motors[2].set_speed(int(c_speed*1000000/3))
+    drive_motors[3].set_speed(int(d_speed*1000000/3))
 
-    for motor in motors:
+    for motor in drive_motors:
         motor.update_quick_data_readout()
     
-    print(motors[0].get_speed_QDR())
+    print(drive_motors[0].get_speed_QDR())
 
 def _prompt_i2c_addresses():
     print("Please enter the number of motor drivers you want to control:")
