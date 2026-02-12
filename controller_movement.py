@@ -39,11 +39,11 @@ def _prompt_i2c_addresses():
 
 motors, motor_modes = init_motors(_prompt_i2c_addresses())
 
+direction_degrees = 0.0
+direction_magnitude = 0.0
+rotation_degrees = 0.0
+rotation_magnitude = 0.0
 while True:
-    direction_degrees = 0.0
-    direction_magnitude = 0.0
-    rotation_degrees = 0.0
-    rotation_magnitude = 0.0
     for event in pygame.event.get():
         if event.type == pygame.JOYAXISMOTION:
             axis_values = [joystick.get_axis(a) for a in range(joystick.get_numaxes())]
