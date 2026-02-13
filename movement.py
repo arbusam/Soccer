@@ -119,10 +119,10 @@ def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw
         yaw_correct_rpm_component = 0.0
 
     local_direction = direction - yaw - 45
-    a_mult = math.sin(math.radians(local_direction))
-    b_mult = math.cos(math.radians(local_direction))
-    c_mult = -math.sin(math.radians(local_direction))
-    d_mult = -math.cos(math.radians(local_direction))
+    a_mult = math.sin(math.radians(local_direction)) # Back left wheel
+    b_mult = math.cos(math.radians(local_direction)) # Back right wheel
+    c_mult = -math.sin(math.radians(local_direction)) # Front right wheel
+    d_mult = -math.cos(math.radians(local_direction)) # Front left wheel
 
     # Values in mm/s
     a_value = a_mult * speed

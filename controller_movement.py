@@ -58,12 +58,12 @@ while True:
             rotation_x = axis_values[2] if len(axis_values) > 2 else 0.0
             rotation_y = axis_values[3] if len(axis_values) > 3 else 0.0
             rotation_magnitude = min(1.0, hypot(rotation_x, rotation_y))
-            if rotation_magnitude < 0.1:
-                rotation_magnitude = 0.0
             rotation_degrees = (degrees(atan2(rotation_y, rotation_x)) + 360) % 360
             rotation_degrees = (rotation_degrees + 90) % 360
+            if rotation_magnitude < 0.1:
+                rotation_magnitude = 0.0
+                rotation_degrees = 0.0
     direction_magnitude *= SPEED
     if direction_magnitude > SPEED:
         direction_magnitude = SPEED
-    print(direction_magnitude)
-    move(direction_degrees, direction_magnitude, 0, 0.0, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+    move(direction_degrees, direction_magnitude, rotation_degrees, 0.0, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
