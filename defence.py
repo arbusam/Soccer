@@ -5,7 +5,6 @@ import numpy as np
 import send_log
 
 WHEEL_DIAMETER = 50 # mm
-WHEEL_LEVER_ARM = 100 # mm (distance from center to wheel contact)
 MAX_YAW_RPM = 100
 CYAN_GOAL_CENTRE_X = 400
 YELLOW_GOAL_CENTRE_X = 1980
