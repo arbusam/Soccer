@@ -88,4 +88,4 @@ while True:
         # print(f"left_trigger={left_trigger:.2f} right_trigger={right_trigger:.2f} speed={speed:.1f}")
 
     movement_speed = min(direction_magnitude * speed, speed)
-    move(direction_degrees, movement_speed, rotation_degrees, 0.0, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+    move(direction_degrees, movement_speed, rotation_degrees, rotation_magnitude, 0.0, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)

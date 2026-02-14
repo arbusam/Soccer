@@ -97,10 +97,11 @@ def calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calib
     return cal_data
 
 
-def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold):
+def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold):
     direction = int(direction)
     speed = int(speed)
     rotation = int(rotation)
+    rotation_speed = float(rotation_speed)
     yaw = int(yaw)
     max_yaw_rpm = int(max_yaw_rpm)
     max_rpm = int(max_rpm)
@@ -112,9 +113,10 @@ def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw
 
     yaw_error = ((yaw - rotation + 180) % 360) - 180
 
+    rotation_speed = max(0.0, min(rotation_speed, 1.0))
     if abs(yaw_error) > yaw_correct_threshold:
         # Map heading error to a yaw RPM request (60 deg error -> max_yaw_rpm)
-        yaw_correct_rpm_component = max_yaw_rpm * (yaw_error / 60.0)
+        yaw_correct_rpm_component = max_yaw_rpm * (yaw_error / 60.0) * rotation_speed
     else:
         yaw_correct_rpm_component = 0.0
 
