@@ -110,7 +110,7 @@ def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw
     if any(motor is None for motor in drive_motors):
         raise ValueError("move() requires 4 initialized drive motors in motors[0:4].")
 
-    yaw_error = ((rotation - yaw + 180) % 360) - 180
+    yaw_error = ((yaw - rotation + 180) % 360) - 180
 
     if abs(yaw_error) > yaw_correct_threshold:
         # Map heading error to a yaw RPM request (60 deg error -> max_yaw_rpm)
@@ -149,30 +149,26 @@ def move(direction, speed, rotation, yaw, motors, motor_modes, diameter, max_yaw
     yaw_correct_rpm_component = max(min(yaw_correct_rpm_component, max_yaw_rpm), -max_yaw_rpm)
 
     bounds = []
-    for base, k in ((a_speed, 1), (b_speed, -1), (c_speed, 1), (d_speed, -1)):
-        if k == 1:
-            upper = max_rpm - base
-            lower = -max_rpm - base
-        else:
-            upper = max_rpm + base
-            lower = base - max_rpm
+    for base in (a_speed, b_speed, c_speed, d_speed):
+        upper = max_rpm - base
+        lower = -max_rpm - base
         bounds.append((lower, upper))
 
     lower_bound = max(b[0] for b in bounds)
     upper_bound = min(b[1] for b in bounds)
-    w_cmd = max(min(yaw_correct_rpm_component, upper_bound), lower_bound)
+    yaw_correction_rpm = max(min(yaw_correct_rpm_component, upper_bound), lower_bound)
 
-    a_speed += w_cmd
-    c_speed += w_cmd
-    b_speed -= w_cmd
-    d_speed -= w_cmd
+    a_speed += yaw_correction_rpm
+    b_speed += yaw_correction_rpm
+    c_speed += yaw_correction_rpm
+    d_speed += yaw_correction_rpm
 
     # Clamp between -max_rpm to max_rpm
     a_speed = max(min(a_speed, max_rpm), -max_rpm)
     b_speed = max(min(b_speed, max_rpm), -max_rpm)
     c_speed = max(min(c_speed, max_rpm), -max_rpm)
     d_speed = max(min(d_speed, max_rpm), -max_rpm)
-    print(f"a_speed: {a_speed}, b_speed: {b_speed}, c_speed: {c_speed}, d_speed: {d_speed}")
+    # print(f"a_speed: {a_speed}, b_speed: {b_speed}, c_speed: {c_speed}, d_speed: {d_speed}")
     if a_speed == 0:
         drive_motors[0].set_speed(0)
     else:
