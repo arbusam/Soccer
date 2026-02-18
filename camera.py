@@ -24,7 +24,11 @@ class Camera:
         # self.picam2.controls.ExposureTime = 30000
         self.output = self.StreamingOutput()
         self.server = None
+        self.server_thread = None
         self.user_callback = None
+        self._bearing = None
+        self._capture_started = False
+        self._server_started = False
         
         # Enable color detection callback by default
         self.picam2.pre_callback = self._proxy_callback
@@ -81,9 +85,35 @@ class Camera:
             self.camera = camera
             super().__init__(*args, **kwargs)
 
+    @property
+    def bearing(self):
+        return self._bearing
+
     def set_callback(self, callback_function):
         self.user_callback = callback_function
         self.picam2.pre_callback = self._proxy_callback
+
+    def _start_capture(self):
+        if self._capture_started:
+            return
+
+        self.picam2.start_recording(JpegEncoder(), FileOutput(self.output))
+        self._capture_started = True
+
+    def _start_http_server(self):
+        if self._server_started:
+            return
+
+        address = ("", self.PORT)
+        self.server = self.StreamingServer(self, address, self.StreamingHandler)
+        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server_thread.start()
+        self._server_started = True
+        print(f"Stream available at http://localhost:{self.PORT}/stream.mjpg")
+
+    def start(self):
+        """Start camera capture so bearing updates in callback."""
+        self._start_capture()
 
     def _proxy_callback(self, request):
         with MappedArray(request, "main") as m:
@@ -112,13 +142,14 @@ class Camera:
             if biggestContour is not None:
                 x, y, w, h = cv2.boundingRect(biggestContour)
                 cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 0, 255), 2)
-            
+
                 biggestContourAreaCentre = (x + w // 2, y + h // 2)
-                
+
                 # Find the bearing of biggestContourAreaCentre from the centre of the image
-                bearing = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
-                bearing = math.degrees(bearing)
-                print(bearing)
+                bearing_rad = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
+                self._bearing = math.degrees(bearing_rad)
+            else:
+                self._bearing = None
                 
 
             # Call the user-specified callback with both the original and HSV arrays
@@ -127,29 +158,30 @@ class Camera:
 
     async def run_server(self):
         """Async task to run the camera server"""
-        self.picam2.start_recording(JpegEncoder(), FileOutput(self.output))
-        address = ('', self.PORT)
-        self.server = self.StreamingServer(self, address, self.StreamingHandler)
-        print(f"Stream available at http://localhost:{self.PORT}/stream.mjpg")
-        
-        # Run server in a thread since it's blocking
-        server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
-        server_thread.start()
-        
+        self._start_capture()
+        self._start_http_server()
+
         try:
             # Keep the task alive
             while True:
                 await asyncio.sleep(1)
-                self.set_callback(None)
         except asyncio.CancelledError:
             self.stop()
 
     def stop(self):
+        if not self._capture_started and not self._server_started:
+            return
+
         if self.server:
             self.server.shutdown()
             self.server.server_close()
-        self.picam2.stop_recording()
-        print("Camera server stopped")
+            self.server = None
+        self.server_thread = None
+        self._server_started = False
+        if self._capture_started:
+            self.picam2.stop_recording()
+            self._capture_started = False
+        print("Camera stopped")
 
 async def main():
     camera = Camera(PORT=8000, resolution=(640, 420), frame_rate=60)
