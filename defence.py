@@ -2,6 +2,7 @@ import math
 import time
 import numpy as np
 
+from camera import Camera
 import send_log
 
 WHEEL_DIAMETER = 50 # mm
@@ -25,6 +26,8 @@ WHITE_MAX_Y = 1570
 BALL_RADIUS = 21
 
 YAW_CORRECT_THRESHOLD = 3 # deg
+
+CAMERA_PORT = 8000
 
 def is_ball_out(ball_x, ball_y):
     closest_x = max(WHITE_MIN_X, min(ball_x, WHITE_MAX_X))
@@ -398,7 +401,7 @@ def _prompt_i2c_addresses():
 
 if __name__ == "__main__":
     import lidar
-    from movement import init_motors, move
+    from movement import init_motors, move, stop_all_motors
 
     # Start websocket log server in the background (it runs its own asyncio loop).
     send_log.start_server_background()
@@ -416,27 +419,35 @@ if __name__ == "__main__":
     print("Waiting for first scan data...")
     while not lidar.is_scan_ready():
         time.sleep(0.1)
+    
+    camera = Camera(CAMERA_PORT)
+    camera.start()
 
     motors, motor_modes = init_motors(_prompt_i2c_addresses())
     steering_state = False
-    while True:
-        # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
-        yaw = 0
-        x_pos, y_pos = get_coordinates(yaw)
-        ball_x = None
-        ball_y = None
-        yellow = True
-        ball_captured = False
-        send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
-        direction, speed, rotation, steering_state, _ = defence(
-            x_pos,
-            y_pos,
-            yaw,
-            ball_x,
-            ball_y,
-            yellow,
-            ball_captured,
-            steering_state=steering_state,
-        )
-        move(direction, speed, rotation, 1.0, yaw, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+    try:
+        while True:
+            # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
+            yaw = 0
+            x_pos, y_pos = get_coordinates(yaw)
+            ball_direction = camera.bearing
+            ball_x = None
+            ball_y = None
+            yellow = True
+            ball_captured = False
+            send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
+            direction, speed, rotation, steering_state, _ = defence(
+                x_pos,
+                y_pos,
+                yaw,
+                ball_x,
+                ball_y,
+                yellow,
+                ball_captured,
+                steering_state=steering_state,
+            )
+            move(direction, speed, rotation, 1.0, yaw, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+    finally:
+        stop_all_motors(motors)
+        camera.stop()
 

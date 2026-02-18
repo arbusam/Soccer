@@ -193,6 +193,14 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     
     # print(drive_motors[0].get_speed_QDR())
 
+
+def stop_all_motors(motors):
+    """Set speed to 0 on all non-None motors. Call on exit to avoid runaway motors."""
+    for m in motors:
+        if m is not None:
+            m.set_speed(0)
+
+
 def _prompt_i2c_addresses():
     print("Please enter the number of motor drivers you want to control:")
     tempuint32 = int(input())
