@@ -7,7 +7,6 @@ import cv2
 import threading
 import asyncio
 import math
-import time
 import numpy as np
 # change to picamzero
 from picamera2 import Picamera2
@@ -122,31 +121,40 @@ class Camera:
             # Convert the image to HSV
             hsv = cv2.cvtColor(m.array, cv2.COLOR_BGR2HSV)
 
-            # # Print the colour of the pixel at the center of the image
-            # print(hsv[m.array.shape[0] // 2, m.array.shape[1] // 2])
+            # Print HSV value at the center of the frame for tuning/debugging.
+            # center_y = m.array.shape[0] // 2
+            # center_x = m.array.shape[1] // 2
+            # print(f"Center HSV: {hsv[center_y, center_x]}")
             
             # # Draw a small crosshair in the center of the image
             # cv2.line(m.array, (m.array.shape[1] // 2, m.array.shape[0] // 2 - 10), (m.array.shape[1] // 2, m.array.shape[0] // 2 + 10), (0, 0, 255), 2)
             # cv2.line(m.array, (m.array.shape[1] // 2 - 10, m.array.shape[0] // 2), (m.array.shape[1] // 2 + 10, m.array.shape[0] // 2), (0, 0, 255), 2)
 
-            redLowerBound = np.array([0, 185, 140])
-            redUpperBound = np.array([10, 210, 200])
+            orangeLowerBound = np.array([0, 200, 140])
+            orangeUpperBound = np.array([20, 255, 255])
 
-            print(hsv[0, 0])
-
-            redMask = cv2.inRange(hsv, redLowerBound, redUpperBound)
-            redContours, _ = cv2.findContours(redMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for contour in redContours:
+            orangeMask = cv2.inRange(hsv, orangeLowerBound, orangeUpperBound)
+            orangeContours, _ = cv2.findContours(orangeMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in orangeContours:
                 area = cv2.contourArea(contour)
                 if area > 200:
                     x, y, w, h = cv2.boundingRect(contour)
-                    cv2.drawContours(m.array, [contour], -1, (0, 0, 255), 2)
+                    cv2.drawContours(m.array, [contour], -1, (0, 165, 255), 2)
             # print(redContours)
-            biggestContour = max(redContours, key=cv2.contourArea) if redContours else None
+            # Select the biggest contour with bounding-box area (w*h) less than 10000
+            validContours = []
+            for c in orangeContours:
+                x_tmp, y_tmp, w_tmp, h_tmp = cv2.boundingRect(c)
+                if w_tmp * h_tmp < 5000:
+                    validContours.append(c)
+            biggestContour = max(
+                validContours,
+                key=lambda c: (lambda wh: wh[0] * wh[1])(cv2.boundingRect(c)[2:4])
+            ) if validContours else None
             if biggestContour is not None:
                 x, y, w, h = cv2.boundingRect(biggestContour)
                 cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 0, 255), 2)
-
+                # print(f"Biggest contour area: {w*h}")
                 biggestContourAreaCentre = (x + w // 2, y + h // 2)
 
                 # Find the bearing of biggestContourAreaCentre from the centre of the image
@@ -154,12 +162,13 @@ class Camera:
                 self._bearing = math.degrees(bearing_rad)
 
                 # need to find focal length of camera
-                bw, fl = 0.42, 0
-                distance = (bw * fl) / w
+                # bw, fl = 0.42, 0
+                # distance = (bw * fl) / w
    
             else:
                 self._bearing = None
-                
+            # print(f"Bearing: {self._bearing}")
+            
 
             # Call the user-specified callback with both the original and HSV arrays
             if self.user_callback:
