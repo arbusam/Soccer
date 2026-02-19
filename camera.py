@@ -8,6 +8,7 @@ import threading
 import asyncio
 import math
 import time
+import numpy as np
 # change to picamzero
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
@@ -154,8 +155,8 @@ class Camera:
                 )
                 self._last_center_color_log = now
 
-            redLowerBound = (0, 185, 140)
-            redUpperBound = (10, 210, 200)
+            redLowerBound = np.array([0, 185, 140])
+            redUpperBound = np.array([10, 210, 200])
 
             redMask = cv2.inRange(hsv, redLowerBound, redUpperBound)
             redContours, _ = cv2.findContours(redMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
