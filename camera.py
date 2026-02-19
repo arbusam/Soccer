@@ -130,6 +130,8 @@ class Camera:
             redLowerBound = (0, 185, 140)
             redUpperBound = (10, 210, 200)
 
+            print(hsv[0, 0])
+
             redMask = cv2.inRange(hsv, redLowerBound, redUpperBound)
             redContours, _ = cv2.findContours(redMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for contour in redContours:
@@ -148,6 +150,11 @@ class Camera:
                 # Find the bearing of biggestContourAreaCentre from the centre of the image
                 bearing_rad = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
                 self._bearing = math.degrees(bearing_rad)
+
+                # need to find focal length of camera
+                bw, fl = 0.42, 0
+                distance = (bw * fl) / w
+   
             else:
                 self._bearing = None
                 
