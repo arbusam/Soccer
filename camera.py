@@ -7,6 +7,7 @@ import cv2
 import threading
 import asyncio
 import math
+import time
 # change to picamzero
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
@@ -29,6 +30,8 @@ class Camera:
         self._bearing = None
         self._capture_started = False
         self._server_started = False
+        self._last_center_color_log = 0.0
+        self._center_color_log_interval = 0.25
         
         # Enable color detection callback by default
         self.picam2.pre_callback = self._proxy_callback
@@ -117,20 +120,42 @@ class Camera:
 
     def _proxy_callback(self, request):
         with MappedArray(request, "main") as m:
+            center_x = m.array.shape[1] // 2
+            center_y = m.array.shape[0] // 2
+
+            # Draw a crosshair at the frame center for the stream.
+            crosshair_half = 10
+            cv2.line(
+                m.array,
+                (center_x, center_y - crosshair_half),
+                (center_x, center_y + crosshair_half),
+                (0, 0, 255),
+                2,
+            )
+            cv2.line(
+                m.array,
+                (center_x - crosshair_half, center_y),
+                (center_x + crosshair_half, center_y),
+                (0, 0, 255),
+                2,
+            )
+
             # Convert the image to HSV
             hsv = cv2.cvtColor(m.array, cv2.COLOR_BGR2HSV)
 
-            # # Print the colour of the pixel at the center of the image
-            # print(hsv[m.array.shape[0] // 2, m.array.shape[1] // 2])
-            
-            # # Draw a small crosshair in the center of the image
-            # cv2.line(m.array, (m.array.shape[1] // 2, m.array.shape[0] // 2 - 10), (m.array.shape[1] // 2, m.array.shape[0] // 2 + 10), (0, 0, 255), 2)
-            # cv2.line(m.array, (m.array.shape[1] // 2 - 10, m.array.shape[0] // 2), (m.array.shape[1] // 2 + 10, m.array.shape[0] // 2), (0, 0, 255), 2)
+            # Print center pixel color periodically to avoid flooding stdout.
+            now = time.monotonic()
+            if now - self._last_center_color_log >= self._center_color_log_interval:
+                rgb = m.array[center_y, center_x]
+                hsv_center = hsv[center_y, center_x]
+                print(
+                    f"Center pixel RGB={tuple(int(v) for v in rgb)} "
+                    f"HSV={tuple(int(v) for v in hsv_center)}"
+                )
+                self._last_center_color_log = now
 
             redLowerBound = (0, 185, 140)
             redUpperBound = (10, 210, 200)
-
-            print(hsv[0, 0])
 
             redMask = cv2.inRange(hsv, redLowerBound, redUpperBound)
             redContours, _ = cv2.findContours(redMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
