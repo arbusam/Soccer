@@ -11,6 +11,7 @@ import pygame
 import websockets
 
 from defence import defence, goalie
+from striker import striker
 
 parser = argparse.ArgumentParser(
     description="Visualize a simulated match from a log file.",
@@ -41,6 +42,12 @@ parser.add_argument(
     "--goalie",
     action="store_true",
     help="Use the goalie strategy from defence.py instead of keyboard control.",
+)
+parser.add_argument(
+    "-s",
+    "--striker",
+    action="store_true",
+    help="Use the striker strategy from striker.py instead of keyboard control.",
 )
 parser.add_argument(
     "--team1",
@@ -90,6 +97,8 @@ ROLE_CONTROLLER_MAP = {
     "defence": ("defence", defence),
     "g": ("goalie", goalie),
     "goalie": ("goalie", goalie),
+    "s": ("striker", striker),
+    "striker": ("striker", striker),
 }
 
 TEAM_DEFAULTS = {
@@ -1051,8 +1060,8 @@ else:
             bots.extend(create_team(args.team1, 1))
         if args.team2:
             bots.extend(create_team(args.team2, 2))
-        if args.defence or args.goalie:
-            print("Team selections override single-bot '-d'/'-g' flags.")
+        if args.defence or args.goalie or args.striker:
+            print("Team selections override single-bot '-d'/'-g'/'-s' flags.")
     else:
         start_x = 500
         start_y = pitch.get_height() // 2
@@ -1061,6 +1070,8 @@ else:
             controller = defence
         elif args.goalie:
             controller = goalie
+        elif args.striker:
+            controller = striker
         bots.append(
             Bot(
                 x=start_x,
@@ -1107,7 +1118,7 @@ else:
                     manual_keys = pygame.key.get_pressed()
                 direction, speed, rotation, kick_state = manual_control_from_keys(manual_keys, bot.yaw)
             elif bot.controller is not None:
-                if bot.controller is defence:
+                if bot.controller in (defence, striker):
                     direction, speed, rotation, steering_state, kick_state = bot.controller(
                         bot.x,
                         bot.y,
