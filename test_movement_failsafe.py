@@ -7,7 +7,7 @@ sys.modules["board"] = MagicMock()
 sys.modules["busio"] = MagicMock()
 sys.modules["steelbar_powerful_bldc_driver"] = MagicMock()
 
-import movement
+import movement  # noqa: E402
 
 
 def test_persistent_failure_raises_and_stops():
