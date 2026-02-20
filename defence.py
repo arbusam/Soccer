@@ -2,7 +2,6 @@ import math
 import time
 import numpy as np
 
-from camera import Camera
 import send_log
 
 WHEEL_DIAMETER = 50 # mm
@@ -402,6 +401,7 @@ def _prompt_i2c_addresses():
 if __name__ == "__main__":
     import lidar
     from movement import init_motors, move, stop_all_motors
+    from camera import Camera
 
     # Start websocket log server in the background (it runs its own asyncio loop).
     send_log.start_server_background()
