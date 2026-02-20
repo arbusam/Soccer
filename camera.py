@@ -23,11 +23,13 @@ class Camera:
         self.picam2.controls.FrameRate = frame_rate
         self.forward_angle = 0  # Add forward angle property
         # self.picam2.controls.ExposureTime = 30000
+        self.picam2.controls.AnalogueGain = 15.0
         self.output = self.StreamingOutput()
         self.server = None
         self.server_thread = None
         self.user_callback = None
         self._bearing = None
+        self._distance = None
         self._capture_started = False
         self._server_started = False
         
@@ -90,6 +92,10 @@ class Camera:
     def bearing(self):
         return self._bearing
 
+    @property
+    def distance(self):
+        return self._distance
+
     def set_callback(self, callback_function):
         self.user_callback = callback_function
         self.picam2.pre_callback = self._proxy_callback
@@ -131,7 +137,7 @@ class Camera:
             # cv2.line(m.array, (m.array.shape[1] // 2 - 10, m.array.shape[0] // 2), (m.array.shape[1] // 2 + 10, m.array.shape[0] // 2), (0, 0, 255), 2)
 
             orangeLowerBound = np.array([0, 200, 140])
-            orangeUpperBound = np.array([20, 255, 255])
+            orangeUpperBound = np.array([15, 255, 255])
 
             orangeMask = cv2.inRange(hsv, orangeLowerBound, orangeUpperBound)
             orangeContours, _ = cv2.findContours(orangeMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -145,7 +151,7 @@ class Camera:
             validContours = []
             for c in orangeContours:
                 x_tmp, y_tmp, w_tmp, h_tmp = cv2.boundingRect(c)
-                if w_tmp * h_tmp < 5000:
+                if w_tmp * h_tmp < 50000:
                     validContours.append(c)
             biggestContour = max(
                 validContours,
@@ -155,11 +161,15 @@ class Camera:
                 x, y, w, h = cv2.boundingRect(biggestContour)
                 cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 0, 255), 2)
                 # print(f"Biggest contour area: {w*h}")
+                # A = -220d + 11300
+                # d = (11300 - A) / 220
+                self._distance = (11300 - w*h) / 220
                 biggestContourAreaCentre = (x + w // 2, y + h // 2)
 
                 # Find the bearing of biggestContourAreaCentre from the centre of the image
                 bearing_rad = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
                 self._bearing = math.degrees(bearing_rad)
+                print(f"Distance: {self._distance}, Bearing: {self._bearing}")
 
                 # need to find focal length of camera
                 # bw, fl = 0.42, 0
@@ -167,6 +177,7 @@ class Camera:
    
             else:
                 self._bearing = None
+                self._distance = None
             # print(f"Bearing: {self._bearing}")
             
 
@@ -202,7 +213,7 @@ class Camera:
         print("Camera stopped")
 
 async def main():
-    camera = Camera(PORT=8000, resolution=(640, 420), frame_rate=60)
+    camera = Camera(PORT=8000, resolution=(2000, 2000), frame_rate=60)
     await camera.run_server()
 
 if __name__ == "__main__":
