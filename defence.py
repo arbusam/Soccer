@@ -431,8 +431,9 @@ if __name__ == "__main__":
             yaw = 0
             x_pos, y_pos = get_coordinates(yaw)
             ball_direction = camera.bearing
-            ball_x = None
-            ball_y = None
+            ball_distance = camera.distance
+            ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None else None
+            ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None else None
             yellow = True
             ball_captured = False
             send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
