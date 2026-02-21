@@ -2,7 +2,7 @@ import asyncio
 import threading
 import websockets
 
-HOST = "127.0.0.1"
+HOST = "0.0.0.0"  # listen on all interfaces so simulate.py -c <LAN_IP>:8765 works
 PORT = 8765
 
 latest_log: str | None = None  # only ever keep the newest log
