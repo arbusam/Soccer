@@ -335,47 +335,47 @@ def get_coordinates(yaw):
             return None
         return get_mean_distance(projection_values[mask].tolist())
 
-    # Right wall (world -45°..45°)
-    right_mask = (world_angles >= -45) & (world_angles <= 45)
-    right_proj = distances * np.cos(world_radians)
-    top_x_distance = project_and_mean(right_mask, right_proj)
+    # +x boundary / right wall (world 45°..135°)
+    right_wall_mask = (world_angles >= 45) & (world_angles <= 135)
+    right_wall_proj = distances * np.sin(world_radians)
+    right_x_distance = project_and_mean(right_wall_mask, right_wall_proj)
 
-    # Left wall (world 135°..180° and -180°..-135°)
-    left_mask = (world_angles >= 135) | (world_angles <= -135)
-    left_proj = distances * -np.cos(world_radians)
-    bottom_x_distance = project_and_mean(left_mask, left_proj)
+    # -x boundary / left wall (world -135°..-45°)
+    left_wall_mask = (world_angles >= -135) & (world_angles <= -45)
+    left_wall_proj = distances * -np.sin(world_radians)
+    left_x_distance = project_and_mean(left_wall_mask, left_wall_proj)
 
-    # Top wall (world -135°..-45°)
-    top_mask = (world_angles >= -135) & (world_angles <= -45)
-    top_proj = distances * -np.sin(world_radians)
-    left_y_distance = project_and_mean(top_mask, top_proj)
+    # -y boundary / top wall (world -45°..45°)
+    top_wall_mask = (world_angles >= -45) & (world_angles <= 45)
+    top_wall_proj = distances * np.cos(world_radians)
+    top_y_distance = project_and_mean(top_wall_mask, top_wall_proj)
 
-    # Bottom wall (world 45°..135°)
-    bottom_mask = (world_angles >= 45) & (world_angles <= 135)
-    bottom_proj = distances * np.sin(world_radians)
-    right_y_distance = project_and_mean(bottom_mask, bottom_proj)
+    # +y boundary / bottom wall (world 135°..180° and -180°..-135°)
+    bottom_wall_mask = (world_angles >= 135) | (world_angles <= -135)
+    bottom_wall_proj = distances * -np.cos(world_radians)
+    bottom_y_distance = project_and_mean(bottom_wall_mask, bottom_wall_proj)
 
-    top_x_valid = top_x_distance is not None and 0 <= top_x_distance <= 2430
-    bottom_x_valid = bottom_x_distance is not None and 0 <= bottom_x_distance <= 2430
+    right_x_valid = right_x_distance is not None and 0 <= right_x_distance <= 2430
+    left_x_valid = left_x_distance is not None and 0 <= left_x_distance <= 2430
 
-    if top_x_valid and bottom_x_valid:
-        x_pos = (bottom_x_distance + (2430 - top_x_distance)) / 2
-    elif bottom_x_valid:
-        x_pos = bottom_x_distance
-    elif top_x_valid:
-        x_pos = 2430 - top_x_distance
+    if right_x_valid and left_x_valid:
+        x_pos = (left_x_distance + (2430 - right_x_distance)) / 2
+    elif left_x_valid:
+        x_pos = left_x_distance
+    elif right_x_valid:
+        x_pos = 2430 - right_x_distance
     else:
         x_pos = None
 
-    left_y_valid = left_y_distance is not None and 0 <= left_y_distance <= 1820
-    right_y_valid = right_y_distance is not None and 0 <= right_y_distance <= 1820
+    top_y_valid = top_y_distance is not None and 0 <= top_y_distance <= 1820
+    bottom_y_valid = bottom_y_distance is not None and 0 <= bottom_y_distance <= 1820
 
-    if left_y_valid and right_y_valid:
-        y_pos = (left_y_distance + (1820 - right_y_distance)) / 2
-    elif left_y_valid:
-        y_pos = left_y_distance
-    elif right_y_valid:
-        y_pos = 1820 - right_y_distance
+    if top_y_valid and bottom_y_valid:
+        y_pos = (top_y_distance + (1820 - bottom_y_distance)) / 2
+    elif top_y_valid:
+        y_pos = top_y_distance
+    elif bottom_y_valid:
+        y_pos = 1820 - bottom_y_distance
     else:
         y_pos = None
 
@@ -422,7 +422,7 @@ if __name__ == "__main__":
     while not lidar.is_scan_ready():
         time.sleep(0.1)
     
-    camera = Camera(CAMERA_PORT)
+    camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
     camera.start()
 
     motors, motor_modes = init_motors(_prompt_i2c_addresses())
@@ -434,8 +434,8 @@ if __name__ == "__main__":
             x_pos, y_pos = get_coordinates(yaw)
             ball_direction = camera.bearing
             ball_distance = camera.distance
-            ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None else None
-            ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None else None
+            ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and x_pos is not None else None
+            ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and y_pos is not None else None
             yellow = True
             ball_captured = False
             send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
