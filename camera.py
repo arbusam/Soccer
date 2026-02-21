@@ -179,7 +179,7 @@ class Camera:
                     # Find the bearing of biggestContourAreaCentre from the centre of the image
                     bearing_rad = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
                     self._bearing = math.degrees(bearing_rad) - 90
-                    print(f"Distance: {self._distance}, Bearing: {self._bearing}")
+                    # print(f"Distance: {self._distance}, Bearing: {self._bearing}")
 
                     # need to find focal length of camera
                     # bw, fl = 0.42, 0
