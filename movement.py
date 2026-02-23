@@ -14,6 +14,7 @@ i2c = busio.I2C(board.SCL, board.SDA)
 # Reset to 0 on successful write. Used to trigger fail-safe shutdown when persistent.
 _motor_consecutive_failures = [0, 0, 0, 0]
 PERSISTENT_FAILURE_THRESHOLD = 5  # consecutive failed control cycles before fatal shutdown
+RPM_TO_MOTOR_SPEED = 275251.2
 
 
 class MotorCommsFatalError(Exception):
@@ -212,10 +213,10 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     d_speed = max(min(d_speed, max_rpm), -max_rpm)
     # print(f"a_speed: {a_speed}, b_speed: {b_speed}, c_speed: {c_speed}, d_speed: {d_speed}")
 
-    a_val = 0 if a_speed == 0 else int(a_speed * 1000000 / 3)
-    b_val = 0 if b_speed == 0 else int(b_speed * 1000000 / 3)
-    c_val = 0 if c_speed == 0 else int(c_speed * 1000000 / 3)
-    d_val = 0 if d_speed == 0 else int(d_speed * 1000000 / 3)
+    a_val = int(a_speed * RPM_TO_MOTOR_SPEED)
+    b_val = int(b_speed * RPM_TO_MOTOR_SPEED)
+    c_val = int(c_speed * RPM_TO_MOTOR_SPEED)
+    d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
 
     _safe_set_speed(drive_motors[0], a_val, 0)
     _safe_set_speed(drive_motors[1], b_val, 1)
