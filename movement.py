@@ -1,5 +1,4 @@
 import json
-import logging
 import math
 import os
 import sys
@@ -8,47 +7,12 @@ from steelbar_powerful_bldc_driver import PowerfulBLDCDriver
 import board
 import busio
 
+# Initialises the i2c bus
 i2c = busio.I2C(board.SCL, board.SDA)
 
-# Per-motor consecutive I2C write failure counts (indices 0-3 = drive motors).
-# Reset to 0 on successful write. Used to trigger fail-safe shutdown when persistent.
-_motor_consecutive_failures = [0, 0, 0, 0]
-PERSISTENT_FAILURE_THRESHOLD = 5  # consecutive failed control cycles before fatal shutdown
+# Conversion factor from RPM to motor speed units.
+# Formula: rpm * 7 (pole pairs) * 36 (36:1 gear ratio) / 60 (seconds per minute) / 2^-16 (electrical revolutions per second)
 RPM_TO_MOTOR_SPEED = 275251.2
-
-
-class MotorCommsFatalError(Exception):
-    """Raised when motor I2C comms fail persistently; emergency stop has been attempted."""
-
-
-def _safe_set_speed(motor, speed_val, motor_index, retry_delay_s=0.05):
-    """Write speed to motor with one retry on Remote I/O (errno 121). Returns True on success, False on failure."""
-    try:
-        motor.set_speed(speed_val)
-        _motor_consecutive_failures[motor_index] = 0
-        return True
-    except OSError as e:
-        if e.errno != 121:  # Remote I/O (EREMOTEIO on Linux)
-            raise
-        logging.warning(
-            "I2C remote I/O error (errno 121) on drive motor %d, retrying...",
-            motor_index,
-        )
-        time.sleep(retry_delay_s)
-        try:
-            motor.set_speed(speed_val)
-            _motor_consecutive_failures[motor_index] = 0
-            return True
-        except OSError as e2:
-            if e2.errno != 121:
-                raise
-            _motor_consecutive_failures[motor_index] += 1
-            logging.warning(
-                "I2C remote I/O error (errno 121) on drive motor %d after retry; consecutive failures: %d",
-                motor_index,
-                _motor_consecutive_failures[motor_index],
-            )
-            return False
 
 
 def get_motors_for_calibration(i2c_addresses):
@@ -218,23 +182,10 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     c_val = int(c_speed * RPM_TO_MOTOR_SPEED)
     d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
 
-    _safe_set_speed(drive_motors[0], a_val, 0)
-    _safe_set_speed(drive_motors[1], b_val, 1)
-    _safe_set_speed(drive_motors[2], c_val, 2)
-    _safe_set_speed(drive_motors[3], d_val, 3)
-
-    # Persistent failure check: if any drive motor exceeds threshold, emergency stop and terminate.
-    failed = [i for i in range(4) if _motor_consecutive_failures[i] >= PERSISTENT_FAILURE_THRESHOLD]
-    if failed:
-        stop_all_motors(motors)
-        logging.error(
-            "Persistent I2C failure on drive motor(s) %s (consecutive failures >= %d); emergency stop attempted; terminating.",
-            failed,
-            PERSISTENT_FAILURE_THRESHOLD,
-        )
-        raise MotorCommsFatalError(
-            f"Persistent motor I2C failure on motor(s) {failed}; emergency stop attempted."
-        )
+    drive_motors[0].set_speed(a_val)
+    drive_motors[1].set_speed(b_val)
+    drive_motors[2].set_speed(c_val)
+    drive_motors[3].set_speed(d_val)
 
     # for motor in drive_motors:
     #     motor.update_quick_data_readout()
@@ -243,15 +194,10 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
 
 
 def stop_all_motors(motors):
-    """Set speed to 0 on all non-None motors. Call on exit to avoid runaway motors.
-    Best-effort: continues with remaining motors if one write fails; logs failures."""
-    for i, m in enumerate(motors):
-        if m is None:
-            continue
-        try:
+    """Set speed to 0 on all non-None motors. Call on exit to avoid runaway motors."""
+    for m in motors:
+        if m is not None:
             m.set_speed(0)
-        except OSError as e:
-            logging.warning("stop_all_motors: failed to stop motor %d: %s", i, e)
 
 
 def _prompt_i2c_addresses():
