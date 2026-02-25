@@ -1,6 +1,4 @@
-import logging
 import math
-import sys
 import time
 import numpy as np
 
@@ -402,7 +400,7 @@ def _prompt_i2c_addresses():
 
 if __name__ == "__main__":
     import lidar
-    from movement import init_motors, move, stop_all_motors, MotorCommsFatalError
+    from movement import init_motors, move, stop_all_motors
     from camera import Camera
 
     # Start websocket log server in the background (it runs its own asyncio loop).
@@ -450,16 +448,7 @@ if __name__ == "__main__":
                 steering_state=steering_state,
             )
             move(direction, speed, rotation, 1.0, yaw, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
-    except MotorCommsFatalError as e:
-        logging.error("Persistent motor I2C failure; emergency stop attempted. Exiting: %s", e)
-        sys.exit(1)
     finally:
-        try:
-            camera.stop()
-        except Exception as e:
-            logging.warning("Cleanup: camera.stop() failed: %s", e)
-        try:
-            stop_all_motors(motors)
-        except Exception as e:
-            logging.warning("Cleanup: stop_all_motors() failed: %s", e)
+        stop_all_motors(motors)
+        camera.stop()
 
