@@ -16,7 +16,7 @@ RPM_TO_MOTOR_SPEED = 275251.2
 
 
 def get_motors_for_calibration(i2c_addresses):
-    """Create motor drivers and set PID/limits (no calibration or FOC). Returns (motors, motor_count, normalized_addresses)."""
+    """Create motor driver objects and set PID/limits (no calibration or FOC). Input: list of i2c addresses. Returns: tuple of (motors, motor_count, normalized_addresses)."""
     try:
         normalized_addresses = [int(addr) for addr in i2c_addresses]
     except (TypeError, ValueError):
@@ -24,11 +24,15 @@ def get_motors_for_calibration(i2c_addresses):
         quit()
 
     motor_count = len(normalized_addresses)
-    if motor_count == 0 or motor_count > 8:
+    # Max of 4 motors
+    if motor_count == 0 or motor_count > 4:
         print("Error motor count out of range, please reboot microcontroller to try again.")
         quit()
 
-    motors = [None] * 8
+    # Creates an empty array of length 4
+    motors = [None] * 4
+
+    # Creates a motor driver object for each address (PowerfulBLDCDriver)
     for setup_motor_count, address in enumerate(normalized_addresses):
         if address <= 7 or address >= 120:
             print("Error invalid i2c address, please reboot microcontroller to try again.")
@@ -51,18 +55,23 @@ def get_motors_for_calibration(i2c_addresses):
 
 
 def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
+    """Initialises the motors and returns the motor objects and motor modes"""
     motors, motor_count, normalized_addresses = get_motors_for_calibration(i2c_addresses)
-    motor_modes = [None] * 8
+    motor_modes = [None] * 4
 
+    # Checks if the calibration file exists
     if not os.path.isfile(calibration_file):
         print(f"Error: calibration file '{calibration_file}' not found. Run calibrate.py first to create it.")
         quit()
 
+    # Loads the calibration data from the file. Calibration file is created by running calibrate.py
     with open(calibration_file) as f:
         cal_data = json.load(f)
+    # Checks if the calibration file has the correct number of motors
     if len(cal_data["motors"]) < motor_count:
         print(f"Error: calibration file has {len(cal_data['motors'])} motor(s), but {motor_count} motor(s) were requested.")
         quit()
+    # Sets the calibration constants to each motor
     for setup_motor_count in range(motor_count):
         motor_cal = cal_data["motors"][setup_motor_count]
         motors[setup_motor_count].set_ELECANGLEOFFSET(motor_cal["elecangleoffset"])
@@ -73,6 +82,7 @@ def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
     return motors, motor_modes
 
 
+# Used by calibrate.py to calibrate the motors and save the results to the calibration file to be re used.
 def calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calibration_data.json"):
     """Run physical calibration on each motor and save results to a JSON file."""
     cal_data = {"motors": []}
@@ -101,8 +111,20 @@ def calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calib
     print(f"Calibration data saved to {calibration_file}")
     return cal_data
 
-
+# Inputs:
+# direction: int - the direction of the robot in degrees. 0 degrees is forward (towards the ball capture zone)
+# speed: int - the speed of the robot in mm/s
+# rotation: int - the desired rotation of the robot in degrees. 0 degrees is the direction the bot was started towards. Should be started facing enemy goal
+# rotation_speed: float - the speed of the rotation in 0.0-1.0
+# yaw: int - the measured yaw of the robot in degrees. 0 degrees is the direction the bot was started towards. Should be started facing enemy goal.
+# motors: list - the list of motor objects
+# motor_modes: list - the list of motor modes
+# diameter: int - the diameter of the wheels in mm. Used to convert bot speed to motor rpm.
+# max_yaw_rpm: int - the maximum yaw rpm. Used to limit the yaw correction speed.
+# max_rpm: int - the maximum rpm for the motors. Used to limit the motor speed.
+# yaw_correct_threshold: int - the threshold for the yaw correction in degrees. If yaw error is less than this, no correction is applied. This is to prevent overcorrection.
 def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold):
+    # Ensures integer parameters are integers
     direction = int(direction)
     speed = int(speed)
     rotation = int(rotation)
@@ -112,10 +134,14 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     max_rpm = int(max_rpm)
     yaw_correct_threshold = int(yaw_correct_threshold)
     
+    # Gets the first 4 motors from the list of motors
     drive_motors = motors[:4]
+    # Checks if any of the motors are None
     if any(motor is None for motor in drive_motors):
         raise ValueError("move() requires 4 initialized drive motors in motors[0:4].")
 
+    # Calculates the difference between the desired rotation and the measured yaw in degrees.
+    # A positive error means the bot is rotating clockwise, a negative error means the bot is rotating counter-clockwise.
     yaw_error = ((yaw - rotation + 180) % 360) - 180
 
     rotation_speed = max(0.0, min(rotation_speed, 1.0))
@@ -125,6 +151,8 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     else:
         yaw_correct_rpm_component = 0.0
 
+    # Direction is normally measured from 0 degrees (this is sometimes referred to as "true north", but it just represents the direction from the bot's goal to the enemy's)
+    # Local direction converts this 'global' direction to a direction relative to the bot's front right wheel.
     local_direction = direction - yaw - 45
     a_mult = math.sin(math.radians(local_direction)) # Back left wheel
     b_mult = math.cos(math.radians(local_direction)) # Back right wheel
@@ -144,17 +172,22 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     c_speed = c_value * mmps_to_rpm
     d_speed = d_value * mmps_to_rpm
 
+    # Finds the maximum speed of any individual motor in rpm.
+    # 1e-6 is added to avoid division by zero.
     max_trans_rpm = max(abs(a_speed), abs(b_speed), abs(c_speed), abs(d_speed), 1e-6)
     if max_trans_rpm > max_rpm:
+        # Scales all motor speeds down so the maximum speed is equal to max_rpm, while preserving the relative speeds of the motors so direction is the same.
         scale = max_rpm / max_trans_rpm
         a_speed *= scale
         b_speed *= scale
         c_speed *= scale
         d_speed *= scale
 
-    # Clamp to max motor rpm
+    # Clamp to max yaw correction component rpm.
     yaw_correct_rpm_component = max(min(yaw_correct_rpm_component, max_yaw_rpm), -max_yaw_rpm)
 
+    # The following block calculates how many rpm are left for the yaw correction component between the max rpm and desired rpm.
+    # Upper bound is the highest positive value, lower bound is the lowest negative value.
     bounds = []
     for base in (a_speed, b_speed, c_speed, d_speed):
         upper = max_rpm - base
@@ -163,8 +196,10 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
 
     lower_bound = max(b[0] for b in bounds)
     upper_bound = min(b[1] for b in bounds)
+    # Clamps yaw correction component rpm to the bounds.
     yaw_correction_rpm = max(min(yaw_correct_rpm_component, upper_bound), lower_bound)
 
+    # Adds the yaw correction component to the motor speeds.
     a_speed += yaw_correction_rpm
     b_speed += yaw_correction_rpm
     c_speed += yaw_correction_rpm
@@ -177,11 +212,13 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     d_speed = max(min(d_speed, max_rpm), -max_rpm)
     # print(f"a_speed: {a_speed}, b_speed: {b_speed}, c_speed: {c_speed}, d_speed: {d_speed}")
 
+    # Uses the formula to convert rpm to motor speed units.
     a_val = int(a_speed * RPM_TO_MOTOR_SPEED)
     b_val = int(b_speed * RPM_TO_MOTOR_SPEED)
     c_val = int(c_speed * RPM_TO_MOTOR_SPEED)
     d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
 
+    # Sends the desired speed to the motor drivers.
     drive_motors[0].set_speed(a_val)
     drive_motors[1].set_speed(b_val)
     drive_motors[2].set_speed(c_val)
@@ -200,7 +237,9 @@ def stop_all_motors(motors):
             m.set_speed(0)
 
 
+# TODO: Automatically use i2c addresses using a fixed array in order: [28, 32, 31, 30]
 def _prompt_i2c_addresses():
+    """Gets i2c addresses from the user."""
     print("Please enter the number of motor drivers you want to control:")
     tempuint32 = int(input())
     if tempuint32 == 0 or tempuint32 > 8:
@@ -219,5 +258,6 @@ def _prompt_i2c_addresses():
         setup_motor_count += 1
     return addresses
 
+# Should not be used, only used for testing initialisation.
 if __name__ == "__main__":
     init_motors(_prompt_i2c_addresses())
