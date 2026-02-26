@@ -433,6 +433,7 @@ if __name__ == "__main__":
     
     camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
     camera.start()
+    camera.start_http_server()
 
     motors, motor_modes = init_motors(_prompt_i2c_addresses())
     steering_state = False
@@ -440,7 +441,7 @@ if __name__ == "__main__":
         while True:
             # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
             yaw = 0
-            x_pos, y_pos = get_coordinates(yaw)
+            x_pos, y_pos = 1215, 910
             ball_direction = camera.bearing
             ball_distance = camera.distance
             ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and x_pos is not None else None
