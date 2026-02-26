@@ -33,6 +33,10 @@ class Camera:
         self._capture_started = False
         self._server_started = False
         self._is_shutting_down = False
+        self.calibrated = False
+        self.upperbound = 0
+        self.lowerbound = 0
+        self.colours = []
 
         # Enable color detection callback by default
         self.picam2.pre_callback = self._proxy_callback
@@ -134,6 +138,7 @@ class Camera:
             with MappedArray(request, "main") as m:
                 if self._is_shutting_down:
                     return
+                
                 # Convert the image to HSV
                 hsv = cv2.cvtColor(m.array, cv2.COLOR_BGR2HSV)
 
@@ -145,53 +150,70 @@ class Camera:
                 # # Draw a small crosshair in the center of the image
                 # cv2.line(m.array, (m.array.shape[1] // 2, m.array.shape[0] // 2 - 10), (m.array.shape[1] // 2, m.array.shape[0] // 2 + 10), (0, 0, 255), 2)
                 # cv2.line(m.array, (m.array.shape[1] // 2 - 10, m.array.shape[0] // 2), (m.array.shape[1] // 2 + 10, m.array.shape[0] // 2), (0, 0, 255), 2)
+                if self.calibrated:
 
-                orangeLowerBound = np.array([0, 200, 140])
-                orangeUpperBound = np.array([15, 255, 255])
+                    orangeLowerBound = np.array([0, 200, 140])
+                    orangeUpperBound = np.array([15, 255, 255])
 
-                orangeMask = cv2.inRange(hsv, orangeLowerBound, orangeUpperBound)
-                orangeContours, _ = cv2.findContours(orangeMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                for contour in orangeContours:
-                    area = cv2.contourArea(contour)
-                    if area > 200:
-                        x, y, w, h = cv2.boundingRect(contour)
-                        cv2.drawContours(m.array, [contour], -1, (0, 165, 255), 2)
-                # print(redContours)
-                # Select the biggest contour with bounding-box area (w*h) less than 10000
-                validContours = []
-                for c in orangeContours:
-                    x_tmp, y_tmp, w_tmp, h_tmp = cv2.boundingRect(c)
-                    if w_tmp * h_tmp < 50000:
-                        validContours.append(c)
-                biggestContour = max(
-                    validContours,
-                    key=lambda c: (lambda wh: wh[0] * wh[1])(cv2.boundingRect(c)[2:4])
-                ) if validContours else None
-                if biggestContour is not None:
-                    x, y, w, h = cv2.boundingRect(biggestContour)
-                    cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                    # print(f"Biggest contour area: {w*h}")
-                    # A = -220d + 11300
-                    # d = (11300 - A) / 220
-                    self._distance = (11300 - w*h) / 220
-                    biggestContourAreaCentre = (x + w // 2, y + h // 2)
+                    orangeMask = cv2.inRange(hsv, orangeLowerBound, orangeUpperBound)
+                    orangeContours, _ = cv2.findContours(orangeMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for contour in orangeContours:
+                        area = cv2.contourArea(contour)
+                        if area > 200:
+                            x, y, w, h = cv2.boundingRect(contour)
+                            cv2.drawContours(m.array, [contour], -1, (0, 165, 255), 2)
+                    # print(redContours)
+                    # Select the biggest contour with bounding-box area (w*h) less than 10000
+                    validContours = []
+                    for c in orangeContours:
+                        x_tmp, y_tmp, w_tmp, h_tmp = cv2.boundingRect(c)
+                        if w_tmp * h_tmp < 50000:
+                            validContours.append(c)
+                    biggestContour = max(
+                        validContours,
+                        key=lambda c: (lambda wh: wh[0] * wh[1])(cv2.boundingRect(c)[2:4])
+                    ) if validContours else None
+                    if biggestContour is not None:
+                        x, y, w, h = cv2.boundingRect(biggestContour)
+                        cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                        # print(f"Biggest contour area: {w*h}")
+                        # A = -220d + 11300
+                        # d = (11300 - A) / 220
+                        self._distance = (11300 - w*h) / 220
+                        biggestContourAreaCentre = (x + w // 2, y + h // 2)
 
-                    # Find the bearing of biggestContourAreaCentre from the centre of the image
-                    bearing_rad = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
-                    self._bearing = math.degrees(bearing_rad) - 90
-                    # print(f"Distance: {self._distance}, Bearing: {self._bearing}")
+                        # Find the bearing of biggestContourAreaCentre from the centre of the image
+                        bearing_rad = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
+                        self._bearing = math.degrees(bearing_rad) - 90
+                        # print(f"Distance: {self._distance}, Bearing: {self._bearing}")
 
-                    # need to find focal length of camera
-                    # bw, fl = 0.42, 0
-                    # distance = (bw * fl) / w
+                        # need to find focal length of camera
+                        # bw, fl = 0.42, 0
+                        # distance = (bw * fl) / w
+                    else:
+                        self._bearing = None
+                        self._distance = None
+                    # print(f"Bearing: {self._bearing}")
+
+                    # Call the user-specified callback with both the original and HSV arrays
+                    if self.user_callback:
+                        self.user_callback(m.array, hsv)
                 else:
-                    self._bearing = None
-                    self._distance = None
-                # print(f"Bearing: {self._bearing}")
+                    
+                    center_y = m.array.shape[0] - 50
+                    center_x = m.array.shape[1] - 50
+                    
+                    # Draw a small crosshair in the center of the image
+                    cv2.line(m.array, (center_x, center_y - 10), (center_x, center_y + 10), (0, 0, 255), 2)
+                    cv2.line(m.array, (center_x - 10, center_y), (center_x + 10, center_y), (0, 0, 255), 2)
 
-                # Call the user-specified callback with both the original and HSV arrays
-                if self.user_callback:
-                    self.user_callback(m.array, hsv)
+                    pixel_colour = hsv[center_y, center_x]
+                    if 10>pixel_colour[0]>25 and 100>pixel_colour[1]>255 and 100>pixel_colour[2]>255:
+                        if (pixel_colour[0], pixel_colour[1], pixel_colour[2]) not in self.colours:
+                            self.colours.append(pixel_colour[0], pixel_colour[1], pixel_colour[2])
+                    with open("calibrate_camera.txt") as c:
+                        c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
+
         except Exception as e:
             logging.warning("Camera callback error (may be during shutdown): %s", e)
 
