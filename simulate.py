@@ -959,6 +959,7 @@ async def connect_to_log_server(addr, stop_event):
                 print("[log-client] connected")
                 log_client_error = None
                 async for message in websocket:
+                    print(f"[log-client] recv: {message}")
                     log_line = message
                     if stop_event.is_set():
                         break

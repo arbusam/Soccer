@@ -1,8 +1,7 @@
 import math
 import time
+import argparse
 import numpy as np
-
-import send_log
 
 WHEEL_DIAMETER = 50 # mm
 MAX_YAW_RPM = 100
@@ -402,10 +401,22 @@ if __name__ == "__main__":
     import lidar
     from movement import init_motors, move, stop_all_motors
     from camera import Camera
+    parser = argparse.ArgumentParser(
+        description="Run defence controller with optional live websocket streaming."
+    )
+    parser.add_argument(
+        "-s",
+        "--stream",
+        action="store_true",
+        help="Enable websocket live log streaming for simulate.py --connect.",
+    )
+    args = parser.parse_args()
 
-    # Start websocket log server in the background (it runs its own asyncio loop).
-    send_log.start_server_background()
-    time.sleep(0.05)
+    if args.stream:
+        import send_log
+        # Start websocket log server in the background (it runs its own asyncio loop).
+        send_log.start_server_background()
+        time.sleep(0.05)
 
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
@@ -436,7 +447,8 @@ if __name__ == "__main__":
             ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and y_pos is not None else None
             yellow = True
             ball_captured = False
-            send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
+            if args.stream:
+                send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
             direction, speed, rotation, steering_state, _ = defence(
                 x_pos,
                 y_pos,
