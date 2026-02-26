@@ -25,3 +25,14 @@ Any time you don't understand something about how this project works, try and fi
 - Motor speeds in RPM: `a_speed = a_value * mmps_to_rpm`, and similarly for b, c, d.
 - `max_trans_rpm = max(|a_speed|, |b_speed|, |c_speed|, |d_speed|, 1e-6)` (the 1e-6 avoids division by zero later). If this exceeds `max_rpm`, all four are scaled down so the max equals `max_rpm`.
 - With diameter 50 mm: `mmps_to_rpm ≈ 0.382`. Example: speed 500, local_direction 0° → b_speed ≈ 191, d_speed ≈ -191, max_trans_rpm = 191.
+
+## Raspberry Pi: "Bus error" when importing `numpy`/`cv2`
+
+**Symptom:** Running `defence.py` or `camera.py` crashes with `Bus error` (SIGBUS), often before any Python traceback.
+
+**Cause (observed on this project):** The Raspberry Pi kernel is configured with **16KB pages** (`getconf PAGE_SIZE` → `16384`). Some `pip` wheels for native libs (notably `numpy`, and therefore `opencv-python`) can **SIGBUS on 16KB-page systems**. In this repo, importing `numpy` inside the project `.venv` triggered the SIGBUS during `numpy._core.multiarray` import.
+
+**Fix:** Prefer OS-packaged builds for native libs on the Pi:
+
+- Install: `sudo apt-get install python3-numpy python3-opencv python3-libcamera python3-picamera2`
+- Run scripts with system Python (`python3 ...`), or create a venv that uses system packages (`python3 -m venv .venv --system-site-packages`) and avoid `pip` installing `numpy/opencv-python/picamera2` into the venv.
