@@ -433,7 +433,7 @@ if __name__ == "__main__":
     
     camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
     camera.start()
-    camera.start_http_server()
+    camera.run_server()
 
     motors, motor_modes = init_motors(_prompt_i2c_addresses())
     steering_state = False
