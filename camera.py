@@ -211,7 +211,7 @@ class Camera:
                     if 10>pixel_colour[0]>25 and 100>pixel_colour[1]>255 and 100>pixel_colour[2]>255:
                         if (pixel_colour[0], pixel_colour[1], pixel_colour[2]) not in self.colours:
                             self.colours.append(pixel_colour[0], pixel_colour[1], pixel_colour[2])
-                    with open("calibrate_camera.txt") as c:
+                    with open("calibrate_camera.txt", "w") as c:
                         c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
 
         except Exception as e:
