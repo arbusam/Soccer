@@ -1,73 +1,45 @@
-#!/usr/bin/env python3
-"""
-Simple I2C probe/reader.
-
-Example:
-    python test_imu.py --address 0x68 --bus 1 --length 16 --interval 0.2
-"""
-
-import argparse
+# SPDX-FileCopyrightText: 2020 Bryan Siepert, written for Adafruit Industries
+#
+# SPDX-License-Identifier: Unlicense
 import time
 
-from smbus2 import SMBus, i2c_msg
+import board
+import busio
 
+from adafruit_bno08x import (
+    BNO_REPORT_ACCELEROMETER,
+    BNO_REPORT_GYROSCOPE,
+    BNO_REPORT_MAGNETOMETER,
+    BNO_REPORT_ROTATION_VECTOR,
+)
+from adafruit_bno08x.i2c import BNO08X_I2C
 
-def parse_address(value: str) -> int:
-    """Accept decimal or hex addresses (e.g. 104 or 0x68)."""
-    return int(value, 0)
+i2c = busio.I2C(board.SCL, board.SDA, frequency=400000)
+bno = BNO08X_I2C(i2c)
 
+bno.enable_feature(BNO_REPORT_ACCELEROMETER)
+bno.enable_feature(BNO_REPORT_GYROSCOPE)
+bno.enable_feature(BNO_REPORT_MAGNETOMETER)
+bno.enable_feature(BNO_REPORT_ROTATION_VECTOR)
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Read raw bytes from an I2C device and print what is received."
-    )
-    parser.add_argument(
-        "--bus",
-        type=int,
-        default=1,
-        help="I2C bus number (default: 1)",
-    )
-    parser.add_argument(
-        "--address",
-        type=parse_address,
-        required=True,
-        help="I2C device address, e.g. 0x68",
-    )
-    parser.add_argument(
-        "--length",
-        type=int,
-        default=16,
-        help="Number of bytes to read each cycle (default: 16)",
-    )
-    parser.add_argument(
-        "--interval",
-        type=float,
-        default=0.2,
-        help="Delay between reads in seconds (default: 0.2)",
-    )
-    args = parser.parse_args()
+while True:
+    time.sleep(0.5)
+    print("Acceleration:")
+    accel_x, accel_y, accel_z = bno.acceleration
+    print("X: %0.6f  Y: %0.6f Z: %0.6f  m/s^2" % (accel_x, accel_y, accel_z))
+    print("")
 
-    print(
-        f"Reading from I2C bus {args.bus}, address 0x{args.address:02X}, "
-        f"{args.length} byte(s) every {args.interval}s"
-    )
-    print("Press Ctrl+C to stop.\n")
+    print("Gyro:")
+    gyro_x, gyro_y, gyro_z = bno.gyro
+    print("X: %0.6f  Y: %0.6f Z: %0.6f rads/s" % (gyro_x, gyro_y, gyro_z))
+    print("")
 
-    with SMBus(args.bus) as bus:
-        while True:
-            try:
-                read = i2c_msg.read(args.address, args.length)
-                bus.i2c_rdwr(read)
-                data = list(read)
-                hex_data = " ".join(f"{b:02X}" for b in data)
-                print(f"RX ({len(data)} bytes): [{hex_data}]  {data}")
-            except OSError as exc:
-                print(f"I2C read error at 0x{args.address:02X}: {exc}")
-            time.sleep(args.interval)
+    print("Magnetometer:")
+    mag_x, mag_y, mag_z = bno.magnetic
+    print("X: %0.6f  Y: %0.6f Z: %0.6f uT" % (mag_x, mag_y, mag_z))
+    print("")
 
-
-if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\nStopped.")
+    print("Rotation Vector Quaternion:")
+    quat_i, quat_j, quat_k, quat_real = bno.quaternion
+    print("I: %0.6f  J: %0.6f K: %0.6f  Real: %0.6f" % (quat_i, quat_j, quat_k, quat_real))
+    print("")
