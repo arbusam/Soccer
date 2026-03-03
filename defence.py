@@ -31,6 +31,8 @@ YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000
 
+BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
+
 # Checks if the ball is outside the pitch by using the pitch boundaries, the ball position and the ball radius.
 def is_ball_out(ball_x, ball_y):
     closest_x = max(WHITE_MIN_X, min(ball_x, WHITE_MAX_X))
@@ -420,15 +422,41 @@ if __name__ == "__main__":
 
     motors, motor_modes = init_motors(_prompt_i2c_addresses())
     steering_state = False
+
+    ball_dx = 0
+    ball_dy = 0
+    last_ball_update = time.time()
+    last_ball_x = None
+    last_ball_y = None
     try:
         while True:
             # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
             yaw = imu.get_yaw()
-            x_pos, y_pos = 1215, 910
+            x_pos, y_pos = get_coordinates(yaw)
             ball_direction = camera.bearing
             ball_distance = camera.distance
             ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and x_pos is not None else None
             ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and y_pos is not None else None
+            now = time.time()
+            if ball_x is not None and ball_y is not None:
+                dt = now - last_ball_update
+                if last_ball_x is not None and last_ball_y is not None and dt > 0:
+                    ball_dx = (ball_x - last_ball_x) / dt
+                    ball_dy = (ball_y - last_ball_y) / dt
+                last_ball_x = ball_x
+                last_ball_y = ball_y
+                last_ball_update = now
+            elif (
+                last_ball_x is not None
+                and last_ball_y is not None
+                and now - last_ball_update < BALL_TIMEOUT
+            ):
+                dt_lost = now - last_ball_update
+                ball_x = last_ball_x + ball_dx * dt_lost
+                ball_y = last_ball_y + ball_dy * dt_lost
+            else:
+                ball_x = None
+                ball_y = None
             yellow = True
             ball_captured = False
             if args.stream:
