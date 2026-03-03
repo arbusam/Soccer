@@ -3,30 +3,35 @@ import time
 import argparse
 import numpy as np
 
-WHEEL_DIAMETER = 50 # mm
-MAX_YAW_RPM = 100
+WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
+MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
+# Coordinates of the centre of the goal zone, which the goalie uses for blocking.
 CYAN_GOAL_CENTRE_X = 400
 YELLOW_GOAL_CENTRE_X = 1980
+# Y is shared between goals because it is the same
 GOAL_CENTRE_Y = 910
+# Coordinates of the back of the goal zone, which defence uses for aiming.
 YELLOW_GOAL_BACK_X = 226
 GOAL_BACK_Y_MIN = 700
 GOAL_BACK_Y_MAX = 1125
 CYAN_GOAL_BACK_X = 2204
-MAX_MOTOR_RPM = 400
+MAX_MOTOR_RPM = 400 # Maximum rpm that the wheels can spin at
 LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
-# White boundary rectangle taken from simulate.py
+# Pitch boundary coordinates. Used to keep bot within the pitch.
 WHITE_MIN_X = 250
 WHITE_MAX_X = 2180
 WHITE_MIN_Y = 250
 WHITE_MAX_Y = 1570
-BALL_RADIUS = 21
 
-YAW_CORRECT_THRESHOLD = 3 # deg
+BALL_RADIUS = 21 # mm, radius of the ball
+
+YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000
 
+# Checks if the ball is outside the pitch by using the pitch boundaries, the ball position and the ball radius.
 def is_ball_out(ball_x, ball_y):
     closest_x = max(WHITE_MIN_X, min(ball_x, WHITE_MAX_X))
     closest_y = max(WHITE_MIN_Y, min(ball_y, WHITE_MAX_Y))
@@ -44,22 +49,15 @@ def is_ball_out(ball_x, ball_y):
 # yellow: True if the bot is scoring towards yellow, False if the bot is scoring towards cyan
 # ball_captured: True when the ball is touching the capture zone
 # steering_state: caller-provided flag indicating if this bot is currently steering
-# Outputs: direction, speed, rotation
+
+# Outputs: direction, speed, rotation, steering, kick
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
-# steering_state: caller-provided flag indicating if this bot is currently steering
-# kick: True if the bot wants to kick the ball
-def defence(
-    x_pos,
-    y_pos,
-    yaw,
-    ball_x,
-    ball_y,
-    yellow=True,
-    ball_captured=False,
-    steering_state=False,
-):
+# steering_state: Whether the bot is currently steering. Is not used elsewhere, only exists to persist state for the next call.
+# kick: True if the bot should kick the ball
+def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False, steering_state=False):
+    # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
         target_x = 1215
         target_y = 910
@@ -70,16 +68,19 @@ def defence(
         steering = False
         kick = False
         return direction, speed, rotation, steering, kick
+    # Ensure the steering input is a boolean.
     steering = bool(steering_state)
+    # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
     if yellow:
         vector = (ball_x - x_pos), (ball_y - y_pos)
     else:
         vector = (x_pos - ball_x), (y_pos - ball_y)
-    direction = math.degrees(math.atan2(vector[1], vector[0]))
-    dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
-    rotation = 0 if yellow else 180
-    speed = 500
-    offset = 0
+    direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.
+    dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2) # Calculate the distance to the ball.
+    rotation = 0 if yellow else 180 # Sets the desired roation. Should always be equal to the ideal heading.
+    speed = 500 # mm/s, Default speed of the bot.
+    offset = 0 # deg, Offset to the direction to the ball. Used to avoid own goals.
+    # Only activate own goal prevention if the ball is close to the bot.
     if dist < 200:
         if -10 < direction < 10:
             speed = 1000
@@ -105,11 +106,15 @@ def defence(
     elif dist > 500:
         speed = 1000
 
+    # Reverse the direction for bots scoring the other way.
     if not yellow:
         direction -= 180
         direction %= 360
 
+    # By default, the bot should not kick the ball.
     kick = False
+
+    # Only kick if the ball is captured and lined up with the goal.
     if ball_captured:
         if yellow:
             target_x = CYAN_GOAL_BACK_X
