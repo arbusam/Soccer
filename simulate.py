@@ -90,6 +90,17 @@ yellow = (255, 255, 0)
 orange = (255, 165, 0)
 red = (255, 0, 0)
 
+GOAL_LEFT_EDGE_X = 0
+GOAL_RIGHT_EDGE_X = PITCH_WIDTH
+GOAL_LEFT_BACK_X = 226
+GOAL_RIGHT_BACK_X = 2204
+GOAL_LEFT_FRONT_X = 300
+GOAL_RIGHT_FRONT_X = 2130
+GOAL_TOP_Y = 685
+GOAL_BOTTOM_Y = 1135
+GOAL_BACK_BOTTOM_Y = 1140
+GOAL_LINE_WIDTH = 10
+
 ControllerFunc = Callable[..., Sequence[float]]
 
 ROLE_CONTROLLER_MAP = {
@@ -151,21 +162,17 @@ pygame.draw.line(pitch, black, (1830, 1360), (2130, 1360), 20)
 
 pygame.draw.rect(pitch, cyan, pygame.Rect(226, 685, 74, 450))
 pygame.draw.rect(pitch, yellow, pygame.Rect(2130, 685, 74, 450))
-pygame.draw.line(pitch, black, (300, 685), (222, 685), 10)
-pygame.draw.line(pitch, black, (226, 685), (226, 1140), 10)
-pygame.draw.line(pitch, black, (226, 1135), (300, 1135), 10)
-pygame.draw.line(pitch, black, (2130, 685), (2208, 685), 10)
-pygame.draw.line(pitch, black, (2204, 685), (2204, 1140), 10)
-pygame.draw.line(pitch, black, (2204, 1135), (2130, 1135), 10)
-
 GOAL_LINES = [
-    ((300, 685), (222, 685), 10),
-    ((226, 685), (226, 1140), 10),
-    ((226, 1135), (300, 1135), 10),
-    ((2130, 685), (2208, 685), 10),
-    ((2204, 685), (2204, 1140), 10),
-    ((2204, 1135), (2130, 1135), 10),
+    ((GOAL_LEFT_FRONT_X, GOAL_TOP_Y), (GOAL_LEFT_EDGE_X, GOAL_TOP_Y), GOAL_LINE_WIDTH),
+    ((GOAL_LEFT_BACK_X, GOAL_TOP_Y), (GOAL_LEFT_BACK_X, GOAL_BACK_BOTTOM_Y), GOAL_LINE_WIDTH),
+    ((GOAL_LEFT_EDGE_X, GOAL_BOTTOM_Y), (GOAL_LEFT_FRONT_X, GOAL_BOTTOM_Y), GOAL_LINE_WIDTH),
+    ((GOAL_RIGHT_FRONT_X, GOAL_TOP_Y), (GOAL_RIGHT_EDGE_X, GOAL_TOP_Y), GOAL_LINE_WIDTH),
+    ((GOAL_RIGHT_BACK_X, GOAL_TOP_Y), (GOAL_RIGHT_BACK_X, GOAL_BACK_BOTTOM_Y), GOAL_LINE_WIDTH),
+    ((GOAL_RIGHT_EDGE_X, GOAL_BOTTOM_Y), (GOAL_RIGHT_FRONT_X, GOAL_BOTTOM_Y), GOAL_LINE_WIDTH),
 ]
+
+for start, end, line_width in GOAL_LINES:
+    pygame.draw.line(pitch, black, start, end, line_width)
 
 BLACK_POINTS = [
     (1215, 610),
