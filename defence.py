@@ -380,6 +380,8 @@ if __name__ == "__main__":
     import lidar
     from movement import init_motors, move, stop_all_motors
     from camera import Camera
+    from imu import IMU
+
     parser = argparse.ArgumentParser(
         description="Run defence controller with optional live websocket streaming."
     )
@@ -414,12 +416,14 @@ if __name__ == "__main__":
     camera.start()
     camera.run_server()
 
+    imu = IMU()
+
     motors, motor_modes = init_motors(_prompt_i2c_addresses())
     steering_state = False
     try:
         while True:
             # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
-            yaw = 0
+            yaw = imu.get_yaw()
             x_pos, y_pos = 1215, 910
             ball_direction = camera.bearing
             ball_distance = camera.distance
@@ -443,4 +447,5 @@ if __name__ == "__main__":
     finally:
         stop_all_motors(motors)
         camera.stop()
+        imu.close()
 
