@@ -30,6 +30,8 @@ class Camera:
         self.user_callback = None
         self._bearing = None
         self._distance = None
+        self._frame_id = 0
+        self._measurement_lock = threading.Lock()
         self._capture_started = False
         self._server_started = False
         self._is_shutting_down = False
@@ -97,13 +99,27 @@ class Camera:
     def bearing(self):
         if self._is_shutting_down:
             return None
-        return self._bearing
+        with self._measurement_lock:
+            return self._bearing
 
     @property
     def distance(self):
         if self._is_shutting_down:
             return None
-        return self._distance
+        with self._measurement_lock:
+            return self._distance
+
+    @property
+    def frame_id(self):
+        with self._measurement_lock:
+            return self._frame_id
+
+    def get_measurement(self):
+        if self._is_shutting_down:
+            with self._measurement_lock:
+                return self._frame_id, None, None
+        with self._measurement_lock:
+            return self._frame_id, self._bearing, self._distance
 
     def set_callback(self, callback_function):
         self.user_callback = callback_function
@@ -179,20 +195,24 @@ class Camera:
                         # print(f"Biggest contour area: {w*h}")
                         # A = -220d + 11300
                         # d = (11300 - A) / 220
-                        self._distance = (11300 - w*h) / 220
                         biggestContourAreaCentre = (x + w // 2, y + h // 2)
 
                         # Find the bearing of biggestContourAreaCentre from the centre of the image
                         bearing_rad = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
-                        self._bearing = math.degrees(bearing_rad) - 90
+                        new_bearing = math.degrees(bearing_rad) - 90
+                        new_distance = (11300 - w*h) / 220
                         # print(f"Distance: {self._distance}, Bearing: {self._bearing}")
 
                         # need to find focal length of camera
                         # bw, fl = 0.42, 0
                         # distance = (bw * fl) / w
                     else:
-                        self._bearing = None
-                        self._distance = None
+                        new_bearing = None
+                        new_distance = None
+                    with self._measurement_lock:
+                        self._bearing = new_bearing
+                        self._distance = new_distance
+                        self._frame_id += 1
                     # print(f"Bearing: {self._bearing}")
 
                     # Call the user-specified callback with both the original and HSV arrays
@@ -213,6 +233,10 @@ class Camera:
                             self.colours.append(pixel_colour[0], pixel_colour[1], pixel_colour[2])
                     with open("calibrate_camera.txt", "w") as c:
                         c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
+                    with self._measurement_lock:
+                        self._bearing = None
+                        self._distance = None
+                        self._frame_id += 1
 
         except Exception as e:
             logging.warning("Camera callback error (may be during shutdown): %s", e)

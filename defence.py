@@ -428,15 +428,21 @@ if __name__ == "__main__":
     last_ball_update = time.time()
     last_ball_x = None
     last_ball_y = None
+    last_camera_frame_id = camera.frame_id
     try:
         while True:
             # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
             yaw = imu.get_yaw()
             x_pos, y_pos = get_coordinates(yaw)
-            ball_direction = camera.bearing
-            ball_distance = camera.distance
-            ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and x_pos is not None else None
-            ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and y_pos is not None else None
+            camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
+            has_new_camera_frame = camera_frame_id != last_camera_frame_id
+            last_camera_frame_id = camera_frame_id
+            if has_new_camera_frame:
+                ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and x_pos is not None else None
+                ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and y_pos is not None else None
+            else:
+                ball_x = None
+                ball_y = None
             now = time.time()
             if ball_x is not None and ball_y is not None:
                 dt = now - last_ball_update
