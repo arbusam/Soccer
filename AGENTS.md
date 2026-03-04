@@ -1,5 +1,5 @@
 Any time you don't understand something about how this project works, try and figure it out. If you still don't understand, ask for help. Once you figure it out/get an answer, add an explanation of the problem and how to solve it to this file, so you don't run into the same problem again. Do not just save every change you make here, only add to this file if you didn't understand something and you had to spend time working it out.
-Whenever you finish writing code, use `ruff check` to lint it.
+Whenever you finish writing code, activate the environment and use `ruff check` to lint it.
 
 ## Library (motor / movement)
 
@@ -26,6 +26,31 @@ Whenever you finish writing code, use `ruff check` to lint it.
 - Motor speeds in RPM: `a_speed = a_value * mmps_to_rpm`, and similarly for b, c, d.
 - `max_trans_rpm = max(|a_speed|, |b_speed|, |c_speed|, |d_speed|, 1e-6)` (the 1e-6 avoids division by zero later). If this exceeds `max_rpm`, all four are scaled down so the max equals `max_rpm`.
 - With diameter 50 mm: `mmps_to_rpm ≈ 0.382`. Example: speed 500, local_direction 0° → b_speed ≈ 191, d_speed ≈ -191, max_trans_rpm = 191.
+
+## LIDAR coordinate estimation (`lidar_module.cpp`)
+
+**Problem:** The old Python `get_coordinates(yaw)` used fixed 90° angle sectors to assign LIDAR rays to walls. Near corners or edges, rays in one sector would hit the wrong wall, producing bad position estimates.
+
+**Solution — robust scan-to-rectangle fitting (C++ background thread):**
+
+- For a candidate position `(x, y)`, every LIDAR ray is intersected with the four pitch walls using ray–line math. The wall each ray hits is determined geometrically per candidate pose, not by fixed angle sectors.
+- Predicted range is compared to measured range using a Cauchy robust loss, so outliers (ball, other robots, reflections) are automatically downweighted.
+- **Local refinement:** derivative-free coarse-to-fine 8-direction search around the previous pose. Fast (~1 ms).
+- **Global search:** 9×7 grid over the whole pitch, then local refinement of the best seed. Used on cold start or when confidence drops (e.g. robot picked up and moved). Slower (~5–10 ms in C++) but runs rarely.
+- **Confidence:** computed from inlier ratio + MAD of inlier residuals. If confidence drops below threshold after local refine, global search is triggered automatically.
+- All estimation runs in a dedicated background thread; the Python loop just reads the latest result.
+
+**Python API:**
+
+1. `lidar.init(port, baudrate)` — start scan thread.
+2. `lidar.start_coordinates(pitch_x, pitch_y)` — start coordinate estimation thread.
+3. `lidar.set_yaw(yaw_deg)` — update yaw each frame (0 = facing +X).
+4. `lidar.get_coordinates()` → `(x, y)` or `(None, None)` — last confident estimate.
+5. `lidar.get_coordinates_info()` → `(x, y, confidence, ok)` — diagnostics.
+6. `lidar.is_coordinates_ready()` → `bool` — true once first good estimate exists.
+7. `lidar.shutdown()` — stops coordinate thread, scan thread, and motor.
+
+**Rebuild after changing `lidar_module.cpp`:** `python setup.py build_ext --inplace`
 
 ## Raspberry Pi: "Bus error" when importing `numpy`/`cv2`
 
