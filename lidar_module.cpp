@@ -3,7 +3,19 @@
  * 
  * Exposes LIDAR scanning functionality to Python.
  * Runs a background thread to continuously capture scan data.
- */
+ * Estimates bot's position by calculating theoretical distances for a given position, and comparing them to the measured distances.
+
+Definitions:
+ - position: The (x, y) coordinates of the robot on the pitch.
+ - yaw: The angle of the robot's heading.
+ - inlier: A ray that is close to the expected distance.
+ - outlier: A ray that is far from the expected distance (usually a blocking object).
+ - confidence: A measure of how confident we are that the position estimate is correct.
+ - local search: A search for the best position in the immediate vicinity of the previous position. Is much faster than the global search.
+ - global search: A search for the best position in the entire pitch. Uses a coarse grid to find the approximate area, then refines locally. Triggered when the local search has a low confidence.
+ - Cauchy loss: A loss function that is less sensitive to outliers. Formula: ln(1 + (z / COORD_CAUCHY_C)^2), where z is the error over the expected noise.
+ - MAD: Median Absolute Deviation. A measure of the spread of the inliers. Formula: 1.4826 * median(|e_i|), where e_i are the absolute residuals of inlier rays.
+*/
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
@@ -62,6 +74,7 @@ static std::atomic<bool> g_coord_running{false};
 static std::thread g_coord_thread;
 static std::mutex g_coord_mutex;
 
+// Default pitch dimensions in mm. Overwritten by start_coordinates().
 static float g_pitch_x = 2430.0f;
 static float g_pitch_y = 1820.0f;
 static std::atomic<float> g_yaw_deg{0.0f};
@@ -69,8 +82,8 @@ static std::atomic<float> g_yaw_deg{0.0f};
 struct CoordResult {
     float x;
     float y;
-    float confidence;
-    bool ok;
+    float confidence; // Confidence in the estimate
+    bool ok; // Whether the estimate is valid
 };
 
 static CoordResult g_latest_coord = {-1, -1, 0, false};
@@ -80,48 +93,52 @@ static bool g_has_good_coord = false;
 static std::atomic<bool> g_coord_ready{false};
 
 // Only touched by the coordinate thread
-static float g_prev_x = -1.0f;
-static float g_prev_y = -1.0f;
-static bool g_has_prev_pose = false;
+static float g_prev_x = -1.0f; // Previous x coordinate
+static float g_prev_y = -1.0f; // Previous y coordinate
+static bool g_has_prev_pose = false; // Whether a previous pose is available
 
 // Tuning constants
-static constexpr float COORD_EPS       = 1e-9f;
-static constexpr float COORD_SIGMA     = 30.0f;   // expected range noise (mm)
-static constexpr float COORD_CAUCHY_C  = 2.5f;
-static constexpr float MIN_RANGE_MM    = 80.0f;
-static constexpr float MAX_RANGE_MM    = 6000.0f;
+static constexpr float COORD_EPS        = 1e-9f;   // Small epsilon to avoid floating point errors
+static constexpr float COORD_SIGMA      = 30.0f;   // expected range noise (mm)
+static constexpr float COORD_CAUCHY_C   = 2.5f;    // Cauchy loss constant
+static constexpr float MIN_RANGE_MM     = 80.0f;   // Avoids measuring itself
+static constexpr float MAX_RANGE_MM     = 6000.0f; // Anything greater than 6m is definetly outside the pitch
 static constexpr int   MIN_BEAM_QUALITY = 5;
-static constexpr int   MIN_BEAM_COUNT  = 30;
-static constexpr float CONF_THRESHOLD  = 0.35f;
-static constexpr float INLIER_THRESH   = 80.0f;   // mm
+static constexpr int   MIN_BEAM_COUNT   = 30;
+static constexpr float CONF_THRESHOLD   = 0.35f;
+static constexpr float INLIER_THRESH    = 80.0f;   // mm, max allowed error between measured and predicted distance for a ray to count as an inlier
 
 // ===========================================================================
-// Coordinate estimation — algorithms
+// Coordinate estimation
 // ===========================================================================
 
 static inline float cauchy_loss(float z) {
+    // z is the error over the expected noise
     float r = z / COORD_CAUCHY_C;
+    // Downweights errors on the curve of f(x) = ln(1 + x^2)
+    // This is much less sensitive to outliers than simply squaring the error
+    // This is important as other objects on the pitch will be detected as outliers, but they should not effect the position too much.
     return std::log(1.0f + r * r);
 }
 
 // Predicted range from (x,y) along direction (ux,uy) to rectangle [0,Lx]×[0,Ly].
+// Outputs the smallest distance to the wall that the ray hits.
 static inline float predict_range(float x, float y,
                                   float ux, float uy,
                                   float Lx, float Ly) {
     float t_min = 1e30f;
-
-    if (ux < -COORD_EPS) {
+    if (ux < -COORD_EPS) { // Left wall
         float t = -x / ux;
         if (t > 0 && t < t_min) t_min = t;
-    } else if (ux > COORD_EPS) {
+    } else if (ux > COORD_EPS) { // Right wall
         float t = (Lx - x) / ux;
         if (t > 0 && t < t_min) t_min = t;
     }
 
-    if (uy < -COORD_EPS) {
+    if (uy < -COORD_EPS) { // Top wall
         float t = -y / uy;
         if (t > 0 && t < t_min) t_min = t;
-    } else if (uy > COORD_EPS) {
+    } else if (uy > COORD_EPS) { // Bottom wall
         float t = (Ly - y) / uy;
         if (t > 0 && t < t_min) t_min = t;
     }
@@ -129,14 +146,29 @@ static inline float predict_range(float x, float y,
     return t_min;
 }
 
+// Predicts a range of distances for every ray for a given position, then compares it to the measured distance using the Cauchy loss function.
+// Inputs:
+// - x, y: The position to score.
+// - ux, uy: The unit vectors of the rays.
+// - r_meas: The measured distances of the rays.
+// - weights: Per-ray weights derived from the rplidar sdk's quality values. Higher quality rays have more influence on the total cost.
+// - n: The number of rays.
+// - Lx, Ly: The dimensions of the pitch.
+// Outputs:
+// - The total cost of the position. The lower the cost, the more likely the position is correct.
 static float score_pose(float x, float y,
                         const float* ux, const float* uy,
                         const float* r_meas, const float* weights,
                         int n, float Lx, float Ly) {
     float cost = 0.0f;
+    // Iterate over all rays and calculate the cost of the position.
     for (int i = 0; i < n; i++) {
         float r_pred = predict_range(x, y, ux[i], uy[i], Lx, Ly);
+        // Calculate the error over the expected noise. Used as z in the Cauchy loss function.
+        // e=1 means the error is 1 standard deviation of the expected noise.
         float e = (r_meas[i] - r_pred) / COORD_SIGMA;
+        // Calculate the Cauchy loss of the error.
+        // Scales the ray's contribution to total cost based on quality; higher quality rays have more influence.
         cost += weights[i] * cauchy_loss(e);
     }
     return cost;
@@ -147,6 +179,15 @@ struct PoseStats {
     float mad_mm;
 };
 
+// Given a position, calculates the ratio of inliers and their spread.
+// Inputs:
+// - x, y: The position to score.
+// - ux, uy: The unit vectors of the rays.
+// - r_meas: The measured distances of the rays.
+// - n: The number of rays.
+// - Lx, Ly: The dimensions of the pitch.
+// Outputs:
+// - The ratio of inliers and their spread (MAD).
 static PoseStats compute_stats(float x, float y,
                                const float* ux, const float* uy,
                                const float* r_meas, int n,
@@ -156,37 +197,50 @@ static PoseStats compute_stats(float x, float y,
     int inlier_count = 0;
 
     for (int i = 0; i < n; i++) {
-        float r_pred = predict_range(x, y, ux[i], uy[i], Lx, Ly);
-        float e = std::fabs(r_meas[i] - r_pred);
-        if (e < INLIER_THRESH) {
+        float r_pred = predict_range(x, y, ux[i], uy[i], Lx, Ly); // Predict the distance to the wall along the ray.
+        float e = std::fabs(r_meas[i] - r_pred); // Calculate the raw error between the predicted and measured distance.
+        if (e < INLIER_THRESH) { // If the error is less than the threshold, it is an inlier.
             inlier_count++;
             inlier_errors.push_back(e);
         }
     }
 
     PoseStats stats;
-    stats.inlier_ratio = (float)inlier_count / std::max(n, 1);
+    stats.inlier_ratio = (float)inlier_count / std::max(n, 1); // Calculate the ratio of inliers to the total number of rays.
 
     if (inlier_errors.empty()) {
-        stats.mad_mm = 1e9f;
+        stats.mad_mm = 1e9f; // If there are no inliers, set the MAD to a very large number.
     } else {
-        std::sort(inlier_errors.begin(), inlier_errors.end());
-        stats.mad_mm = 1.4826f * inlier_errors[inlier_errors.size() / 2];
+        std::sort(inlier_errors.begin(), inlier_errors.end()); // Sort the inlier errors to find the median.
+        stats.mad_mm = 1.4826f * inlier_errors[inlier_errors.size() / 2]; // Calculate the MAD.
     }
     return stats;
 }
 
+// Uses the inlier ratio and MAD to calculate the confidence in the position.
 static float compute_confidence(const PoseStats& s) {
     return 0.7f * s.inlier_ratio + 0.3f * std::exp(-s.mad_mm / 80.0f);
 }
 
-// Derivative-free coarse-to-fine local search.
+// Derivative-free coarse-to-fine local search. Is much faster than the global search.
+// Inputs:
+// - x, y: The position to refine.
+// - best_cost: The best cost found so far.
+// - ux, uy: The unit vectors of the rays.
+// - r_meas: The measured distances of the rays.
+// - weights: Per-ray weights derived from quality values.
+// - n: The number of rays.
+// - Lx, Ly: The dimensions of the pitch.
+// - step0: The initial step size.
+// - levels: The number of levels to search. More levels means more precise, but slower.
+// Outputs:
+// - The refined position.
 static void local_refine(float& x, float& y, float& best_cost,
                          const float* ux, const float* uy,
                          const float* r_meas, const float* weights,
                          int n, float Lx, float Ly,
                          float step0 = 120.0f, int levels = 4) {
-    static const float dirs[][2] = {
+    static const float dirs[][2] = { // 8 directions to search in.
         {1,0},{-1,0},{0,1},{0,-1},
         {1,1},{1,-1},{-1,1},{-1,-1}
     };
@@ -196,11 +250,11 @@ static void local_refine(float& x, float& y, float& best_cost,
         bool improved = true;
         while (improved) {
             improved = false;
-            for (const auto& d : dirs) {
-                float xn = std::min(std::max(x + d[0] * step, 0.0f), Lx);
-                float yn = std::min(std::max(y + d[1] * step, 0.0f), Ly);
-                float c = score_pose(xn, yn, ux, uy, r_meas, weights, n, Lx, Ly);
-                if (c < best_cost) {
+            for (const auto& d : dirs) { // Iterate over all directions and search in each direction.
+                float xn = std::min(std::max(x + d[0] * step, 0.0f), Lx); // The new x coordinate after the step.
+                float yn = std::min(std::max(y + d[1] * step, 0.0f), Ly); // The new y coordinate after the step.
+                float c = score_pose(xn, yn, ux, uy, r_meas, weights, n, Lx, Ly); // Score the new position.
+                if (c < best_cost) { // Only save the best position so far.
                     x = xn;
                     y = yn;
                     best_cost = c;
@@ -208,26 +262,37 @@ static void local_refine(float& x, float& y, float& best_cost,
                 }
             }
         }
-        step *= 0.5f;
+        step *= 0.5f; // Halve the step size for the next level.
     }
 }
 
-// Coarse grid over the entire pitch, then local refinement of best seed.
+// Coarse grid over the entire pitch. Used if current position is unknown or has low confidence.
+// After the wide grid search, the best position is refined using the local search.
+// Inputs:
+// - x, y: The position to refine.
+// - best_cost: The best cost found so far.
+// - ux, uy: The unit vectors of the rays.
+// - r_meas: The measured distances of the rays.
+// - weights: Per-ray weights derived from quality values.
+// - n: The number of rays.
+// - Lx, Ly: The dimensions of the pitch.
+// Outputs:
+// - The approximate position.
 static void global_search(float& x, float& y, float& best_cost,
                           const float* ux, const float* uy,
                           const float* r_meas, const float* weights,
                           int n, float Lx, float Ly) {
-    const int nx = 9, ny = 7;
-    best_cost = 1e30f;
-    x = Lx * 0.5f;
-    y = Ly * 0.5f;
+    const int nx = 9, ny = 7; // 9x7 grid of points to test over the entire pitch.
+    best_cost = 1e30f; // Initialize the best cost found so far to a very large number.
+    x = Lx * 0.5f; // Start in the center of the pitch.
+    y = Ly * 0.5f; // Start in the center of the pitch.
 
     for (int ix = 0; ix < nx; ix++) {
         for (int iy = 0; iy < ny; iy++) {
-            float cx = Lx * ix / (nx - 1);
-            float cy = Ly * iy / (ny - 1);
-            float c = score_pose(cx, cy, ux, uy, r_meas, weights, n, Lx, Ly);
-            if (c < best_cost) {
+            float cx = Lx * ix / (nx - 1); // The x coordinate of the current point.
+            float cy = Ly * iy / (ny - 1); // The y coordinate of the current point.
+            float c = score_pose(cx, cy, ux, uy, r_meas, weights, n, Lx, Ly); // Score the current point.
+            if (c < best_cost) { // Only save the best position so far.
                 best_cost = c;
                 x = cx;
                 y = cy;
@@ -235,7 +300,7 @@ static void global_search(float& x, float& y, float& best_cost,
         }
     }
 
-    local_refine(x, y, best_cost, ux, uy, r_meas, weights, n, Lx, Ly);
+    local_refine(x, y, best_cost, ux, uy, r_meas, weights, n, Lx, Ly); // Refine the best position using the local search.
 }
 
 // ===========================================================================
@@ -299,10 +364,12 @@ static void scan_thread_func() {
 // Coordinate estimation thread
 // ===========================================================================
 
+// Main loop for coordinate estimation.
 static void coord_thread_func() {
-    std::vector<float> ux, uy, r_meas, weights;
+    std::vector<float> ux, uy, r_meas, weights; // Unit vectors of the rays, measured distances, and weights.
 
     while (g_coord_running.load()) {
+        // Wait for scan data to be ready.
         if (!g_scan_ready.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
@@ -315,20 +382,22 @@ static void coord_thread_func() {
             scan_copy = g_latest_scan;
         }
 
+        // Skips if no scan data is available.
         if (scan_copy.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
 
-        float yaw = g_yaw_deg.load();
-        float psi = yaw * (float)(M_PI / 180.0);
+        float yaw = g_yaw_deg.load(); // Get the current yaw. Is set from python.
+        float psi = yaw * (float)(M_PI / 180.0); // Convert the yaw to radians.
 
-        // Convert beams to world-frame unit vectors
+        // Convert local beams to world-frame unit vectors
         ux.clear();
         uy.clear();
         r_meas.clear();
         weights.clear();
 
+        // Calculates the unit vectors and measured distances for each ray in the scan.
         for (const auto& pt : scan_copy) {
             if (pt.distance_mm < MIN_RANGE_MM ||
                 pt.distance_mm > MAX_RANGE_MM)
@@ -341,13 +410,14 @@ static void coord_thread_func() {
             uy.push_back(std::sin(theta));
             r_meas.push_back(pt.distance_mm);
 
+            // Calculates the weight of the ray. Used to scale the ray's contribution to total cost based on quality.
             float w = (float)(pt.quality - MIN_BEAM_QUALITY) / 30.0f;
-            if (w > 1.0f) w = 1.0f;
+            if (w > 1.0f) w = 1.0f; // Clamp the weight to 1.0.
             weights.push_back(w);
         }
 
         int n = (int)ux.size();
-        if (n < MIN_BEAM_COUNT) {
+        if (n < MIN_BEAM_COUNT) { // Skips if not enough rays are available.
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
@@ -361,7 +431,7 @@ static void coord_thread_func() {
         float x, y, cost;
         float conf;
 
-        if (g_has_prev_pose) {
+        if (g_has_prev_pose) { // If a previous position is available, use the local search to refine it.
             x = g_prev_x;
             y = g_prev_y;
             cost = score_pose(x, y, ux_p, uy_p, r_p, w_p, n, Lx, Ly);
@@ -370,18 +440,18 @@ static void coord_thread_func() {
             PoseStats stats = compute_stats(x, y, ux_p, uy_p, r_p, n, Lx, Ly);
             conf = compute_confidence(stats);
 
-            if (conf < CONF_THRESHOLD) {
+            if (conf < CONF_THRESHOLD) { // If the confidence is too low, use the global search to find the best position.
                 global_search(x, y, cost, ux_p, uy_p, r_p, w_p, n, Lx, Ly);
                 stats = compute_stats(x, y, ux_p, uy_p, r_p, n, Lx, Ly);
                 conf = compute_confidence(stats);
             }
-        } else {
+        } else { // If no previous position is available, use the global search first to find the best approximate position.
             global_search(x, y, cost, ux_p, uy_p, r_p, w_p, n, Lx, Ly);
             PoseStats stats = compute_stats(x, y, ux_p, uy_p, r_p, n, Lx, Ly);
             conf = compute_confidence(stats);
         }
 
-        bool ok = conf >= CONF_THRESHOLD;
+        bool ok = conf >= CONF_THRESHOLD; // Checks if the confidence is high enough to use.
         if (ok) {
             g_prev_x = x;
             g_prev_y = y;
@@ -391,7 +461,7 @@ static void coord_thread_func() {
         {
             std::lock_guard<std::mutex> lock(g_coord_mutex);
             g_latest_coord = {x, y, conf, ok};
-            if (ok) {
+            if (ok) { // Only update the good position if the confidence is high enough.
                 g_good_x = x;
                 g_good_y = y;
                 g_has_good_coord = true;
@@ -407,7 +477,7 @@ static void coord_thread_func() {
 // Init / shutdown
 // ===========================================================================
 
-// NOTE: Call this early — the lidar gets more accurate after spinning a while.
+// NOTE: Call this early as the lidar gets more accurate after spinning a while.
 static bool init_lidar(const std::string& port, int baudrate) {
     if (g_driver != nullptr) {
         throw std::runtime_error(
@@ -608,7 +678,7 @@ static int get_scan_count() {
 }
 
 // ===========================================================================
-// Coordinate estimation — Python API
+// Coordinate estimation Python bindings
 // ===========================================================================
 
 static void start_coordinates(float pitch_x, float pitch_y) {
@@ -641,7 +711,7 @@ static py::tuple get_coordinates_py() {
     return py::make_tuple(g_good_x, g_good_y);
 }
 
-// Returns (x, y, confidence, ok) — latest raw result for diagnostics.
+// Returns (x, y, confidence, ok) of the last confident position.
 static py::tuple get_coordinates_info_py() {
     std::lock_guard<std::mutex> lock(g_coord_mutex);
     if (!g_has_good_coord) {
@@ -719,7 +789,7 @@ PYBIND11_MODULE(lidar, m) {
           "or (None, None) if unavailable.");
 
     m.def("get_coordinates_info", &get_coordinates_info_py,
-          "Get (x, y, confidence, ok) — latest estimate with diagnostics.");
+          "Get (x, y, confidence, ok) — last confident (x, y) with latest confidence and ok flag.");
 
     m.def("is_coordinates_ready", &is_coordinates_ready,
           "True once at least one confident position has been computed.");
