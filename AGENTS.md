@@ -51,14 +51,3 @@ Whenever you finish writing code, activate the environment and use `ruff check` 
 7. `lidar.shutdown()` — stops coordinate thread, scan thread, and motor.
 
 **Rebuild after changing `lidar_module.cpp`:** `python setup.py build_ext --inplace`
-
-## Raspberry Pi: "Bus error" when importing `numpy`/`cv2`
-
-**Symptom:** Running `defence.py` or `camera.py` crashes with `Bus error` (SIGBUS), often before any Python traceback.
-
-**Cause (observed on this project):** The Raspberry Pi kernel is configured with **16KB pages** (`getconf PAGE_SIZE` → `16384`). Some `pip` wheels for native libs (notably `numpy`, and therefore `opencv-python`) can **SIGBUS on 16KB-page systems**. In this repo, importing `numpy` inside the project `.venv` triggered the SIGBUS during `numpy._core.multiarray` import.
-
-**Fix:** Prefer OS-packaged builds for native libs on the Pi:
-
-- Install: `sudo apt-get install python3-numpy python3-opencv python3-libcamera python3-picamera2`
-- Run scripts with system Python (`python3 ...`), or create a venv that uses system packages (`python3 -m venv .venv --system-site-packages`) and avoid `pip` installing `numpy/opencv-python/picamera2` into the venv.
