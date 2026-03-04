@@ -1,7 +1,6 @@
 import math
 import time
 import argparse
-import numpy as np
 
 WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
@@ -269,96 +268,6 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
 
     return direction, speed, rotation, False
 
-def get_mean_distance(values):
-    if not values:
-        return None
-    if len(values) < 4:
-        return np.mean(values)
-    q75 = np.percentile(values, 75)
-    q25 = np.percentile(values, 25)
-    iqr = q75 - q25
-    upper_fence = q75 + 1.5 * iqr
-    lower_fence = q25 - 1.5 * iqr
-    filtered = [x for x in values if lower_fence <= x <= upper_fence]
-    if not filtered:
-        return None
-    return np.mean(filtered)
-
-
-def get_coordinates(yaw):
-    import lidar
-    yaw = float(yaw)
-
-    # Grab the full scan once (far cheaper than hundreds of per-angle calls)
-    scan = lidar.get_scan_numpy()
-    if scan.size == 0:
-        return None, None
-
-    distances = scan[:, 1]
-    angles = scan[:, 0]
-    valid_mask = distances > 0
-    if not np.any(valid_mask):
-        return None, None
-
-    distances = distances[valid_mask]
-    angles = angles[valid_mask]
-
-    # Convert to signed angles then shift by yaw to align with world frame
-    angles_signed = ((angles + 180) % 360) - 180  # [-180, 180)
-    world_angles = ((angles_signed + yaw + 180) % 360) - 180
-    world_radians = np.radians(world_angles)
-
-    def project_and_mean(mask, projection_values):
-        if not np.any(mask):
-            return None
-        return get_mean_distance(projection_values[mask].tolist())
-
-    # +x boundary / right wall (world 45°..135°)
-    right_wall_mask = (world_angles >= 45) & (world_angles <= 135)
-    right_wall_proj = distances * np.sin(world_radians)
-    right_x_distance = project_and_mean(right_wall_mask, right_wall_proj)
-
-    # -x boundary / left wall (world -135°..-45°)
-    left_wall_mask = (world_angles >= -135) & (world_angles <= -45)
-    left_wall_proj = distances * -np.sin(world_radians)
-    left_x_distance = project_and_mean(left_wall_mask, left_wall_proj)
-
-    # -y boundary / top wall (world -45°..45°)
-    top_wall_mask = (world_angles >= -45) & (world_angles <= 45)
-    top_wall_proj = distances * np.cos(world_radians)
-    top_y_distance = project_and_mean(top_wall_mask, top_wall_proj)
-
-    # +y boundary / bottom wall (world 135°..180° and -180°..-135°)
-    bottom_wall_mask = (world_angles >= 135) | (world_angles <= -135)
-    bottom_wall_proj = distances * -np.cos(world_radians)
-    bottom_y_distance = project_and_mean(bottom_wall_mask, bottom_wall_proj)
-
-    right_x_valid = right_x_distance is not None and 0 <= right_x_distance <= 2430
-    left_x_valid = left_x_distance is not None and 0 <= left_x_distance <= 2430
-
-    if right_x_valid and left_x_valid:
-        x_pos = (left_x_distance + (2430 - right_x_distance)) / 2
-    elif left_x_valid:
-        x_pos = left_x_distance
-    elif right_x_valid:
-        x_pos = 2430 - right_x_distance
-    else:
-        x_pos = None
-
-    top_y_valid = top_y_distance is not None and 0 <= top_y_distance <= 1820
-    bottom_y_valid = bottom_y_distance is not None and 0 <= bottom_y_distance <= 1820
-
-    if top_y_valid and bottom_y_valid:
-        y_pos = (top_y_distance + (1820 - bottom_y_distance)) / 2
-    elif top_y_valid:
-        y_pos = top_y_distance
-    elif bottom_y_valid:
-        y_pos = 1820 - bottom_y_distance
-    else:
-        y_pos = None
-
-    return x_pos, y_pos
-
 def _prompt_i2c_addresses():
     print("Please enter the number of motor drivers you want to control:")
     tempuint32 = int(input())
@@ -406,14 +315,20 @@ if __name__ == "__main__":
         lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
     except Exception as e:
         raise RuntimeError(f"Failed to initialize LIDAR: {e}")
-    
+
     print("LIDAR initialized successfully!")
     print()
-    
+
     print("Waiting for first scan data...")
     while not lidar.is_scan_ready():
         time.sleep(0.1)
-    
+
+    lidar.start_coordinates(2430, 1820)
+
+    print("Waiting for first coordinate estimate...")
+    while not lidar.is_coordinates_ready():
+        time.sleep(0.1)
+
     camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
     camera.start()
     camera.run_server()
@@ -431,9 +346,9 @@ if __name__ == "__main__":
     last_camera_frame_id = camera.frame_id
     try:
         while True:
-            # TODO: Get the x_pos, y_pos, yaw, ball_x, ball_y from the sensors asynchronously
             yaw = imu.get_yaw()
-            x_pos, y_pos = get_coordinates(yaw)
+            lidar.set_yaw(yaw)
+            x_pos, y_pos = lidar.get_coordinates()
             camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
             has_new_camera_frame = camera_frame_id != last_camera_frame_id
             last_camera_frame_id = camera_frame_id

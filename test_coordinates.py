@@ -2,14 +2,12 @@
 import sys
 import time
 
-from defence import get_coordinates, LIDAR_PORT, LIDAR_BAUDRATE
+from defence import LIDAR_PORT, LIDAR_BAUDRATE
 
 
 def main():
     import lidar
 
-    # Pass in yaw with command line argument
-    # python test_coordinates.py 90
     yaw = float(sys.argv[1]) if len(sys.argv) > 1 else 0.0
 
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
@@ -23,10 +21,19 @@ def main():
     while not lidar.is_scan_ready():
         time.sleep(0.1)
 
-    x_pos, y_pos = get_coordinates(yaw)
+    lidar.start_coordinates(2430, 1820)
+    lidar.set_yaw(yaw)
+
+    print("Waiting for coordinate estimate...")
+    while not lidar.is_coordinates_ready():
+        time.sleep(0.1)
+
+    x_pos, y_pos = lidar.get_coordinates()
     print(f"yaw={yaw}")
     print(f"x_pos={x_pos}")
     print(f"y_pos={y_pos}")
+
+    lidar.shutdown()
 
 
 if __name__ == "__main__":
