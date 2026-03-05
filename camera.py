@@ -220,19 +220,22 @@ class Camera:
                         self.user_callback(m.array, hsv)
                 else:
                     
-                    center_y = m.array.shape[0] - 50
-                    center_x = m.array.shape[1] - 50
+                    center_y = m.array.shape[0] - 250
+                    center_x = m.array.shape[1] - 1200
                     
                     # Draw a small crosshair in the center of the image
                     cv2.line(m.array, (center_x, center_y - 10), (center_x, center_y + 10), (0, 0, 255), 2)
                     cv2.line(m.array, (center_x - 10, center_y), (center_x + 10, center_y), (0, 0, 255), 2)
 
                     pixel_colour = hsv[center_y, center_x]
-                    if 10>pixel_colour[0]>25 and 100>pixel_colour[1]>255 and 100>pixel_colour[2]>255:
+                    if 10<pixel_colour[0]<25 and 100<pixel_colour[1]<255 and 100<pixel_colour[2]<255:
                         if (pixel_colour[0], pixel_colour[1], pixel_colour[2]) not in self.colours:
-                            self.colours.append(pixel_colour[0], pixel_colour[1], pixel_colour[2])
+                            self.colours.append((pixel_colour[0], pixel_colour[1], pixel_colour[2]))
                     with open("calibrate_camera.txt", "w") as c:
-                        c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
+                        # c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
+                        for i in self.colours:
+                            c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
+                            c.write("\n")
                     with self._measurement_lock:
                         self._bearing = None
                         self._distance = None
