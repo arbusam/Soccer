@@ -219,7 +219,7 @@ class Camera:
                     if self.user_callback:
                         self.user_callback(m.array, hsv)
                 else:
-                    
+                    # Only run for calibration, when self.calibrated is false
                     center_y = m.array.shape[0] - 250
                     center_x = m.array.shape[1] - 1200
                     
@@ -227,10 +227,13 @@ class Camera:
                     cv2.line(m.array, (center_x, center_y - 10), (center_x, center_y + 10), (0, 0, 255), 2)
                     cv2.line(m.array, (center_x - 10, center_y), (center_x + 10, center_y), (0, 0, 255), 2)
 
+                    # Check for colour values in certain range
                     pixel_colour = hsv[center_y, center_x]
                     if 10<pixel_colour[0]<25 and 100<pixel_colour[1]<255 and 100<pixel_colour[2]<255:
                         if (pixel_colour[0], pixel_colour[1], pixel_colour[2]) not in self.colours:
                             self.colours.append((pixel_colour[0], pixel_colour[1], pixel_colour[2]))
+
+                    # Add detected colour to text file
                     with open("calibrate_camera.txt", "w") as c:
                         # c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
                         for i in self.colours:
