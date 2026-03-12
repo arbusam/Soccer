@@ -74,10 +74,18 @@ static std::atomic<bool> g_coord_running{false};
 static std::thread g_coord_thread;
 static std::mutex g_coord_mutex;
 
+struct Segment {
+    float x1;
+    float y1;
+    float x2;
+    float y2;
+};
+
 // Default pitch dimensions in mm. Overwritten by start_coordinates().
 static float g_pitch_x = 2430.0f;
 static float g_pitch_y = 1820.0f;
 static std::atomic<float> g_yaw_deg{0.0f};
+static std::vector<Segment> g_static_segments;
 
 struct CoordResult {
     float x;
@@ -107,6 +115,13 @@ static constexpr int   MIN_BEAM_QUALITY = 5;
 static constexpr int   MIN_BEAM_COUNT   = 30;
 static constexpr float CONF_THRESHOLD   = 0.35f;
 static constexpr float INLIER_THRESH    = 80.0f;   // mm, max allowed error between measured and predicted distance for a ray to count as an inlier
+static constexpr float GOAL_LEFT_BACK_X = 226.0f;
+static constexpr float GOAL_RIGHT_BACK_X = 2204.0f;
+static constexpr float GOAL_LEFT_FRONT_X = 300.0f;
+static constexpr float GOAL_RIGHT_FRONT_X = 2130.0f;
+static constexpr float GOAL_TOP_Y = 685.0f;
+static constexpr float GOAL_BOTTOM_Y = 1135.0f;
+static constexpr float GOAL_BACK_BOTTOM_Y = 1140.0f;
 
 // ===========================================================================
 // Coordinate estimation
@@ -121,8 +136,35 @@ static inline float cauchy_loss(float z) {
     return std::log(1.0f + r * r);
 }
 
-// Predicted range from (x,y) along direction (ux,uy) to rectangle [0,Lx]×[0,Ly].
-// Outputs the smallest distance to the wall that the ray hits.
+// Returns the smallest distance between a point and a line segment along a ray.
+static inline float ray_segment_intersection_distance(float px, float py,
+                                                      float ux, float uy,
+                                                      const Segment& seg) {
+    // Calculate the gradient of the line segment.
+    float sx = seg.x2 - seg.x1;
+    float sy = seg.y2 - seg.y1;
+
+    float denom = ux * sy - uy * sx;
+    if (std::fabs(denom) <= COORD_EPS) {
+        return 1e30f; // Return a very large number if the line segment is parallel to the ray.
+    }
+
+    float qpx = seg.x1 - px;
+    float qpy = seg.y1 - py;
+
+    // t is ray parameter, u is segment parameter in [0,1]
+    float t = (qpx * sy - qpy * sx) / denom;
+    float u = (qpx * uy - qpy * ux) / denom;
+
+    if (t > COORD_EPS && u >= -COORD_EPS && u <= 1.0f + COORD_EPS) {
+        return t;
+    }
+    return 1e30f;
+}
+
+// Predicted range from (x,y) along direction (ux,uy) to pitch boundaries and
+// static goal-hardware segments.
+// Outputs the smallest distance to the first geometry hit by the ray.
 static inline float predict_range(float x, float y,
                                   float ux, float uy,
                                   float Lx, float Ly) {
@@ -141,6 +183,12 @@ static inline float predict_range(float x, float y,
     } else if (uy > COORD_EPS) { // Bottom wall
         float t = (Ly - y) / uy;
         if (t > 0 && t < t_min) t_min = t;
+    }
+
+    // Check if ray hits any goal line segments.
+    for (const auto& seg : g_static_segments) {
+        float t = ray_segment_intersection_distance(x, y, ux, uy, seg);
+        if (t < t_min) t_min = t;
     }
 
     return t_min;
@@ -688,6 +736,22 @@ static void start_coordinates(float pitch_x, float pitch_y) {
     }
     g_pitch_x = pitch_x;
     g_pitch_y = pitch_y;
+    g_static_segments.clear();
+
+    // Outer pitch boundaries as finite segments.
+    g_static_segments.push_back({0.0f, 0.0f, pitch_x, 0.0f});
+    g_static_segments.push_back({pitch_x, 0.0f, pitch_x, pitch_y});
+    g_static_segments.push_back({pitch_x, pitch_y, 0.0f, pitch_y});
+    g_static_segments.push_back({0.0f, pitch_y, 0.0f, 0.0f});
+
+    // Goal hardware segments (matches simulate.py GOAL_LINES geometry).
+    g_static_segments.push_back({GOAL_LEFT_FRONT_X, GOAL_TOP_Y, 0.0f, GOAL_TOP_Y});
+    g_static_segments.push_back({GOAL_LEFT_BACK_X, GOAL_TOP_Y, GOAL_LEFT_BACK_X, GOAL_BACK_BOTTOM_Y});
+    g_static_segments.push_back({0.0f, GOAL_BOTTOM_Y, GOAL_LEFT_FRONT_X, GOAL_BOTTOM_Y});
+    g_static_segments.push_back({GOAL_RIGHT_FRONT_X, GOAL_TOP_Y, pitch_x, GOAL_TOP_Y});
+    g_static_segments.push_back({GOAL_RIGHT_BACK_X, GOAL_TOP_Y, GOAL_RIGHT_BACK_X, GOAL_BACK_BOTTOM_Y});
+    g_static_segments.push_back({pitch_x, GOAL_BOTTOM_Y, GOAL_RIGHT_FRONT_X, GOAL_BOTTOM_Y});
+
     g_has_prev_pose = false;
     g_has_good_coord = false;
     g_coord_ready.store(false);
