@@ -234,7 +234,7 @@ class Camera:
                     with open("calibrate_camera.txt", "w") as c:
                         # c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
                         for i in self.colours:
-                            c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
+                            c.write(str(i[0]) + " " + str(i[1]) + " " + str(i[2]))
                             c.write("\n")
                     with self._measurement_lock:
                         self._bearing = None
