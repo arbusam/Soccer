@@ -1,72 +1,65 @@
 #!/usr/bin/env python3
 """
-Test script for the LIDAR pybind11 module.
+Test script for LIDAR coordinate estimation (lidar_module).
 
-Connects to the LIDAR and prints the distance at angle closest to 0 degrees.
-Runs continuously until interrupted.
+Connects to the LIDAR, starts coordinate estimation, and prints the bot's (x, y)
+coordinates. Runs continuously until interrupted with Ctrl+C.
 """
 
+import sys
 import time
 import lidar
 
+# Default pitch dimensions in mm (same as defence.py)
+PITCH_X = 2430
+PITCH_Y = 1820
+LIDAR_PORT = "/dev/ttyUSB0"
+LIDAR_BAUDRATE = 460800
+
+
 def main():
-    print("LIDAR Test Script")
+    yaw = float(sys.argv[1]) if len(sys.argv) > 1 else 0.0
+
+    print("LIDAR coordinate test")
     print("=" * 40)
-    
-    # Initialize LIDAR
-    lidar_port = "/dev/ttyUSB0"
-    lidar_baudrate = 460800
-    print(f"Initializing LIDAR on {lidar_port} at {lidar_baudrate} baud...")
-    try:
-        lidar.init(lidar_port, lidar_baudrate)
-    except Exception as e:
-        print(f"Failed to initialize LIDAR: {e}")
-        return
-    
-    print("LIDAR initialized successfully!")
+    print(f"Port: {LIDAR_PORT}, baud: {LIDAR_BAUDRATE}")
+    print(f"Pitch: {PITCH_X} x {PITCH_Y} mm, yaw: {yaw}°")
     print()
-    
-    # Wait for first scan (use Ctrl+C to stop if needed)
-    print("Waiting for first scan data...")
+
+    try:
+        lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
+    except Exception as e:
+        print(f"Failed to initialize LIDAR: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Waiting for first scan...")
     while not lidar.is_scan_ready():
         time.sleep(0.1)
-    
-    print("Scan data ready!")
-    print()
-    
-    print("Running (Ctrl+C to stop)")
-    print("-" * 40)
-    
-    # Main loop
+    print("Scan ready.")
+
+    lidar.start_coordinates(PITCH_X, PITCH_Y)
+    lidar.set_yaw(yaw)
+
+    print("Waiting for first coordinate estimate...")
+    while not lidar.is_coordinates_ready():
+        time.sleep(0.1)
+    print("Coordinates ready. Printing (Ctrl+C to stop):\n")
+
     try:
         while True:
-            # Get distance at 0 degrees (forward)
-            distance_0 = lidar.get_distance_at_angle(0)
-            
-            # Also get a few other directions for context
-            distance_90 = lidar.get_distance_at_angle(90)   # Right
-            distance_180 = lidar.get_distance_at_angle(180) # Back
-            distance_270 = lidar.get_distance_at_angle(270) # Left
-            
-            scan_count = lidar.get_scan_count()
-            
-            # Print in a nice format
-            print(f"\rPoints: {scan_count:4d} | "
-                  f"0°: {distance_0:7.1f}mm | "
-                  f"90°: {distance_90:7.1f}mm | "
-                  f"180°: {distance_180:7.1f}mm | "
-                  f"270°: {distance_270:7.1f}mm", end="", flush=True)
-            
-            time.sleep(0.1)  # 10 Hz update rate
-            
+            x, y = lidar.get_coordinates()
+            if x is not None and y is not None:
+                print(f"x = {x:.1f} mm, y = {y:.1f} mm")
+            else:
+                print("x = None, y = None (no confident estimate)")
+            time.sleep(0.1)
     except KeyboardInterrupt:
-        print("\n\nInterrupted by user")
-    
-    # Cleanup
-    print("\nShutting down LIDAR...")
+        print("\nInterrupted by user")
+
+    print("Shutting down LIDAR...")
     lidar.shutdown()
-    print("Done!")
+    print("Done.")
+
 
 if __name__ == "__main__":
     main()
-
