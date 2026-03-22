@@ -51,3 +51,5 @@ Whenever you finish writing code, activate the environment and use `ruff check` 
 7. `lidar.shutdown()` — stops coordinate thread, scan thread, and motor.
 
 **Rebuild after changing `lidar_module.cpp`:** `python setup.py build_ext --inplace`
+
+**Build error `cannot find -lsl_lidar_sdk` / g++ exit code 1:** The Python extension links against the RPLidar SDK static library. If `rplidar_sdk/output/Linux/Release/` does not exist or has no `libsl_lidar_sdk.a`, build the SDK first: `make -C rplidar_sdk/sdk`. Then run `python setup.py build_ext --inplace` again.
