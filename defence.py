@@ -288,10 +288,12 @@ def _prompt_i2c_addresses():
     return addresses
 
 if __name__ == "__main__":
+    import board
     import lidar
     from movement import init_motors, move, stop_all_motors
     from camera import Camera
     from imu import IMU
+    from kicker import Kicker
 
     parser = argparse.ArgumentParser(
         description="Run defence controller with optional live websocket streaming."
@@ -336,6 +338,7 @@ if __name__ == "__main__":
     imu = IMU()
 
     motors, motor_modes = init_motors(_prompt_i2c_addresses())
+    kicker = Kicker(board.D26, 0.1)
     steering_state = False
 
     ball_dx = 0
@@ -382,7 +385,7 @@ if __name__ == "__main__":
             ball_captured = False
             if args.stream:
                 send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
-            direction, speed, rotation, steering_state, _ = defence(
+            direction, speed, rotation, steering_state, kick = defence(
                 x_pos,
                 y_pos,
                 yaw,
@@ -392,9 +395,12 @@ if __name__ == "__main__":
                 ball_captured,
                 steering_state=steering_state,
             )
+            if kick:
+                kicker.kick()
             move(direction, speed, rotation, 1.0, yaw, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
     finally:
         stop_all_motors(motors)
         camera.stop()
         imu.close()
+        kicker.deinit()
 
