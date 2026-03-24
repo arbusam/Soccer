@@ -36,6 +36,23 @@ BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity 
 def wrap_angle_deg(angle):
     return ((angle + 180) % 360) - 180
 
+
+def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02):
+    """Average a short burst of IMU samples so startup yaw is not just the first reading."""
+    print("Stabilizing IMU yaw reference...")
+    sin_sum = 0.0
+    cos_sum = 0.0
+    samples = 0
+    while samples < sample_count:
+        yaw = imu.get_yaw()
+        if yaw is not None:
+            yaw_rad = math.radians(yaw)
+            sin_sum += math.sin(yaw_rad)
+            cos_sum += math.cos(yaw_rad)
+            samples += 1
+        time.sleep(sample_interval)
+    return math.degrees(math.atan2(sin_sum, cos_sum))
+
 # Checks if the ball is outside the pitch by using the pitch boundaries, the ball position and the ball radius.
 def is_ball_out(ball_x, ball_y):
     closest_x = max(WHITE_MIN_X, min(ball_x, WHITE_MAX_X))
@@ -354,6 +371,8 @@ if __name__ == "__main__":
         startup_yaw = None
 
         motors, motor_modes = init_motors(_prompt_i2c_addresses())
+        startup_yaw = capture_startup_yaw(imu)
+        print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
         steering_state = False
 
         ball_dx = 0
@@ -368,10 +387,6 @@ if __name__ == "__main__":
             if yaw_world is None:
                 time.sleep(0.01)
                 continue
-            if startup_yaw is None:
-                startup_yaw = yaw_world
-                print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
-
             yaw_relative = wrap_angle_deg(yaw_world - startup_yaw)
 
             print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
