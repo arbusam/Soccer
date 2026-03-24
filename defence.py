@@ -312,7 +312,13 @@ def _prompt_i2c_addresses():
 
 if __name__ == "__main__":
     import lidar
-    from movement import MotorCommunicationError, init_motors, move, stop_all_motors
+    from movement import (
+        MotorCommunicationError,
+        imu_yaw_to_relative_yaw,
+        init_motors,
+        move,
+        stop_all_motors,
+    )
     from camera import Camera
     from imu import IMU
 
@@ -387,7 +393,7 @@ if __name__ == "__main__":
             if yaw_world is None:
                 time.sleep(0.01)
                 continue
-            yaw_relative = wrap_angle_deg(yaw_world - startup_yaw)
+            yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
 
             print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
             lidar.set_yaw(yaw_world)
