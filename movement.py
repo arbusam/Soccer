@@ -222,9 +222,8 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     else:
         yaw_correct_rpm_component = 0.0
 
-    # Direction is measured in the robot/world heading frame where 0 is forward and 90 is right.
-    # Shift by an extra 90 degrees so 0 -> forward, 90 -> right.
-    local_direction = direction - yaw - 135
+    # Local direction is from the robot's perspective, where 0 is forward and 90 is right.
+    local_direction = direction - yaw + 45
     a_mult = -math.sin(math.radians(local_direction)) # Back left wheel
     b_mult = -math.cos(math.radians(local_direction)) # Back right wheel
     c_mult = math.sin(math.radians(local_direction)) # Front right wheel
