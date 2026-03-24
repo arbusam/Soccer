@@ -16,10 +16,15 @@ TEST_ROTATION_SPEED = 1.0
 COMMAND_INTERVAL = 0.05
 
 
+def wrap_angle_deg(angle):
+    return ((angle + 180) % 360) - 180
+
+
 def main():
     imu = None
     motors = []
     motor_modes = []
+    startup_yaw = None
     try:
         print("Initializing IMU...")
         imu = IMU()
@@ -43,12 +48,16 @@ def main():
             if yaw is None:
                 time.sleep(0.01)
                 continue
+            if startup_yaw is None:
+                startup_yaw = yaw
+                print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
+            yaw_relative = wrap_angle_deg(yaw - startup_yaw)
             move(
                 TEST_DIRECTION,
                 TEST_SPEED,
                 TEST_ROTATION,
                 TEST_ROTATION_SPEED,
-                yaw,
+                yaw_relative,
                 motors,
                 motor_modes,
                 WHEEL_DIAMETER,

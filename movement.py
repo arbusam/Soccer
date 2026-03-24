@@ -183,11 +183,11 @@ def _set_motor_speed(motor, speed, motor_index, *, ignore_errors=False):
     return True
 
 # Inputs:
-# direction: int - the direction of the robot in degrees. 0 degrees is forward (towards the ball capture zone)
+# direction: int - the direction of the robot in degrees. Must use the same heading reference frame as rotation and yaw.
 # speed: int - the speed of the robot in mm/s
-# rotation: int - the desired rotation of the robot in degrees. 0 degrees is the direction the bot was started towards. Should be started facing enemy goal
-# rotation_speed: float - the speed of the rotation in 0.0-1.0
-# yaw: int - the measured yaw of the robot in degrees. 0 degrees is the direction the bot was started towards. Should be started facing enemy goal.
+# rotation: int - the desired rotation of the robot in degrees. Must use the same heading reference frame as direction and yaw.
+# rotation_speed: float - the strength of the yaw correction in 0.0-1.0
+# yaw: int - the measured yaw of the robot in degrees, in the same heading reference frame as direction and rotation.
 # motors: list - the list of motor objects
 # motor_modes: list - the list of motor modes
 # diameter: int - the diameter of the wheels in mm. Used to convert bot speed to motor rpm.
@@ -198,9 +198,9 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     # Ensures integer parameters are integers
     direction = int(direction)
     speed = int(speed)
-    rotation = int(rotation)
+    rotation = float(rotation)
     rotation_speed = float(rotation_speed)
-    yaw = int(yaw)
+    yaw = float(yaw)
     max_yaw_rpm = int(max_yaw_rpm)
     max_rpm = int(max_rpm)
     yaw_correct_threshold = int(yaw_correct_threshold)
@@ -211,9 +211,9 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     if any(motor is None for motor in drive_motors):
         raise ValueError("move() requires 4 initialized drive motors in motors[0:4].")
 
-    # Calculates the difference between the desired rotation and the measured yaw in degrees.
-    # A positive error means the bot is rotating clockwise, a negative error means the bot is rotating counter-clockwise.
-    yaw_error = ((yaw - rotation + 180) % 360) - 180
+    # Signed shortest-angle error from current yaw to target rotation.
+    # Example: yaw=10, rotation=0 -> error=-10, so the controller turns back toward 0.
+    yaw_error = ((rotation - yaw + 180) % 360) - 180
 
     rotation_speed = max(0.0, min(rotation_speed, 1.0))
     if abs(yaw_error) > yaw_correct_threshold:
