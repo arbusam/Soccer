@@ -15,6 +15,51 @@ i2c = busio.I2C(board.SCL, board.SDA)
 RPM_TO_MOTOR_SPEED = 275251.2
 
 
+class MotorCommunicationError(RuntimeError):
+    """Raised when an I2C write to a motor driver fails."""
+
+
+def _resolve_calibration_path(calibration_file):
+    """Resolve relative calibration files against this module's directory."""
+    if os.path.isabs(calibration_file):
+        return calibration_file
+    return os.path.join(os.path.dirname(__file__), calibration_file)
+
+
+def _load_calibration_data(calibration_file):
+    """Load and validate motor calibration JSON from disk."""
+    calibration_path = _resolve_calibration_path(calibration_file)
+    if not os.path.isfile(calibration_path):
+        print(f"Error: calibration file '{calibration_path}' not found. Run calibrate.py first to create it.")
+        quit()
+
+    if os.path.getsize(calibration_path) == 0:
+        print(
+            f"Error: calibration file '{calibration_path}' is empty. "
+            "Run calibrate.py to regenerate it before starting the motors."
+        )
+        quit()
+
+    try:
+        with open(calibration_path, encoding="utf-8") as f:
+            cal_data = json.load(f)
+    except json.JSONDecodeError as exc:
+        print(
+            f"Error: calibration file '{calibration_path}' is not valid JSON "
+            f"(line {exc.lineno}, column {exc.colno}). Run calibrate.py to regenerate it."
+        )
+        quit()
+
+    if not isinstance(cal_data, dict) or "motors" not in cal_data or not isinstance(cal_data["motors"], list):
+        print(
+            f"Error: calibration file '{calibration_path}' has an unexpected format. "
+            "Run calibrate.py to regenerate it."
+        )
+        quit()
+
+    return cal_data
+
+
 def get_motors_for_calibration(i2c_addresses):
     """Create motor driver objects and set PID/limits (no calibration or FOC). Input: list of i2c addresses. Returns: tuple of (motors, motor_count, normalized_addresses)."""
     try:
@@ -59,14 +104,8 @@ def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
     motors, motor_count, normalized_addresses = get_motors_for_calibration(i2c_addresses)
     motor_modes = [None] * 4
 
-    # Checks if the calibration file exists
-    if not os.path.isfile(calibration_file):
-        print(f"Error: calibration file '{calibration_file}' not found. Run calibrate.py first to create it.")
-        quit()
-
     # Loads the calibration data from the file. Calibration file is created by running calibrate.py
-    with open(calibration_file) as f:
-        cal_data = json.load(f)
+    cal_data = _load_calibration_data(calibration_file)
     # Checks if the calibration file has the correct number of motors
     if len(cal_data["motors"]) < motor_count:
         print(f"Error: calibration file has {len(cal_data['motors'])} motor(s), but {motor_count} motor(s) were requested.")
@@ -85,6 +124,7 @@ def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
 # Used by calibrate.py to calibrate the motors and save the results to the calibration file to be re used.
 def calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calibration_data.json"):
     """Run physical calibration on each motor and save results to a JSON file."""
+    calibration_path = _resolve_calibration_path(calibration_file)
     cal_data = {"motors": []}
     for setup_motor_count in range(motor_count):
         motors[setup_motor_count].configure_operating_mode_and_sensor(15, 1)  # calibration mode and sin/cos encoder
@@ -106,10 +146,41 @@ def calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calib
             "elecangleoffset": elecangleoffset,
             "sincoscentre": sincoscentre,
         })
-    with open(calibration_file, "w") as f:
+    temp_calibration_path = f"{calibration_path}.tmp"
+    with open(temp_calibration_path, "w", encoding="utf-8") as f:
         json.dump(cal_data, f, indent=2)
-    print(f"Calibration data saved to {calibration_file}")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temp_calibration_path, calibration_path)
+    print(f"Calibration data saved to {calibration_path}")
     return cal_data
+
+
+def _get_motor_address(motor):
+    """Best-effort lookup of the driver's I2C address for diagnostics."""
+    for attr in ("address", "device_address"):
+        address = getattr(motor, attr, None)
+        if address is not None:
+            return address
+    i2c_device = getattr(motor, "_i2c_device", None)
+    return getattr(i2c_device, "device_address", None)
+
+
+def _set_motor_speed(motor, speed, motor_index, *, ignore_errors=False):
+    """Write a speed command and optionally suppress communication failures."""
+    try:
+        motor.set_speed(speed)
+    except OSError as exc:
+        address = _get_motor_address(motor)
+        details = f"motor {motor_index}"
+        if address is not None:
+            details += f" (I2C address {address})"
+        message = f"I2C communication failed while writing speed to {details}: {exc}"
+        if ignore_errors:
+            print(f"Warning: {message}")
+            return False
+        raise MotorCommunicationError(message) from exc
+    return True
 
 # Inputs:
 # direction: int - the direction of the robot in degrees. 0 degrees is forward (towards the ball capture zone)
@@ -154,10 +225,10 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     # Direction is normally measured from 0 degrees (this is sometimes referred to as "true north", but it just represents the direction from the bot's goal to the enemy's)
     # Local direction converts this 'global' direction to a direction relative to the bot's front right wheel.
     local_direction = direction - yaw - 45
-    a_mult = math.sin(math.radians(local_direction)) # Back left wheel
-    b_mult = math.cos(math.radians(local_direction)) # Back right wheel
-    c_mult = -math.sin(math.radians(local_direction)) # Front right wheel
-    d_mult = -math.cos(math.radians(local_direction)) # Front left wheel
+    a_mult = -math.sin(math.radians(local_direction)) # Back left wheel
+    b_mult = -math.cos(math.radians(local_direction)) # Back right wheel
+    c_mult = math.sin(math.radians(local_direction)) # Front right wheel
+    d_mult = math.cos(math.radians(local_direction)) # Front left wheel
 
     # Values in mm/s
     a_value = a_mult * speed
@@ -219,10 +290,10 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
 
     # Sends the desired speed to the motor drivers.
-    drive_motors[0].set_speed(a_val)
-    drive_motors[1].set_speed(b_val)
-    drive_motors[2].set_speed(c_val)
-    drive_motors[3].set_speed(d_val)
+    _set_motor_speed(drive_motors[0], a_val, 0)
+    _set_motor_speed(drive_motors[1], b_val, 1)
+    _set_motor_speed(drive_motors[2], c_val, 2)
+    _set_motor_speed(drive_motors[3], d_val, 3)
 
     # for motor in drive_motors:
     #     motor.update_quick_data_readout()
@@ -232,9 +303,9 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
 
 def stop_all_motors(motors):
     """Set speed to 0 on all non-None motors. Call on exit to avoid runaway motors."""
-    for m in motors:
+    for index, m in enumerate(motors):
         if m is not None:
-            m.set_speed(0)
+            _set_motor_speed(m, 0, index, ignore_errors=True)
 
 
 # TODO: Automatically use i2c addresses using a fixed array in order: [28, 32, 31, 30]

@@ -26,7 +26,7 @@ WHITE_MAX_Y = 1570
 
 BALL_RADIUS = 21 # mm, radius of the ball
 
-YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
+YAW_CORRECT_THRESHOLD = 100 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000
 
@@ -64,7 +64,7 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False,
         target_y = 910
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
-        speed = 600
+        speed = 0
         rotation = 0 if yellow else 180
         steering = False
         kick = False
@@ -288,12 +288,10 @@ def _prompt_i2c_addresses():
     return addresses
 
 if __name__ == "__main__":
-    import board
     import lidar
-    from movement import init_motors, move, stop_all_motors
+    from movement import MotorCommunicationError, init_motors, move, stop_all_motors
     from camera import Camera
     from imu import IMU
-    from kicker import Kicker
 
     parser = argparse.ArgumentParser(
         description="Run defence controller with optional live websocket streaming."
@@ -312,44 +310,57 @@ if __name__ == "__main__":
         send_log.start_server_background()
         time.sleep(0.05)
 
-    print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
+    camera = None
+    imu = None
+    motors = []
+    motor_modes = []
     try:
-        lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
-    except Exception as e:
-        raise RuntimeError(f"Failed to initialize LIDAR: {e}")
+        print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
+        try:
+            lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
+        except Exception as e:
+            raise RuntimeError(f"Failed to initialize LIDAR: {e}")
 
-    print("LIDAR initialized successfully!")
-    print()
+        print("LIDAR initialized successfully!")
+        print()
 
-    print("Waiting for first scan data...")
-    while not lidar.is_scan_ready():
-        time.sleep(0.1)
+        print("Waiting for first scan data...")
+        while not lidar.is_scan_ready():
+            time.sleep(0.1)
 
-    lidar.start_coordinates(2430, 1820)
+        lidar.start_coordinates(2430, 1820)
 
-    print("Waiting for first coordinate estimate...")
-    while not lidar.is_coordinates_ready():
-        time.sleep(0.1)
+        print("Waiting for first coordinate estimate...")
+        while not lidar.is_coordinates_ready():
+            time.sleep(0.1)
 
-    camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
-    camera.start()
-    camera.run_server()
+        camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
+        camera.start_stream()
 
-    imu = IMU()
+        imu = IMU()
+        # print("Waiting for IMU yaw...")
+        # initial_yaw = None
+        # while initial_yaw is None:
+        #     initial_yaw = imu.get_yaw()
+        #     if initial_yaw is None:
+        #         time.sleep(0.01)
 
-    motors, motor_modes = init_motors(_prompt_i2c_addresses())
-    kicker = Kicker(board.D26, 0.1)
-    steering_state = False
+        motors, motor_modes = init_motors(_prompt_i2c_addresses())
+        steering_state = False
 
-    ball_dx = 0
-    ball_dy = 0
-    last_ball_update = time.time()
-    last_ball_x = None
-    last_ball_y = None
-    last_camera_frame_id = camera.frame_id
-    try:
+        ball_dx = 0
+        ball_dy = 0
+        last_ball_update = time.time()
+        last_ball_x = None
+        last_ball_y = None
+        last_camera_frame_id = camera.frame_id
+
         while True:
             yaw = imu.get_yaw()
+            if yaw is None:
+                time.sleep(0.01)
+                continue
+            print(f"Yaw: {(yaw):.6f} deg")
             lidar.set_yaw(yaw)
             x_pos, y_pos = lidar.get_coordinates()
             camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
@@ -385,7 +396,7 @@ if __name__ == "__main__":
             ball_captured = False
             if args.stream:
                 send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
-            direction, speed, rotation, steering_state, kick = defence(
+            direction, speed, rotation, steering_state, _ = defence(
                 x_pos,
                 y_pos,
                 yaw,
@@ -395,12 +406,26 @@ if __name__ == "__main__":
                 ball_captured,
                 steering_state=steering_state,
             )
-            if kick:
-                kicker.kick()
-            move(direction, speed, rotation, 1.0, yaw, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+            try:
+                move(direction, speed, rotation, 1.0, yaw, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+            except MotorCommunicationError as exc:
+                print(exc)
+                raise
     finally:
-        stop_all_motors(motors)
-        camera.stop()
-        imu.close()
-        kicker.deinit()
+        if camera is not None:
+            try:
+                camera.stop()
+            except Exception as exc:
+                print(f"Warning: failed to stop camera cleanly: {exc}")
+        if imu is not None:
+            try:
+                imu.close()
+            except Exception as exc:
+                print(f"Warning: failed to close IMU cleanly: {exc}")
+        try:
+            lidar.shutdown()
+        except Exception as exc:
+            print(f"Warning: failed to shut down lidar cleanly: {exc}")
+        if motors:
+            stop_all_motors(motors)
 
