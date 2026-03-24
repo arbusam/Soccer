@@ -26,11 +26,15 @@ WHITE_MAX_Y = 1570
 
 BALL_RADIUS = 21 # mm, radius of the ball
 
-YAW_CORRECT_THRESHOLD = 100 # deg, threshold of allowable yaw error.
+YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000
 
 BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
+
+# Wrap to the shortest signed angle in [-180, 180).
+def wrap_angle_deg(angle):
+    return ((angle + 180) % 360) - 180
 
 # Checks if the ball is outside the pitch by using the pitch boundaries, the ball position and the ball radius.
 def is_ball_out(ball_x, ball_y):
@@ -64,8 +68,10 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False,
         target_y = 910
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
+        if not yellow:
+            direction = (direction - 180) % 360
         speed = 0
-        rotation = 0 if yellow else 180
+        rotation = 0
         steering = False
         kick = False
         return direction, speed, rotation, steering, kick
@@ -78,7 +84,7 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False,
         vector = (x_pos - ball_x), (y_pos - ball_y)
     direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2) # Calculate the distance to the ball.
-    rotation = 0 if yellow else 180 # Sets the desired roation. Should always be equal to the ideal heading.
+    rotation = 0 # Sets the desired rotation. 0 is always the startup/ideal heading in this frame.
     speed = 500 # mm/s, Default speed of the bot.
     offset = 0 # deg, Offset to the direction to the ball. Used to avoid own goals.
     # Only activate own goal prevention if the ball is close to the bot.
@@ -345,6 +351,8 @@ if __name__ == "__main__":
         #     if initial_yaw is None:
         #         time.sleep(0.01)
 
+        startup_yaw = None
+
         motors, motor_modes = init_motors(_prompt_i2c_addresses())
         steering_state = False
 
@@ -356,12 +364,18 @@ if __name__ == "__main__":
         last_camera_frame_id = camera.frame_id
 
         while True:
-            yaw = imu.get_yaw()
-            if yaw is None:
+            yaw_world = imu.get_yaw()
+            if yaw_world is None:
                 time.sleep(0.01)
                 continue
-            print(f"Yaw: {(yaw):.6f} deg")
-            lidar.set_yaw(yaw)
+            if startup_yaw is None:
+                startup_yaw = yaw_world
+                print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
+
+            yaw_relative = wrap_angle_deg(yaw_world - startup_yaw)
+
+            print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
+            lidar.set_yaw(yaw_world)
             x_pos, y_pos = lidar.get_coordinates()
             camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
             has_new_camera_frame = camera_frame_id != last_camera_frame_id
@@ -395,11 +409,11 @@ if __name__ == "__main__":
             yellow = True
             ball_captured = False
             if args.stream:
-                send_log.update_latest_log(f"{x_pos},{y_pos},{yaw},{ball_x},{ball_y}")
+                send_log.update_latest_log(f"{x_pos},{y_pos},{yaw_relative},{ball_x},{ball_y}")
             direction, speed, rotation, steering_state, _ = defence(
                 x_pos,
                 y_pos,
-                yaw,
+                yaw_relative,
                 ball_x,
                 ball_y,
                 yellow,
@@ -407,7 +421,7 @@ if __name__ == "__main__":
                 steering_state=steering_state,
             )
             try:
-                move(direction, speed, rotation, 1.0, yaw, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+                move(direction, speed, rotation, 1.0, yaw_relative, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
             except MotorCommunicationError as exc:
                 print(exc)
                 raise
