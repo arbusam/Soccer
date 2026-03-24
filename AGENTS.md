@@ -22,7 +22,7 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **How it works:**
 - `speed` is in mm/s. `direction`, `rotation`, and `yaw` use the project heading frame where `0` = startup-forward and `90` = startup-right. The IMU does **not** natively use this sign convention; convert raw IMU yaw with `imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)` before passing it into `move()`.
-- `movement.py` converts the global translation heading into the robot's local frame with `local_direction = direction - yaw + 45` (degrees). The `+45` rotates into the wheel basis because the wheels sit on the diagonals, leaving the front edge clear.
+- `movement.py` converts the global translation heading into the robot's local frame with `local_direction = yaw - direction + 45` (degrees). The `+45` rotates into the wheel basis because the wheels sit on the diagonals, leaving the front edge clear.
 - Wheel velocities in mm/s use the current code signs: `a_value = -sin(local_direction)*speed`, `b_value = -cos(local_direction)*speed`, `c_value = -a_value`, `d_value = -b_value`.
 - Conversion to RPM uses wheel diameter (e.g. `WHEEL_DIAMETER = 50` mm in `defence.py`): `mmps_to_rpm = 60 / (diameter * π)`.
 - Motor speeds in RPM: `a_speed = a_value * mmps_to_rpm`, and similarly for b, c, d.
