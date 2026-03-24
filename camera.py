@@ -35,7 +35,7 @@ class Camera:
         self._capture_started = False
         self._server_started = False
         self._is_shutting_down = False
-        self.calibrated = False
+        self.calibrated = True
         self.upperbound = 0
         self.lowerbound = 0
         self.colours = []
@@ -147,6 +147,11 @@ class Camera:
         """Start camera capture so bearing updates in callback."""
         self._start_capture()
 
+    def start_stream(self):
+        """Start camera capture and the MJPEG HTTP stream."""
+        self._start_capture()
+        self._start_http_server()
+
     def _proxy_callback(self, request):
         if self._is_shutting_down:
             return
@@ -249,8 +254,7 @@ class Camera:
 
     async def run_server(self):
         """Async task to run the camera server"""
-        self._start_capture()
-        self._start_http_server()
+        self.start_stream()
 
         try:
             # Keep the task alive
