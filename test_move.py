@@ -2,7 +2,13 @@ import math
 import time
 
 from imu import IMU
-from movement import MotorCommunicationError, init_motors, move, stop_all_motors
+from movement import (
+    MotorCommunicationError,
+    imu_yaw_to_relative_yaw,
+    init_motors,
+    move,
+    stop_all_motors,
+)
 
 WHEEL_DIAMETER = 50
 MAX_YAW_RPM = 100
@@ -15,10 +21,6 @@ TEST_SPEED = 100
 TEST_ROTATION = 0
 TEST_ROTATION_SPEED = 1.0
 COMMAND_INTERVAL = 0.05
-
-
-def wrap_angle_deg(angle):
-    return ((angle + 180) % 360) - 180
 
 
 def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02):
@@ -68,7 +70,7 @@ def main():
             if yaw is None:
                 time.sleep(0.01)
                 continue
-            yaw_relative = wrap_angle_deg(yaw - startup_yaw)
+            yaw_relative = imu_yaw_to_relative_yaw(yaw, startup_yaw)
             print(f"Yaw: {yaw:.6f} deg (relative {yaw_relative:.6f} deg)")
             move(
                 TEST_DIRECTION,

@@ -59,8 +59,16 @@ def main(argv: list[str]) -> int:
     print("Press Enter to stop...")
 
     try:
-        for m in _iter_initialized_motors(motors):
-            m.set_speed(rpm)
+        # Command specific motors:
+        motors_list = list(_iter_initialized_motors(motors))
+        if len(motors_list) > 0:
+            motors_list[0].set_speed(-rpm)
+        if len(motors_list) > 1:
+            motors_list[1].set_speed(-rpm)
+        if len(motors_list) > 2:
+            motors_list[2].set_speed(rpm)
+        if len(motors_list) > 3:
+            motors_list[3].set_speed(rpm)
         input()
     except KeyboardInterrupt:
         print("\nKeyboardInterrupt received; stopping...")

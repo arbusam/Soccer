@@ -19,6 +19,16 @@ class MotorCommunicationError(RuntimeError):
     """Raised when an I2C write to a motor driver fails."""
 
 
+def wrap_angle_deg(angle):
+    """Wrap an angle to the shortest signed equivalent in [-180, 180)."""
+    return ((float(angle) + 180.0) % 360.0) - 180.0
+
+
+def imu_yaw_to_relative_yaw(imu_yaw, startup_yaw):
+    """Convert raw IMU yaw into the project's clockwise-positive startup-relative frame."""
+    return wrap_angle_deg(float(startup_yaw) - float(imu_yaw))
+
+
 def _resolve_calibration_path(calibration_file):
     """Resolve relative calibration files against this module's directory."""
     if os.path.isabs(calibration_file):
@@ -182,12 +192,80 @@ def _set_motor_speed(motor, speed, motor_index, *, ignore_errors=False):
         raise MotorCommunicationError(message) from exc
     return True
 
+
+def _clamp(value, minimum, maximum):
+    return max(minimum, min(value, maximum))
+
+
+def _calculate_drive_rpms(
+    direction,
+    speed,
+    rotation,
+    rotation_speed,
+    yaw,
+    diameter,
+    max_yaw_rpm,
+    max_rpm,
+    yaw_correct_threshold,
+):
+    """Convert global translation and heading targets into per-wheel RPM values."""
+    direction = float(direction)
+    speed = float(speed)
+    rotation = float(rotation)
+    rotation_speed = _clamp(float(rotation_speed), 0.0, 1.0)
+    yaw = float(yaw)
+    diameter = float(diameter)
+    max_yaw_rpm = abs(float(max_yaw_rpm))
+    max_rpm = abs(float(max_rpm))
+    yaw_correct_threshold = abs(float(yaw_correct_threshold))
+
+    if diameter <= 0:
+        raise ValueError("move() requires a positive wheel diameter.")
+
+    # Positive yaw error means the robot must rotate clockwise to match the target heading.
+    yaw_error = wrap_angle_deg(rotation - yaw)
+    if abs(yaw_error) <= yaw_correct_threshold or rotation_speed == 0.0 or max_yaw_rpm == 0.0:
+        yaw_correction_rpm = 0.0
+    else:
+        yaw_correction_rpm = _clamp(
+            (yaw_error / 60.0) * max_yaw_rpm * rotation_speed,
+            -max_yaw_rpm,
+            max_yaw_rpm,
+        )
+
+    # Convert the global move direction into the robot's local frame.
+    # In this project 0 = forward and +90 = right, so subtract the current yaw.
+    local_direction = wrap_angle_deg(direction - yaw) + 45.0
+    local_direction_rad = math.radians(local_direction)
+    wheel_multipliers = (
+        -math.sin(local_direction_rad),  # Back left wheel
+        -math.cos(local_direction_rad),  # Back right wheel
+        math.sin(local_direction_rad),   # Front right wheel
+        math.cos(local_direction_rad),   # Front left wheel
+    )
+
+    mmps_to_rpm = 60.0 / (diameter * math.pi)
+    translation_rpms = [multiplier * speed * mmps_to_rpm for multiplier in wheel_multipliers]
+
+    # Reserve headroom for yaw correction so the robot keeps rotating toward the target
+    # without distorting the requested global translation direction.
+    available_translation_rpm = max(max_rpm - abs(yaw_correction_rpm), 0.0)
+    max_translation_rpm = max((abs(rpm) for rpm in translation_rpms), default=0.0)
+    if max_translation_rpm > available_translation_rpm and max_translation_rpm > 0.0:
+        scale = available_translation_rpm / max_translation_rpm
+        translation_rpms = [rpm * scale for rpm in translation_rpms]
+
+    return tuple(
+        _clamp(rpm + yaw_correction_rpm, -max_rpm, max_rpm)
+        for rpm in translation_rpms
+    )
+
 # Inputs:
-# direction: int - the direction of the robot in degrees. Must use the same heading reference frame as rotation and yaw.
-# speed: int - the speed of the robot in mm/s
-# rotation: int - the desired rotation of the robot in degrees. Must use the same heading reference frame as direction and yaw.
+# direction: int - global movement direction in degrees, where 0 is startup-forward and 90 is startup-right.
+# speed: int - translation speed of the robot in mm/s
+# rotation: int - desired robot heading in degrees in the same frame as direction and yaw.
 # rotation_speed: float - the strength of the yaw correction in 0.0-1.0
-# yaw: int - the measured yaw of the robot in degrees, in the same heading reference frame as direction and rotation.
+# yaw: int - measured robot heading in degrees in the same frame as direction and rotation.
 # motors: list - the list of motor objects
 # motor_modes: list - the list of motor modes
 # diameter: int - the diameter of the wheels in mm. Used to convert bot speed to motor rpm.
@@ -195,92 +273,23 @@ def _set_motor_speed(motor, speed, motor_index, *, ignore_errors=False):
 # max_rpm: int - the maximum rpm for the motors. Used to limit the motor speed.
 # yaw_correct_threshold: int - the threshold for the yaw correction in degrees. If yaw error is less than this, no correction is applied. This is to prevent overcorrection.
 def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold):
-    # Ensures integer parameters are integers
-    direction = int(direction)
-    speed = int(speed)
-    rotation = float(rotation)
-    rotation_speed = float(rotation_speed)
-    yaw = float(yaw)
-    max_yaw_rpm = int(max_yaw_rpm)
-    max_rpm = int(max_rpm)
-    yaw_correct_threshold = int(yaw_correct_threshold)
-    
     # Gets the first 4 motors from the list of motors
     drive_motors = motors[:4]
     # Checks if any of the motors are None
     if any(motor is None for motor in drive_motors):
         raise ValueError("move() requires 4 initialized drive motors in motors[0:4].")
 
-    # Signed shortest-angle error in the same clockwise-positive frame used by direction.
-    # Example: yaw=10, rotation=0 -> error=10, so the wheel correction turns back toward 0.
-    yaw_error = ((yaw - rotation + 180) % 360) - 180
-
-    rotation_speed = max(0.0, min(rotation_speed, 1.0))
-    if abs(yaw_error) > yaw_correct_threshold:
-        # Map heading error to a yaw RPM request (60 deg error -> max_yaw_rpm)
-        yaw_correct_rpm_component = max_yaw_rpm * (yaw_error / 60.0) * rotation_speed
-    else:
-        yaw_correct_rpm_component = 0.0
-
-    # Local direction is from the robot's perspective, where 0 is forward and 90 is right.
-    local_direction = yaw - direction + 45
-    a_mult = -math.sin(math.radians(local_direction)) # Back left wheel
-    b_mult = -math.cos(math.radians(local_direction)) # Back right wheel
-    c_mult = math.sin(math.radians(local_direction)) # Front right wheel
-    d_mult = math.cos(math.radians(local_direction)) # Front left wheel
-
-    # Values in mm/s
-    a_value = a_mult * speed
-    b_value = b_mult * speed
-    c_value = c_mult * speed
-    d_value = d_mult * speed
-
-    # Values in rpm
-    mmps_to_rpm = 60.0 / (diameter * math.pi)
-    a_speed = a_value * mmps_to_rpm
-    b_speed = b_value * mmps_to_rpm
-    c_speed = c_value * mmps_to_rpm
-    d_speed = d_value * mmps_to_rpm
-
-    # Finds the maximum speed of any individual motor in rpm.
-    # 1e-6 is added to avoid division by zero.
-    max_trans_rpm = max(abs(a_speed), abs(b_speed), abs(c_speed), abs(d_speed), 1e-6)
-    if max_trans_rpm > max_rpm:
-        # Scales all motor speeds down so the maximum speed is equal to max_rpm, while preserving the relative speeds of the motors so direction is the same.
-        scale = max_rpm / max_trans_rpm
-        a_speed *= scale
-        b_speed *= scale
-        c_speed *= scale
-        d_speed *= scale
-
-    # Clamp to max yaw correction component rpm.
-    yaw_correct_rpm_component = max(min(yaw_correct_rpm_component, max_yaw_rpm), -max_yaw_rpm)
-
-    # The following block calculates how many rpm are left for the yaw correction component between the max rpm and desired rpm.
-    # Upper bound is the highest positive value, lower bound is the lowest negative value.
-    bounds = []
-    for base in (a_speed, b_speed, c_speed, d_speed):
-        upper = max_rpm - base
-        lower = -max_rpm - base
-        bounds.append((lower, upper))
-
-    lower_bound = max(b[0] for b in bounds)
-    upper_bound = min(b[1] for b in bounds)
-    # Clamps yaw correction component rpm to the bounds.
-    yaw_correction_rpm = max(min(yaw_correct_rpm_component, upper_bound), lower_bound)
-
-    # Adds the yaw correction component to the motor speeds.
-    a_speed += yaw_correction_rpm
-    b_speed += yaw_correction_rpm
-    c_speed += yaw_correction_rpm
-    d_speed += yaw_correction_rpm
-
-    # Clamp between -max_rpm to max_rpm
-    a_speed = max(min(a_speed, max_rpm), -max_rpm)
-    b_speed = max(min(b_speed, max_rpm), -max_rpm)
-    c_speed = max(min(c_speed, max_rpm), -max_rpm)
-    d_speed = max(min(d_speed, max_rpm), -max_rpm)
-    # print(f"a_speed: {a_speed}, b_speed: {b_speed}, c_speed: {c_speed}, d_speed: {d_speed}")
+    a_speed, b_speed, c_speed, d_speed = _calculate_drive_rpms(
+        direction,
+        speed,
+        rotation,
+        rotation_speed,
+        yaw,
+        diameter,
+        max_yaw_rpm,
+        max_rpm,
+        yaw_correct_threshold,
+    )
 
     # Uses the formula to convert rpm to motor speed units.
     a_val = int(a_speed * RPM_TO_MOTOR_SPEED)
@@ -293,11 +302,6 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     _set_motor_speed(drive_motors[1], b_val, 1)
     _set_motor_speed(drive_motors[2], c_val, 2)
     _set_motor_speed(drive_motors[3], d_val, 3)
-
-    # for motor in drive_motors:
-    #     motor.update_quick_data_readout()
-    
-    # print(drive_motors[0].get_speed_QDR())
 
 
 def stop_all_motors(motors):
