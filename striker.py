@@ -4,7 +4,6 @@ def striker(
     yaw,
     ball_x,
     ball_y,
-    yellow=True,
     ball_captured=False,
     steering_state=False,
 ):

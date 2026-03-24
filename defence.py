@@ -68,7 +68,6 @@ def is_ball_out(ball_x, ball_y):
 # yaw: yaw value of the robot
 # ball_x: x position of the ball
 # ball_y: y position of the ball
-# yellow: True if the bot is scoring towards yellow, False if the bot is scoring towards cyan
 # ball_captured: True when the ball is touching the capture zone
 # steering_state: caller-provided flag indicating if this bot is currently steering
 
@@ -78,15 +77,13 @@ def is_ball_out(ball_x, ball_y):
 # rotation: yaw value to rotate towards
 # steering_state: Whether the bot is currently steering. Is not used elsewhere, only exists to persist state for the next call.
 # kick: True if the bot should kick the ball
-def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False, steering_state=False):
+def defence(x_pos, y_pos, yaw, ball_x, ball_y, ball_captured=False, steering_state=False):
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
         target_x = 1215
         target_y = 910
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
-        if not yellow:
-            direction = (direction - 180) % 360
         speed = 0
         rotation = 0
         steering = False
@@ -95,10 +92,7 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False,
     # Ensure the steering input is a boolean.
     steering = bool(steering_state)
     # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
-    if yellow:
-        vector = (ball_x - x_pos), (ball_y - y_pos)
-    else:
-        vector = (x_pos - ball_x), (y_pos - ball_y)
+    vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2) # Calculate the distance to the ball.
     rotation = 0 # Sets the desired rotation. 0 is always the startup/ideal heading in this frame.
@@ -120,9 +114,6 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False,
                 steering = True
             else:
                 steering = False
-
-            if not yellow:
-                offset = -offset
         elif 0 < direction < 180:
             offset = 80
         else:
@@ -130,24 +121,14 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False,
     elif dist > 500:
         speed = 1000
 
-    # Reverse the direction for bots scoring the other way.
-    if not yellow:
-        direction -= 180
-        direction %= 360
-
     # By default, the bot should not kick the ball.
     kick = False
 
     # Only kick if the ball is captured and lined up with the goal.
     if ball_captured:
-        if yellow:
-            target_x = CYAN_GOAL_BACK_X
-            target_y_min = GOAL_BACK_Y_MIN
-            target_y_max = GOAL_BACK_Y_MAX
-        else:
-            target_x = YELLOW_GOAL_BACK_X
-            target_y_min = GOAL_BACK_Y_MIN
-            target_y_max = GOAL_BACK_Y_MAX
+        target_x = CYAN_GOAL_BACK_X
+        target_y_min = GOAL_BACK_Y_MIN
+        target_y_max = GOAL_BACK_Y_MAX
 
         yaw_rad = math.radians(yaw % 360)
         dir_x = math.cos(yaw_rad)
@@ -169,28 +150,23 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False,
 # yaw: yaw value of the robot
 # ball_x: x position of the ball
 # ball_y: y position of the ball
-# yellow: True if the bot is scoring towards yellow, False if the bot is scoring towards cyan
 # ball_captured: True when the ball is touching the capture zone
 # Outputs: direction, speed, rotation
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
 # kick: True if the bot wants to kick the ball
-def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
+def goalie(x_pos, y_pos, yaw, ball_x, ball_y, ball_captured=False):
     if ball_x is None or ball_y is None:
-        target_x = YELLOW_GOAL_CENTRE_X if yellow else CYAN_GOAL_CENTRE_X
+        target_x = YELLOW_GOAL_CENTRE_X
         target_y = GOAL_CENTRE_Y
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
         speed = 600
-        rotation = 0 if yellow else 180
-        steering = False
+        rotation = 0
         kick = False
-        return direction, speed, rotation, steering, kick
-    if yellow:
-        vector = (ball_x - x_pos), (ball_y - y_pos)
-    else:
-        vector = (x_pos - ball_x), (y_pos - ball_y)
+        return direction, speed, rotation, kick
+    vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = None
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
     angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
@@ -198,96 +174,50 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, yellow=True, ball_captured=False):
     angle_to_ball %= 360
     angle_error = ((angle_to_ball - yaw + 180) % 360) - 180
     speed = 700
-    if yellow:
-        if y_pos > 1360:
-            direction = 270
-        elif y_pos < 460:
-            direction = 90
-        elif x_pos < 420:
-            direction = 0
-        elif x_pos > 600 and not ball_captured:
-            direction = 180
-        else:
-            if is_ball_out(ball_x, ball_y):
-                if abs(y_pos - 910) > 5:
-                    if y_pos < 910:
-                        direction = 90
-                    else:
-                        direction = 270
-                else:
-                    direction = yaw
-                    speed = 0
-            elif dist < 500 and abs(angle_error) < 10:
-                direction = yaw
-            else:
-                goal_dx = YELLOW_GOAL_BACK_X - ball_x
-                goal_dy = GOAL_CENTRE_Y - ball_y
-                line_len_sq = goal_dx * goal_dx + goal_dy * goal_dy
-                epsilon = 1e-6
-                if line_len_sq < epsilon:
-                    intercept_x = CYAN_GOAL_CENTRE_X
-                    intercept_y = GOAL_CENTRE_Y
-                else:
-                    t = ((x_pos - ball_x) * goal_dx + (y_pos - ball_y) * goal_dy) / line_len_sq
-                    intercept_x = ball_x + t * goal_dx
-                    intercept_y = ball_y + t * goal_dy
-
-                if intercept_x < 430:
-                    intercept_x = 430
-                    if abs(goal_dx) > epsilon:
-                        t = (intercept_x - ball_x) / goal_dx
-                        intercept_y = ball_y + t * goal_dy
-
-                dif_x = intercept_x - x_pos
-                dif_y = intercept_y - y_pos
-                if math.hypot(dif_x, dif_y) < 10:
-                    speed = 0
-                direction = math.degrees(math.atan2(dif_y, dif_x))
+    if y_pos > 1360:
+        direction = 270
+    elif y_pos < 460:
+        direction = 90
+    elif x_pos < 420:
+        direction = 0
+    elif x_pos > 600 and not ball_captured:
+        direction = 180
     else:
-        if y_pos > 1360:
-            direction = 270
-        elif y_pos < 460:
-            direction = 90
-        elif x_pos > 1980:
-            direction = 180
-        elif x_pos < 1830 and not ball_captured:
-            direction = 0
-        else:
-            if is_ball_out(ball_x, ball_y):
-                if abs(y_pos - 910) > 5:
-                    if y_pos < 910:
-                        direction = 90
-                    else:
-                        direction = 270
+        if is_ball_out(ball_x, ball_y):
+            if abs(y_pos - 910) > 5:
+                if y_pos < 910:
+                    direction = 90
                 else:
-                    direction = yaw
-                    speed = 0
-            elif dist < 500 and abs(angle_error) < 10:
-                direction = yaw
+                    direction = 270
             else:
-                goal_dx = CYAN_GOAL_BACK_X - ball_x
-                goal_dy = GOAL_CENTRE_Y - ball_y
-                line_len_sq = goal_dx * goal_dx + goal_dy * goal_dy
-                epsilon = 1e-6
-                if line_len_sq < epsilon:
-                    intercept_x = YELLOW_GOAL_CENTRE_X
-                    intercept_y = GOAL_CENTRE_Y
-                else:
-                    t = ((x_pos - ball_x) * goal_dx + (y_pos - ball_y) * goal_dy) / line_len_sq
-                    intercept_x = ball_x + t * goal_dx
+                direction = yaw
+                speed = 0
+        elif dist < 500 and abs(angle_error) < 10:
+            direction = yaw
+        else:
+            goal_dx = YELLOW_GOAL_BACK_X - ball_x
+            goal_dy = GOAL_CENTRE_Y - ball_y
+            line_len_sq = goal_dx * goal_dx + goal_dy * goal_dy
+            epsilon = 1e-6
+            if line_len_sq < epsilon:
+                intercept_x = CYAN_GOAL_CENTRE_X
+                intercept_y = GOAL_CENTRE_Y
+            else:
+                t = ((x_pos - ball_x) * goal_dx + (y_pos - ball_y) * goal_dy) / line_len_sq
+                intercept_x = ball_x + t * goal_dx
+                intercept_y = ball_y + t * goal_dy
+
+            if intercept_x < 430:
+                intercept_x = 430
+                if abs(goal_dx) > epsilon:
+                    t = (intercept_x - ball_x) / goal_dx
                     intercept_y = ball_y + t * goal_dy
 
-                if intercept_x > 2000:
-                    intercept_x = 2000
-                    if abs(goal_dx) > epsilon:
-                        t = (intercept_x - ball_x) / goal_dx
-                        intercept_y = ball_y + t * goal_dy
-
-                dif_x = intercept_x - x_pos
-                dif_y = intercept_y - y_pos
-                if math.hypot(dif_x, dif_y) < 10:
-                    speed = 0
-                direction = math.degrees(math.atan2(dif_y, dif_x))
+            dif_x = intercept_x - x_pos
+            dif_y = intercept_y - y_pos
+            if math.hypot(dif_x, dif_y) < 10:
+                speed = 0
+            direction = math.degrees(math.atan2(dif_y, dif_x))
 
     return direction, speed, rotation, False
 
@@ -427,7 +357,6 @@ if __name__ == "__main__":
             else:
                 ball_x = None
                 ball_y = None
-            yellow = True
             ball_captured = False
             if args.stream:
                 send_log.update_latest_log(f"{x_pos},{y_pos},{yaw_relative},{ball_x},{ball_y}")
@@ -437,7 +366,6 @@ if __name__ == "__main__":
                 yaw_relative,
                 ball_x,
                 ball_y,
-                yellow,
                 ball_captured,
                 steering_state=steering_state,
             )
