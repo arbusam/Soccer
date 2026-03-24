@@ -234,8 +234,9 @@ def _calculate_drive_rpms(
         )
 
     # Convert the global move direction into the robot's local frame.
-    # In this project 0 = forward and +90 = right, so subtract the current yaw.
-    local_direction = wrap_angle_deg(direction - yaw) + 45.0
+    # In this project 0 = forward and +90 = right, so a positive robot yaw means
+    # the requested global direction must be shifted left in the robot frame.
+    local_direction = wrap_angle_deg(yaw - direction) + 45.0
     local_direction_rad = math.radians(local_direction)
     wheel_multipliers = (
         -math.sin(local_direction_rad),  # Back left wheel
@@ -256,7 +257,7 @@ def _calculate_drive_rpms(
         translation_rpms = [rpm * scale for rpm in translation_rpms]
 
     return tuple(
-        _clamp(rpm + yaw_correction_rpm, -max_rpm, max_rpm)
+        _clamp(rpm - yaw_correction_rpm, -max_rpm, max_rpm)
         for rpm in translation_rpms
     )
 
