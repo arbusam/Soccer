@@ -55,3 +55,9 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 **Rebuild after changing `lidar_module.cpp`:** `python setup.py build_ext --inplace`
 
 **Build error `cannot find -lsl_lidar_sdk` / g++ exit code 1:** The Python extension links against the RPLidar SDK static library. If `rplidar_sdk/output/Linux/Release/` does not exist or has no `libsl_lidar_sdk.a`, build the SDK first: `make -C rplidar_sdk/sdk`. Then run `python setup.py build_ext --inplace` again.
+
+## Team-frame convention (`defence.py` / `simulate.py`)
+
+**Problem:** `defence()` and `goalie()` used to contain separate yellow/non-yellow branches. That made the cyan-side behavior drift from the yellow-side behavior, including cases where `defence()` would face its own goal instead of the enemy goal.
+
+**Solution:** Keep the strategy code in a single "yellow-side" frame inside `defence.py`, and let `simulate.py` rotate cyan bots into that frame before calling `defence()` or `goalie()`. The required transform is a 180° rotation of the full world state: `(x, y) -> (PITCH_WIDTH - x, PITCH_HEIGHT - y)` and `yaw/direction/rotation -> angle + 180° (mod 360)`. After the controller returns, rotate `direction` and `rotation` back into the real field frame.

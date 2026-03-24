@@ -76,7 +76,9 @@ if log_provided:
 
 pygame.init()
 
-display = pygame.display.set_mode((1215, 910))
+INITIAL_WINDOW_SIZE = (1215, 910)
+
+display = pygame.display.set_mode(INITIAL_WINDOW_SIZE, pygame.RESIZABLE)
 
 pitch = pygame.Surface((2430, 1820))
 PITCH_WIDTH = pitch.get_width()
@@ -495,6 +497,22 @@ def normalize_angle_deg(angle):
 
 def shortest_angle_delta(current, target):
     return (target - current + 180) % 360 - 180
+
+
+def invert_pitch_point(x_pos, y_pos):
+    return PITCH_WIDTH - x_pos, PITCH_HEIGHT - y_pos
+
+
+def invert_optional_pitch_point(x_pos, y_pos):
+    if x_pos is None or y_pos is None:
+        return x_pos, y_pos
+    return invert_pitch_point(x_pos, y_pos)
+
+
+def invert_angle_deg(angle):
+    if angle is None:
+        return None
+    return normalize_angle_deg(angle + 180)
 
 def is_out_of_white_boundary(x_pos, y_pos, bot_radius):
     # Find closest point on rectangle to circle center
@@ -947,9 +965,50 @@ def resolve_ball_goal_line_collisions(ball_x, ball_y, ball_vx, ball_vy, goal_lin
             ball_vy *= WALL_BOUNCE_ENERGY_LOSS
         against_goal_line = True
     return ball_x, ball_y, ball_vx, ball_vy, against_goal_line
+def get_frame_render_metrics(frame_surface):
+    window_width, window_height = display.get_size()
+    frame_width, frame_height = frame_surface.get_size()
+    scale = min(window_width / frame_width, window_height / frame_height)
+    scaled_width = max(1, int(frame_width * scale))
+    scaled_height = max(1, int(frame_height * scale))
+    offset_x = (window_width - scaled_width) // 2
+    offset_y = (window_height - scaled_height) // 2
+    return scaled_width, scaled_height, offset_x, offset_y
+
+
+def window_to_frame_point(window_x, window_y, frame_surface):
+    scaled_width, scaled_height, offset_x, offset_y = get_frame_render_metrics(
+        frame_surface
+    )
+    local_x = window_x - offset_x
+    local_y = window_y - offset_y
+
+    if not (0 <= local_x < scaled_width and 0 <= local_y < scaled_height):
+        return None
+
+    frame_width, frame_height = frame_surface.get_size()
+    frame_x = int(local_x * frame_width / scaled_width)
+    frame_y = int(local_y * frame_height / scaled_height)
+    frame_x = min(max(frame_x, 0), frame_width - 1)
+    frame_y = min(max(frame_y, 0), frame_height - 1)
+    return frame_x, frame_y
+
+
 def blit_frame(frame_surface):
-    scaled = pygame.transform.smoothscale(frame_surface, (1215, 910))
-    display.blit(scaled, (0, 0))
+    scaled_width, scaled_height, offset_x, offset_y = get_frame_render_metrics(
+        frame_surface
+    )
+    frame_width, frame_height = frame_surface.get_size()
+
+    if (scaled_width, scaled_height) == (frame_width, frame_height):
+        scaled = frame_surface
+    else:
+        scaled = pygame.transform.smoothscale(
+            frame_surface, (scaled_width, scaled_height)
+        )
+
+    display.fill(black)
+    display.blit(scaled, (offset_x, offset_y))
     pygame.display.flip()
 
 log_client_error: Optional[Exception] = None
@@ -1103,11 +1162,11 @@ else:
             if event.type == pygame.QUIT:
                 waiting = False
             if event.type == pygame.MOUSEBUTTONDOWN:
-                mouse_x, mouse_y = pygame.mouse.get_pos()
-                ball_x = mouse_x * 2
-                ball_y = mouse_y * 2
-                ball_vx = 0.0
-                ball_vy = 0.0
+                ball_position = window_to_frame_point(event.pos[0], event.pos[1], pitch)
+                if ball_position is not None:
+                    ball_x, ball_y = ball_position
+                    ball_vx = 0.0
+                    ball_vy = 0.0
 
         manual_keys = pygame.key.get_pressed() if any(bot.manual for bot in bots) else None
 
@@ -1126,28 +1185,47 @@ else:
                     manual_keys = pygame.key.get_pressed()
                 direction, speed, rotation, kick_state = manual_control_from_keys(manual_keys, bot.yaw)
             elif bot.controller is not None:
+                controller_x = bot.x
+                controller_y = bot.y
+                controller_yaw = bot.yaw
+                controller_ball_x = ball_x
+                controller_ball_y = ball_y
+                controller_inverted = (
+                    bot.controller in (defence, goalie) and bot.base_color != yellow
+                )
+                if controller_inverted:
+                    controller_x, controller_y = invert_pitch_point(bot.x, bot.y)
+                    controller_yaw = invert_angle_deg(bot.yaw)
+                    controller_ball_x, controller_ball_y = invert_optional_pitch_point(
+                        ball_x, ball_y
+                    )
+
                 if bot.controller in (defence, striker):
                     direction, speed, rotation, steering_state, kick_state = bot.controller(
-                        bot.x,
-                        bot.y,
-                        bot.yaw,
-                        ball_x,
-                        ball_y,
-                        bot.base_color == yellow,
+                        controller_x,
+                        controller_y,
+                        controller_yaw,
+                        controller_ball_x,
+                        controller_ball_y,
                         ball_captured,
                         bot.steering,
                     )
+                    if controller_inverted:
+                        direction = invert_angle_deg(direction)
+                        rotation = invert_angle_deg(rotation)
                     bot.steering = steering_state
                 else:
                     direction, speed, rotation, kick_state = bot.controller(
-                        bot.x,
-                        bot.y,
-                        bot.yaw,
-                        ball_x,
-                        ball_y,
-                        bot.base_color == yellow,
+                        controller_x,
+                        controller_y,
+                        controller_yaw,
+                        controller_ball_x,
+                        controller_ball_y,
                         ball_captured,
                     )
+                    if controller_inverted:
+                        direction = invert_angle_deg(direction)
+                        rotation = invert_angle_deg(rotation)
             else:
                 direction, speed, rotation = 0, 0, bot.yaw
 
