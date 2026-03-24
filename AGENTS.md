@@ -1,5 +1,5 @@
 Any time you don't understand something about how this project works, try and figure it out. If you still don't understand, ask for help. Once you figure it out/get an answer, add an explanation of the problem and how to solve it to this file, so you don't run into the same problem again. Do not just save every change you make here, only add to this file if you didn't understand something and you had to spend time working it out.
-Whenever you finish writing code, use `ruff check` to lint it.
+Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bin/ruff check <path>`). If that does not work (for example `.venv` is missing or the command fails), tell the user.
 
 ## Library (motor / movement)
 
@@ -20,7 +20,7 @@ Whenever you finish writing code, use `ruff check` to lint it.
 **Problem:** What are `a_speed`, `b_speed`, `c_speed`, `d_speed`, and `max_trans_rpm` when `speed` is a given value (e.g. 500)?
 
 **How it works:**
-- `speed` is in mm/s. Direction and yaw use a heading frame where `0` = forward and `90` = right. `movement.py` converts that to the mecanum wheel basis with `local_direction = direction - yaw + 45` (degrees).
+- `speed` is in mm/s. Direction and yaw use a heading frame where `0` = forward and `90` = right. `movement.py` converts that to the mecanum wheel basis with `local_direction = yaw - direction + 45` (degrees).
 - Wheel velocities in mm/s use the current code signs: `a_value = -sin(local_direction)*speed`, `b_value = -cos(local_direction)*speed`, `c_value = -a_value`, `d_value = -b_value`.
 - Conversion to RPM uses wheel diameter (e.g. `WHEEL_DIAMETER = 50` mm in `defence.py`): `mmps_to_rpm = 60 / (diameter * π)`.
 - Motor speeds in RPM: `a_speed = a_value * mmps_to_rpm`, and similarly for b, c, d.
