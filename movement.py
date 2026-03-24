@@ -211,9 +211,9 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
     if any(motor is None for motor in drive_motors):
         raise ValueError("move() requires 4 initialized drive motors in motors[0:4].")
 
-    # Signed shortest-angle error from current yaw to target rotation.
-    # Example: yaw=10, rotation=0 -> error=-10, so the controller turns back toward 0.
-    yaw_error = ((rotation - yaw + 180) % 360) - 180
+    # Signed shortest-angle error in the same clockwise-positive frame used by direction.
+    # Example: yaw=10, rotation=0 -> error=10, so the wheel correction turns back toward 0.
+    yaw_error = ((yaw - rotation + 180) % 360) - 180
 
     rotation_speed = max(0.0, min(rotation_speed, 1.0))
     if abs(yaw_error) > yaw_correct_threshold:
@@ -223,7 +223,7 @@ def move(direction, speed, rotation, rotation_speed, yaw, motors, motor_modes, d
         yaw_correct_rpm_component = 0.0
 
     # Local direction is from the robot's perspective, where 0 is forward and 90 is right.
-    local_direction = direction - yaw + 45
+    local_direction = yaw - direction + 45
     a_mult = -math.sin(math.radians(local_direction)) # Back left wheel
     b_mult = -math.cos(math.radians(local_direction)) # Back right wheel
     c_mult = math.sin(math.radians(local_direction)) # Front right wheel
