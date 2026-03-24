@@ -36,6 +36,7 @@ class Kicker:
 
         with self._state_lock:
             if self._pin is not None:
+                self._pin.value = False
                 self._pin.deinit()
                 self._pin = None
             self._kick_thread = None
