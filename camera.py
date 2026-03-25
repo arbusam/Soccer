@@ -6,8 +6,13 @@ from threading import Condition
 import cv2
 import threading
 import asyncio
-import math
-import numpy as np
+from ball_distance_calibration import (
+    DEFAULT_DISTANCE_CALIBRATION_FILE,
+    calculate_ball_bearing_deg,
+    detect_orange_ball,
+    load_distance_calibration,
+    predict_distance_from_calibration,
+)
 # change to picamzero
 from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
@@ -15,7 +20,13 @@ from picamera2.outputs import FileOutput
 from picamera2.request import MappedArray
 
 class Camera:
-    def __init__(self, PORT, resolution=(640, 640), frame_rate=30):
+    def __init__(
+        self,
+        PORT,
+        resolution=(640, 640),
+        frame_rate=30,
+        distance_calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE,
+    ):
         self.PORT = PORT
         self.resolution = resolution
         self.picam2 = Picamera2()
@@ -39,6 +50,10 @@ class Camera:
         self.upperbound = 0
         self.lowerbound = 0
         self.colours = []
+        self.distance_calibration = load_distance_calibration(
+            resolution=resolution,
+            calibration_file=distance_calibration_file,
+        )
 
         # Enable color detection callback by default
         self.picam2.pre_callback = self._proxy_callback
@@ -173,44 +188,27 @@ class Camera:
                 # cv2.line(m.array, (m.array.shape[1] // 2 - 10, m.array.shape[0] // 2), (m.array.shape[1] // 2 + 10, m.array.shape[0] // 2), (0, 0, 255), 2)
                 if self.calibrated:
 
-                    orangeLowerBound = np.array([0, 200, 140])
-                    orangeUpperBound = np.array([15, 255, 255])
-
-                    orangeMask = cv2.inRange(hsv, orangeLowerBound, orangeUpperBound)
-                    orangeContours, _ = cv2.findContours(orangeMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    for contour in orangeContours:
-                        area = cv2.contourArea(contour)
-                        if area > 200:
-                            x, y, w, h = cv2.boundingRect(contour)
-                            cv2.drawContours(m.array, [contour], -1, (0, 165, 255), 2)
-                    # print(redContours)
-                    # Select the biggest contour with bounding-box area (w*h) less than 10000
-                    validContours = []
-                    for c in orangeContours:
-                        x_tmp, y_tmp, w_tmp, h_tmp = cv2.boundingRect(c)
-                        if w_tmp * h_tmp < 50000:
-                            validContours.append(c)
-                    biggestContour = max(
-                        validContours,
-                        key=lambda c: (lambda wh: wh[0] * wh[1])(cv2.boundingRect(c)[2:4])
-                    ) if validContours else None
-                    if biggestContour is not None:
-                        x, y, w, h = cv2.boundingRect(biggestContour)
+                    detection = detect_orange_ball(m.array)
+                    if detection is not None:
+                        x, y, w, h = detection["bbox"]
+                        centre_x, centre_y = detection["centre"]
+                        cv2.drawContours(m.array, [detection["contour"]], -1, (0, 165, 255), 2)
                         cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                        # print(f"Biggest contour area: {w*h}")
-                        # A = -220d + 11300
-                        # d = (11300 - A) / 220
-                        biggestContourAreaCentre = (x + w // 2, y + h // 2)
 
-                        # Find the bearing of biggestContourAreaCentre from the centre of the image
-                        bearing_rad = math.atan2(biggestContourAreaCentre[1] - m.array.shape[0] // 2, biggestContourAreaCentre[0] - m.array.shape[1] // 2)
-                        new_bearing = math.degrees(bearing_rad) - 90
-                        new_distance = (11300 - w*h) / 220
-                        # print(f"Distance: {self._distance}, Bearing: {self._bearing}")
-
-                        # need to find focal length of camera
-                        # bw, fl = 0.42, 0
-                        # distance = (bw * fl) / w
+                        # Find the bearing of the ball centre from the centre of the image.
+                        new_bearing = calculate_ball_bearing_deg(
+                            centre_x,
+                            centre_y,
+                            m.array.shape[1],
+                            m.array.shape[0],
+                        )
+                        new_distance = predict_distance_from_calibration(
+                            self.distance_calibration,
+                            detection["radial_pixels"],
+                        )
+                        if new_distance is None:
+                            # Fall back to the legacy contour-area estimate until a calibration file exists.
+                            new_distance = (11300 - w * h) / 220
                     else:
                         new_bearing = None
                         new_distance = None
