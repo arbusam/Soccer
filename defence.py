@@ -17,6 +17,8 @@ CYAN_GOAL_BACK_X = 2204
 MAX_MOTOR_RPM = 400 # Maximum rpm that the wheels can spin at
 LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
+TOF_ADDRESS = 0x50
+BALL_CAPTURED_DISTANCE = 100 # mm, distance from the ToF to the ball to consider it captured
 
 # Pitch boundary coordinates. Used to keep bot within the pitch.
 WHITE_MIN_X = 250
@@ -308,6 +310,7 @@ if __name__ == "__main__":
     )
     from camera import Camera
     from imu import IMU
+    from tof import ToF
 
     parser = argparse.ArgumentParser(
         description="Run defence controller with optional live websocket streaming."
@@ -331,6 +334,7 @@ if __name__ == "__main__":
     motors = []
     motor_modes = []
     try:
+        tof = ToF(address=TOF_ADDRESS)
         print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
         try:
             lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
@@ -415,6 +419,11 @@ if __name__ == "__main__":
             else:
                 ball_x = None
                 ball_y = None
+            distance_to_ball = tof.read()
+            if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE:
+                ball_captured = True
+            else:
+                ball_captured = False
             ball_captured = False
             if args.stream:
                 log_values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
