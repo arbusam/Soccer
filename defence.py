@@ -311,6 +311,7 @@ if __name__ == "__main__":
     from camera import Camera
     from imu import IMU
     from tof import ToF
+    import kicker
 
     parser = argparse.ArgumentParser(
         description="Run defence controller with optional live websocket streaming."
@@ -422,6 +423,8 @@ if __name__ == "__main__":
             distance_to_ball = tof.read()
             if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE:
                 ball_captured = True
+                ball_x = x_pos + 150 * math.cos(math.radians(yaw_relative))
+                ball_y = y_pos + 150 * math.sin(math.radians(yaw_relative))
             else:
                 ball_captured = False
             ball_captured = False
@@ -432,7 +435,7 @@ if __name__ == "__main__":
                 send_log.update_latest_log(
                     ",".join("None" if value is None else str(value) for value in log_values)
                 )
-            direction, speed, rotation, steering_state, _ = defence(
+            direction, speed, rotation, steering_state, kick = defence(
                 x_pos,
                 y_pos,
                 yaw_relative,
@@ -442,12 +445,15 @@ if __name__ == "__main__":
                 steering_state=steering_state,
                 other_bot_positions=other_bot_positions,
             )
+            if kick:
+                kicker.kick()
             try:
                 move(direction, speed, rotation, 1.0, yaw_relative, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
             except MotorCommunicationError as exc:
                 print(exc)
                 raise
     finally:
+        kicker.deinit()
         if camera is not None:
             try:
                 camera.stop()
