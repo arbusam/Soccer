@@ -37,6 +37,20 @@ def wrap_angle_deg(angle):
     return ((angle + 180) % 360) - 180
 
 
+def point_to_segment_distance(px, py, x1, y1, x2, y2):
+    dx = x2 - x1
+    dy = y2 - y1
+    line_len_sq = dx * dx + dy * dy
+    if line_len_sq <= 1e-9:
+        return math.hypot(px - x1, py - y1)
+
+    t = ((px - x1) * dx + (py - y1) * dy) / line_len_sq
+    t = max(0.0, min(1.0, t))
+    closest_x = x1 + t * dx
+    closest_y = y1 + t * dy
+    return math.hypot(px - closest_x, py - closest_y)
+
+
 def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02):
     """Average a short burst of IMU samples so startup yaw is not just the first reading."""
     print("Stabilizing IMU yaw reference...")
@@ -71,13 +85,26 @@ def is_ball_out(ball_x, ball_y):
 # ball_captured: True when the ball is touching the capture zone
 # steering_state: caller-provided flag indicating if this bot is currently steering
 
+# other_bot_positions: optional iterable of (x, y) positions for other robots detected on the pitch
 # Outputs: direction, speed, rotation, steering, kick
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
 # steering_state: Whether the bot is currently steering. Is not used elsewhere, only exists to persist state for the next call.
 # kick: True if the bot should kick the ball
-def defence(x_pos, y_pos, yaw, ball_x, ball_y, ball_captured=False, steering_state=False):
+def defence(
+    x_pos,
+    y_pos,
+    yaw,
+    ball_x,
+    ball_y,
+    ball_captured=False,
+    steering_state=False,
+    other_bot_positions=None,
+    other_bots=None,
+):
+    if other_bot_positions is None:
+        other_bot_positions = other_bots
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
         target_x = 1215
@@ -151,12 +178,26 @@ def defence(x_pos, y_pos, yaw, ball_x, ball_y, ball_captured=False, steering_sta
 # ball_x: x position of the ball
 # ball_y: y position of the ball
 # ball_captured: True when the ball is touching the capture zone
+# other_bot_positions: optional iterable of (x, y) positions for other robots detected on the pitch
 # Outputs: direction, speed, rotation
 # direction: degrees to move in
 # speed: mm/s to move at
 # rotation: yaw value to rotate towards
 # kick: True if the bot wants to kick the ball
-def goalie(x_pos, y_pos, yaw, ball_x, ball_y, ball_captured=False):
+def goalie(
+    x_pos,
+    y_pos,
+    yaw,
+    ball_x,
+    ball_y,
+    ball_captured=False,
+    other_bot_positions=None,
+    other_bots=None,
+):
+    if other_bot_positions is None:
+        other_bot_positions = other_bots
+    if other_bot_positions is None:
+        other_bot_positions = []
     if ball_x is None or ball_y is None:
         target_x = YELLOW_GOAL_CENTRE_X
         target_y = GOAL_CENTRE_Y
@@ -174,6 +215,22 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, ball_captured=False):
     angle_to_ball %= 360
     angle_error = ((angle_to_ball - yaw + 180) % 360) - 180
     speed = 700
+    kick = False
+
+    if ball_captured:
+        target_x = CYAN_GOAL_BACK_X
+        target_y = GOAL_CENTRE_Y
+        shot_heading = math.degrees(math.atan2(target_y - ball_y, target_x - ball_x))
+        shot_error = wrap_angle_deg(shot_heading - yaw)
+        if abs(shot_error) <= 15:
+            kick = True
+            for bot_x, bot_y in other_bot_positions:
+                if point_to_segment_distance(
+                    bot_x, bot_y, ball_x, ball_y, target_x, target_y
+                ) < 110:
+                    kick = False
+                    break
+
     if y_pos > 1360:
         direction = 270
     elif y_pos < 460:
@@ -219,7 +276,7 @@ def goalie(x_pos, y_pos, yaw, ball_x, ball_y, ball_captured=False):
                 speed = 0
             direction = math.degrees(math.atan2(dif_y, dif_x))
 
-    return direction, speed, rotation, False
+    return direction, speed, rotation, kick
 
 def _prompt_i2c_addresses():
     print("Please enter the number of motor drivers you want to control:")
@@ -328,6 +385,7 @@ if __name__ == "__main__":
             print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
             lidar.set_yaw(yaw_world)
             x_pos, y_pos = lidar.get_coordinates()
+            other_bot_positions = lidar.get_other_bot_positions()
             camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
             has_new_camera_frame = camera_frame_id != last_camera_frame_id
             last_camera_frame_id = camera_frame_id
@@ -359,7 +417,12 @@ if __name__ == "__main__":
                 ball_y = None
             ball_captured = False
             if args.stream:
-                send_log.update_latest_log(f"{x_pos},{y_pos},{yaw_relative},{ball_x},{ball_y}")
+                log_values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
+                for other_x, other_y in other_bot_positions:
+                    log_values.extend((other_x, other_y))
+                send_log.update_latest_log(
+                    ",".join("None" if value is None else str(value) for value in log_values)
+                )
             direction, speed, rotation, steering_state, _ = defence(
                 x_pos,
                 y_pos,
@@ -368,6 +431,7 @@ if __name__ == "__main__":
                 ball_y,
                 ball_captured,
                 steering_state=steering_state,
+                other_bot_positions=other_bot_positions,
             )
             try:
                 move(direction, speed, rotation, 1.0, yaw_relative, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)

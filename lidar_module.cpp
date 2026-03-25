@@ -98,6 +98,7 @@ static CoordResult g_latest_coord = {-1, -1, 0, false};
 static float g_good_x = -1.0f;
 static float g_good_y = -1.0f;
 static bool g_has_good_coord = false;
+static std::vector<std::pair<float, float>> g_latest_other_bots;
 static std::atomic<bool> g_coord_ready{false};
 
 // Only touched by the coordinate thread
@@ -122,6 +123,10 @@ static constexpr float GOAL_RIGHT_FRONT_X = 2130.0f;
 static constexpr float GOAL_TOP_Y = 685.0f;
 static constexpr float GOAL_BOTTOM_Y = 1135.0f;
 static constexpr float GOAL_BACK_BOTTOM_Y = 1140.0f;
+static constexpr float OTHER_BOT_RADIUS_MM = 110.0f;
+static constexpr float OUTLIER_OBJECT_THRESH_MM = 140.0f;
+static constexpr float OTHER_BOT_CLUSTER_DIST_MM = 220.0f;
+static constexpr int   OTHER_BOT_MIN_CLUSTER_POINTS = 3;
 
 // ===========================================================================
 // Coordinate estimation
@@ -268,6 +273,102 @@ static PoseStats compute_stats(float x, float y,
 // Uses the inlier ratio and MAD to calculate the confidence in the position.
 static float compute_confidence(const PoseStats& s) {
     return 0.7f * s.inlier_ratio + 0.3f * std::exp(-s.mad_mm / 80.0f);
+}
+
+static std::vector<std::pair<float, float>> detect_other_bot_positions(
+    float robot_x, float robot_y,
+    const float* ux, const float* uy,
+    const float* r_meas, int n,
+    float Lx, float Ly) {
+    struct OutlierPoint {
+        float x;
+        float y;
+    };
+
+    struct Cluster {
+        float sum_x;
+        float sum_y;
+        int count;
+    };
+
+    std::vector<OutlierPoint> outlier_points;
+    outlier_points.reserve(n);
+
+    for (int i = 0; i < n; i++) {
+        float r_pred = predict_range(robot_x, robot_y, ux[i], uy[i], Lx, Ly);
+        float residual_mm = r_pred - r_meas[i];
+        if (residual_mm < OUTLIER_OBJECT_THRESH_MM) {
+            continue;
+        }
+
+        float hit_x = robot_x + ux[i] * r_meas[i];
+        float hit_y = robot_y + uy[i] * r_meas[i];
+        if (hit_x < 0.0f || hit_x > Lx || hit_y < 0.0f || hit_y > Ly) {
+            continue;
+        }
+        outlier_points.push_back({hit_x, hit_y});
+    }
+
+    std::vector<Cluster> clusters;
+    for (const auto& pt : outlier_points) {
+        int best_cluster = -1;
+        float best_dist = 1e30f;
+
+        for (size_t idx = 0; idx < clusters.size(); idx++) {
+            float cx = clusters[idx].sum_x / clusters[idx].count;
+            float cy = clusters[idx].sum_y / clusters[idx].count;
+            float dist = std::hypot(pt.x - cx, pt.y - cy);
+            if (dist < OTHER_BOT_CLUSTER_DIST_MM && dist < best_dist) {
+                best_dist = dist;
+                best_cluster = (int)idx;
+            }
+        }
+
+        if (best_cluster < 0) {
+            clusters.push_back({pt.x, pt.y, 1});
+        } else {
+            clusters[best_cluster].sum_x += pt.x;
+            clusters[best_cluster].sum_y += pt.y;
+            clusters[best_cluster].count++;
+        }
+    }
+
+    std::vector<std::pair<float, float>> bots;
+    for (const auto& cluster : clusters) {
+        if (cluster.count < OTHER_BOT_MIN_CLUSTER_POINTS) {
+            continue;
+        }
+
+        float surface_x = cluster.sum_x / cluster.count;
+        float surface_y = cluster.sum_y / cluster.count;
+        float dir_x = surface_x - robot_x;
+        float dir_y = surface_y - robot_y;
+        float norm = std::hypot(dir_x, dir_y);
+        if (norm <= COORD_EPS) {
+            continue;
+        }
+
+        float center_x = surface_x + (dir_x / norm) * OTHER_BOT_RADIUS_MM;
+        float center_y = surface_y + (dir_y / norm) * OTHER_BOT_RADIUS_MM;
+        center_x = std::min(std::max(center_x, 0.0f), Lx);
+        center_y = std::min(std::max(center_y, 0.0f), Ly);
+
+        bool merged = false;
+        for (auto& bot : bots) {
+            float dist = std::hypot(center_x - bot.first, center_y - bot.second);
+            if (dist < OTHER_BOT_RADIUS_MM) {
+                bot.first = 0.5f * (bot.first + center_x);
+                bot.second = 0.5f * (bot.second + center_y);
+                merged = true;
+                break;
+            }
+        }
+        if (!merged) {
+            bots.emplace_back(center_x, center_y);
+        }
+    }
+
+    return bots;
 }
 
 // Derivative-free coarse-to-fine local search. Is much faster than the global search.
@@ -500,10 +601,12 @@ static void coord_thread_func() {
         }
 
         bool ok = conf >= CONF_THRESHOLD; // Checks if the confidence is high enough to use.
+        std::vector<std::pair<float, float>> other_bots;
         if (ok) {
             g_prev_x = x;
             g_prev_y = y;
             g_has_prev_pose = true;
+            other_bots = detect_other_bot_positions(x, y, ux_p, uy_p, r_p, n, Lx, Ly);
         }
 
         {
@@ -514,6 +617,7 @@ static void coord_thread_func() {
                 g_good_y = y;
                 g_has_good_coord = true;
             }
+            g_latest_other_bots = std::move(other_bots);
             g_coord_ready.store(true);
         }
 
@@ -611,6 +715,7 @@ static void shutdown_lidar() {
         std::lock_guard<std::mutex> lock(g_coord_mutex);
         g_latest_coord = {-1, -1, 0, false};
         g_has_good_coord = false;
+        g_latest_other_bots.clear();
         g_coord_ready.store(false);
     }
     g_has_prev_pose = false;
@@ -754,6 +859,10 @@ static void start_coordinates(float pitch_x, float pitch_y) {
 
     g_has_prev_pose = false;
     g_has_good_coord = false;
+    {
+        std::lock_guard<std::mutex> lock(g_coord_mutex);
+        g_latest_other_bots.clear();
+    }
     g_coord_ready.store(false);
 
     g_coord_running.store(true);
@@ -786,6 +895,15 @@ static py::tuple get_coordinates_info_py() {
     return py::make_tuple(g_good_x, g_good_y,
                           g_latest_coord.confidence,
                           g_latest_coord.ok);
+}
+
+static py::list get_other_bot_positions_py() {
+    std::lock_guard<std::mutex> lock(g_coord_mutex);
+    py::list result;
+    for (const auto& bot : g_latest_other_bots) {
+        result.append(py::make_tuple(bot.first, bot.second));
+    }
+    return result;
 }
 
 static bool is_coordinates_ready() {
@@ -854,6 +972,9 @@ PYBIND11_MODULE(lidar, m) {
 
     m.def("get_coordinates_info", &get_coordinates_info_py,
           "Get (x, y, confidence, ok) — last confident (x, y) with latest confidence and ok flag.");
+
+    m.def("get_other_bot_positions", &get_other_bot_positions_py,
+          "Get clustered positions of likely other bots detected from scan outliers.");
 
     m.def("is_coordinates_ready", &is_coordinates_ready,
           "True once at least one confident position has been computed.");
