@@ -219,19 +219,20 @@ def goalie(
     speed = 700
     kick = False
 
-    if ball_captured:
-        target_x = CYAN_GOAL_BACK_X
-        target_y = GOAL_CENTRE_Y
-        shot_heading = math.degrees(math.atan2(target_y - ball_y, target_x - ball_x))
-        shot_error = wrap_angle_deg(shot_heading - yaw)
-        if abs(shot_error) <= 15:
-            kick = True
-            for bot_x, bot_y in other_bot_positions:
-                if point_to_segment_distance(
-                    bot_x, bot_y, ball_x, ball_y, target_x, target_y
-                ) < 110:
+    if ball_captured and -90 < yaw < 90:
+        m1 = (math.tan(math.radians(yaw)))
+        c1 = y_pos - m1 * x_pos
+        kick = True
+        if other_bots is not None:
+            for bot in other_bots:
+                m2 = (-1/m1)
+                c2 = bot[1] - m2 * bot[0]
+                xint = (c2 - c1) / (m1 - m2)
+                yint = m1 * xint + c1
+                distanceToEnemyBot = math.dist((xint, yint), (x_pos, y_pos))
+                if distanceToEnemyBot < 200:
                     kick = False
-                    break
+                    
 
     if y_pos > 1360:
         direction = 270
