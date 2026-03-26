@@ -232,7 +232,6 @@ def goalie(
                 distanceToEnemyBot = math.dist((xint, yint), (x_pos, y_pos))
                 if distanceToEnemyBot < 200:
                     kick = False
-                    
 
     if y_pos > 1360:
         direction = 270
@@ -278,6 +277,19 @@ def goalie(
             if math.hypot(dif_x, dif_y) < 10:
                 speed = 0
             direction = math.degrees(math.atan2(dif_y, dif_x))
+    
+    if 90 < angle_to_ball< 135:
+        speed = 500
+        direction = 160
+    if 135 < angle_to_ball< 180:
+        speed = 300
+        direction = -135
+    if -179 < angle_to_ball< -135:
+        speed = 300
+        direction = 135
+    if 90 < angle_to_ball< 135:
+        speed = 500
+        direction = -160
 
     return direction, speed, rotation, kick
 
