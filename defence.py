@@ -290,6 +290,10 @@ def goalie(
     if 90 < angle_to_ball< 135:
         speed = 500
         direction = -160
+    if CYAN_GOAL_CENTRE_X - 10 < ball_x < CYAN_GOAL_CENTRE_X + 10 \
+        and GOAL_BACK_Y_MIN < ball_x < GOAL_BACK_Y_MAX and distance_to_ball < 200:
+        speed = 0
+
 
     return direction, speed, rotation, kick
 
