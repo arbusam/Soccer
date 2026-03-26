@@ -54,6 +54,12 @@ class Camera:
             resolution=resolution,
             calibration_file=distance_calibration_file,
         )
+        self._distance_calibration_warning_logged = False
+        if self.distance_calibration is None:
+            logging.warning(
+                "Ball distance calibration file '%s' was not loaded; distance estimates will be unavailable.",
+                distance_calibration_file,
+            )
 
         # Enable color detection callback by default
         self.picam2.pre_callback = self._proxy_callback
@@ -207,8 +213,14 @@ class Camera:
                             detection["radial_pixels"],
                         )
                         if new_distance is None:
-                            # Fall back to the legacy contour-area estimate until a calibration file exists.
-                            new_distance = (11300 - w * h) / 220
+                            if (
+                                self.distance_calibration is None
+                                and not self._distance_calibration_warning_logged
+                            ):
+                                logging.warning(
+                                    "Orange ball detected, but no valid distance calibration is loaded."
+                                )
+                                self._distance_calibration_warning_logged = True
                     else:
                         new_bearing = None
                         new_distance = None
