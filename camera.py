@@ -10,6 +10,7 @@ from ball_distance_calibration import (
     DEFAULT_DISTANCE_CALIBRATION_FILE,
     calculate_ball_bearing_deg,
     detect_orange_ball,
+    get_distance_calibration_resolution,
     load_distance_calibration,
     predict_distance_from_calibration,
 )
@@ -23,10 +24,15 @@ class Camera:
     def __init__(
         self,
         PORT,
-        resolution=(640, 640),
+        resolution=None,
         frame_rate=30,
         distance_calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE,
     ):
+        if resolution is None:
+            resolution = get_distance_calibration_resolution(distance_calibration_file) or (
+                2000,
+                2000,
+            )
         self.PORT = PORT
         self.resolution = resolution
         self.picam2 = Picamera2()
@@ -34,7 +40,7 @@ class Camera:
         self.picam2.controls.FrameRate = frame_rate
         self.forward_angle = 0  # Add forward angle property
         # self.picam2.controls.ExposureTime = 30000
-        self.picam2.controls.AnalogueGain = 15.0
+        self.picam2.controls.AnalogueGain = 2.0
         self.output = self.StreamingOutput()
         self.server = None
         self.server_thread = None
@@ -82,8 +88,23 @@ class Camera:
 
     class StreamingHandler(server.BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.startswith('/stream.mjpg'):
+            if self.path in ('/', '/index.html'):
+                self.serve_index()
+            elif self.path.startswith('/stream.mjpg'):
                 self.serve_stream()
+            else:
+                self.send_error(404)
+
+        def serve_index(self):
+            content = (
+                "<html><head><title>Camera Preview</title></head>"
+                "<body><img src='/stream.mjpg' /></body></html>"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(content)))
+            self.end_headers()
+            self.wfile.write(content)
 
         def serve_stream(self):
             self.send_response(200)
@@ -162,7 +183,8 @@ class Camera:
         self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.server_thread.start()
         self._server_started = True
-        print(f"Stream available at http://localhost:{self.PORT}/stream.mjpg")
+        print(f"Camera preview available at http://localhost:{self.PORT}/")
+        print(f"Raw MJPEG stream available at http://localhost:{self.PORT}/stream.mjpg")
 
     def start(self):
         """Start camera capture so bearing updates in callback."""
@@ -208,10 +230,13 @@ class Camera:
                             m.array.shape[1],
                             m.array.shape[0],
                         )
+                        new_bearing += 180
+                        # print(new_bearing)
                         new_distance = predict_distance_from_calibration(
                             self.distance_calibration,
                             detection["radial_pixels"],
                         )
+                        print(new_distance)
                         if new_distance is None:
                             if (
                                 self.distance_calibration is None
