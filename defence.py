@@ -31,6 +31,7 @@ BALL_RADIUS = 21 # mm, radius of the ball
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000
+I2C_ADDRESSES = [28, 32, 31, 30]
 
 BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
 
@@ -128,7 +129,7 @@ def defence(
     speed = 500 # mm/s, Default speed of the bot.
     offset = 0 # deg, Offset to the direction to the ball. Used to avoid own goals.
     # Only activate own goal prevention if the ball is close to the bot.
-    if dist < 200:
+    if dist < 400:
         if -10 < direction < 10:
             speed = 1000
             if steering and y_pos < 850 and dist < 200:
@@ -232,6 +233,7 @@ def goalie(
                 distanceToEnemyBot = math.dist((xint, yint), (x_pos, y_pos))
                 if distanceToEnemyBot < 200:
                     kick = False
+                    
 
     if y_pos > 1360:
         direction = 270
@@ -277,23 +279,6 @@ def goalie(
             if math.hypot(dif_x, dif_y) < 10:
                 speed = 0
             direction = math.degrees(math.atan2(dif_y, dif_x))
-    
-    if 90 < angle_to_ball< 135:
-        speed = 500
-        direction = 160
-    if 135 < angle_to_ball< 180:
-        speed = 300
-        direction = -135
-    if -179 < angle_to_ball< -135:
-        speed = 300
-        direction = 135
-    if 90 < angle_to_ball< 135:
-        speed = 500
-        direction = -160
-    if CYAN_GOAL_CENTRE_X - 10 < ball_x < CYAN_GOAL_CENTRE_X + 10 \
-        and GOAL_BACK_Y_MIN < ball_x < GOAL_BACK_Y_MAX and distance_to_ball < 200:
-        speed = 0
-
 
     return direction, speed, rotation, kick
 
@@ -385,7 +370,8 @@ if __name__ == "__main__":
 
         startup_yaw = None
 
-        motors, motor_modes = init_motors(_prompt_i2c_addresses())
+        print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
+        motors, motor_modes = init_motors(I2C_ADDRESSES)
         startup_yaw = capture_startup_yaw(imu)
         print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
         steering_state = False
@@ -404,7 +390,7 @@ if __name__ == "__main__":
                 continue
             yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
 
-            print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
+            # print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
             lidar.set_yaw(yaw_world)
             x_pos, y_pos = lidar.get_coordinates()
             other_bot_positions = lidar.get_other_bot_positions()
