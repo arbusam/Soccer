@@ -2,11 +2,12 @@ import board
 import digitalio
 import time
 
-switch = digitalio.DigitalInOut(board.D16)
-switch.direction = digitalio.Direction.INPUT
-switch.pull = digitalio.Pull.UP
+class Switch:
+    switch = None
+    def __init__(self, pin):
+        self.switch = digitalio.DigitalInOut(pin)
+        self.switch.direction = digitalio.Direction.INPUT
+        self.switch.pull = digitalio.Pull.UP
 
-while True:
-    if not switch.value:
-        print("Switch pressed")
-    time.sleep(0.1)
+    def read(self):
+        return not self.switch.value
