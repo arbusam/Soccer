@@ -236,7 +236,7 @@ class Camera:
                             self.distance_calibration,
                             detection["radial_pixels"],
                         )
-                        print(new_distance)
+                        # print(new_distance)
                         if new_distance is None:
                             if (
                                 self.distance_calibration is None
