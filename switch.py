@@ -1,6 +1,4 @@
-import board
 import digitalio
-import time
 
 class Switch:
     switch = None
