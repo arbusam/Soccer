@@ -1,6 +1,8 @@
 import math
 import time
 import argparse
+import select
+import sys
 
 WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
@@ -18,7 +20,7 @@ MAX_MOTOR_RPM = 400 # Maximum rpm that the wheels can spin at
 LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 TOF_ADDRESS = 0x50
-BALL_CAPTURED_DISTANCE = 100 # mm, distance from the ToF to the ball to consider it captured
+BALL_CAPTURED_DISTANCE = 27 # mm, distance from the ToF to the ball to consider it captured
 
 # Pitch boundary coordinates. Used to keep bot within the pitch.
 WHITE_MIN_X = 250
@@ -31,6 +33,7 @@ BALL_RADIUS = 21 # mm, radius of the ball
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000
+I2C_ADDRESSES = [28, 32, 31, 30]
 
 BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
 
@@ -128,7 +131,7 @@ def defence(
     speed = 500 # mm/s, Default speed of the bot.
     offset = 0 # deg, Offset to the direction to the ball. Used to avoid own goals.
     # Only activate own goal prevention if the ball is close to the bot.
-    if dist < 200:
+    if dist < 400:
         if -10 < direction < 10:
             speed = 1000
             if steering and y_pos < 850 and dist < 200:
@@ -148,7 +151,7 @@ def defence(
         else:
             offset = -80
     elif dist > 500:
-        speed = 1000
+        speed = 800
 
     # By default, the bot should not kick the ball.
     kick = False
@@ -232,9 +235,7 @@ def goalie(
                 distanceToEnemyBot = math.dist((xint, yint), (x_pos, y_pos))
                 if distanceToEnemyBot < 200:
                     kick = False
-
-    if angle_to_ball > 90 or angle_to_ball < -90: 
-        speed = 0
+                    
 
     if y_pos > 1360:
         direction = 270
@@ -302,7 +303,20 @@ def _prompt_i2c_addresses():
         setup_motor_count += 1
     return addresses
 
+
+def _enter_pressed():
+    if not sys.stdin.isatty():
+        return False
+
+    ready, _, _ = select.select([sys.stdin], [], [], 0)
+    if not ready:
+        return False
+
+    sys.stdin.readline()
+    return True
+
 if __name__ == "__main__":
+    import board
     import lidar
     from movement import (
         MotorCommunicationError,
@@ -313,8 +327,8 @@ if __name__ == "__main__":
     )
     from camera import Camera
     from imu import IMU
+    from kicker import Kicker
     from tof import ToF
-    import kicker
 
     parser = argparse.ArgumentParser(
         description="Run defence controller with optional live websocket streaming."
@@ -335,9 +349,11 @@ if __name__ == "__main__":
 
     camera = None
     imu = None
+    kicker = None
     motors = []
     motor_modes = []
     try:
+        kicker = Kicker(board.D26, 0.1)
         tof = ToF(address=TOF_ADDRESS)
         print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
         try:
@@ -350,12 +366,18 @@ if __name__ == "__main__":
 
         print("Waiting for first scan data...")
         while not lidar.is_scan_ready():
+            if _enter_pressed():
+                print("Shutdown requested, exiting.")
+                raise KeyboardInterrupt
             time.sleep(0.1)
 
         lidar.start_coordinates(2430, 1820)
 
         print("Waiting for first coordinate estimate...")
         while not lidar.is_coordinates_ready():
+            if _enter_pressed():
+                print("Shutdown requested, exiting.")
+                raise KeyboardInterrupt
             time.sleep(0.1)
 
         camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
@@ -371,9 +393,11 @@ if __name__ == "__main__":
 
         startup_yaw = None
 
-        motors, motor_modes = init_motors(_prompt_i2c_addresses())
+        print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
+        motors, motor_modes = init_motors(I2C_ADDRESSES)
         startup_yaw = capture_startup_yaw(imu)
         print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
+        print("Press Enter to shut down.")
         steering_state = False
 
         ball_dx = 0
@@ -384,15 +408,19 @@ if __name__ == "__main__":
         last_camera_frame_id = camera.frame_id
 
         while True:
+            if _enter_pressed():
+                print("Shutdown requested, exiting.")
+                break
             yaw_world = imu.get_yaw()
             if yaw_world is None:
                 time.sleep(0.01)
                 continue
             yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
 
-            print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
+            # print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
             lidar.set_yaw(yaw_world)
             x_pos, y_pos = lidar.get_coordinates()
+            # print(f"LIDAR: {x_pos}, {y_pos}; Yaw: {yaw_relative:.6f} deg")
             other_bot_positions = lidar.get_other_bot_positions()
             camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
             has_new_camera_frame = camera_frame_id != last_camera_frame_id
@@ -424,13 +452,13 @@ if __name__ == "__main__":
                 ball_x = None
                 ball_y = None
             distance_to_ball = tof.read()
+            # print(f"Distance to ball: {distance_to_ball} mm")
             if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE:
                 ball_captured = True
                 ball_x = x_pos + 150 * math.cos(math.radians(yaw_relative))
                 ball_y = y_pos + 150 * math.sin(math.radians(yaw_relative))
             else:
                 ball_captured = False
-            ball_captured = False
             if args.stream:
                 log_values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
                 for other_x, other_y in other_bot_positions:
@@ -456,7 +484,16 @@ if __name__ == "__main__":
                 print(exc)
                 raise
     finally:
-        kicker.deinit()
+        if motors:
+            try:
+                stop_all_motors(motors)
+            except Exception as exc:
+                print(f"Warning: failed to stop motors cleanly: {exc}")
+        if kicker is not None:
+            try:
+                kicker.deinit()
+            except Exception as exc:
+                print(f"Warning: failed to deinitialize kicker cleanly: {exc}")
         if camera is not None:
             try:
                 camera.stop()
@@ -471,6 +508,3 @@ if __name__ == "__main__":
             lidar.shutdown()
         except Exception as exc:
             print(f"Warning: failed to shut down lidar cleanly: {exc}")
-        if motors:
-            stop_all_motors(motors)
-

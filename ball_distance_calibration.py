@@ -1,7 +1,11 @@
 import argparse
+import logging
 import json
 import math
 import os
+import socketserver
+import threading
+from http import server
 
 import cv2
 import numpy as np
@@ -14,11 +18,161 @@ MIN_CONTOUR_AREA = 200
 MAX_BOUNDING_BOX_AREA = 50000
 
 
+class StreamingOutput:
+    def __init__(self):
+        self.frame = None
+        self.condition = threading.Condition()
+
+    def write(self, frame_bytes):
+        with self.condition:
+            self.frame = frame_bytes
+            self.condition.notify_all()
+
+
+class StreamingHandler(server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/":
+            body = (
+                "<html><head><title>Ball Distance Calibration</title></head>"
+                "<body><img src='/stream.mjpg' /></body></html>"
+            ).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", len(body))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if self.path.startswith("/stream.mjpg"):
+            self.send_response(200)
+            self.send_header("Age", 0)
+            self.send_header("Cache-Control", "no-cache, private")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=FRAME")
+            self.end_headers()
+            try:
+                while True:
+                    with self.server.output.condition:
+                        self.server.output.condition.wait()
+                        frame = self.server.output.frame
+                    self.wfile.write(b"--FRAME\r\n")
+                    self.send_header("Content-Type", "image/jpeg")
+                    self.send_header("Content-Length", len(frame))
+                    self.end_headers()
+                    self.wfile.write(frame)
+                    self.wfile.write(b"\r\n")
+            except Exception as exc:
+                logging.warning("Removed streaming client %s: %s", self.client_address, exc)
+            return
+
+        self.send_error(404)
+
+    def log_message(self, format, *args):
+        return
+
+
+class StreamingServer(socketserver.ThreadingMixIn, server.HTTPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+    def __init__(self, output, *args, **kwargs):
+        self.output = output
+        super().__init__(*args, **kwargs)
+
+
+def _draw_status_overlay(frame, detection, samples):
+    display_frame = frame.copy()
+    frame_centre_x = int(display_frame.shape[1] / 2)
+    frame_centre_y = int(display_frame.shape[0] / 2)
+    cv2.line(
+        display_frame,
+        (frame_centre_x - 20, frame_centre_y),
+        (frame_centre_x + 20, frame_centre_y),
+        (0, 0, 255),
+        2,
+    )
+    cv2.line(
+        display_frame,
+        (frame_centre_x, frame_centre_y - 20),
+        (frame_centre_x, frame_centre_y + 20),
+        (0, 0, 255),
+        2,
+    )
+
+    status_lines = [
+        f"samples: {len(samples)}",
+        "Enter mm in terminal, # marks captured",
+        "Commands: Enter refresh, r remove, f fit, q quit",
+    ]
+
+    if detection is not None:
+        x, y, width, height = detection["bbox"]
+        centre_x, centre_y = detection["centre"]
+        cv2.drawContours(display_frame, [detection["contour"]], -1, (0, 165, 255), 2)
+        cv2.rectangle(display_frame, (x, y), (x + width, y + height), (0, 255, 0), 2)
+        cv2.circle(
+            display_frame,
+            (int(round(centre_x)), int(round(centre_y))),
+            6,
+            (255, 255, 255),
+            -1,
+        )
+        cv2.line(
+            display_frame,
+            (frame_centre_x, frame_centre_y),
+            (int(round(centre_x)), int(round(centre_y))),
+            (255, 255, 255),
+            2,
+        )
+        status_lines.append(f"radial pixels: {detection['radial_pixels']:.2f}")
+        status_lines.append(
+            f"bearing: {apply_camera_bearing_offset(detection['bearing_deg']):.2f} deg"
+        )
+    else:
+        status_lines.append("ball not detected")
+
+    for line_index, line in enumerate(status_lines):
+        cv2.putText(
+            display_frame,
+            line,
+            (20, 40 + (line_index * 35)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (255, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+
+    return display_frame
+
+
 def resolve_distance_calibration_path(calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE):
     """Resolve relative calibration paths against this file's directory."""
     if os.path.isabs(calibration_file):
         return calibration_file
     return os.path.join(os.path.dirname(__file__), calibration_file)
+
+
+def get_distance_calibration_resolution(calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE):
+    """Return the saved calibration resolution, or None if unavailable."""
+    calibration_path = resolve_distance_calibration_path(calibration_file)
+    if not os.path.isfile(calibration_path):
+        return None
+
+    try:
+        with open(calibration_path, encoding="utf-8") as calibration_handle:
+            calibration_data = json.load(calibration_handle)
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    saved_resolution = calibration_data.get("resolution")
+    if not isinstance(saved_resolution, list) or len(saved_resolution) != 2:
+        return None
+
+    try:
+        return (int(saved_resolution[0]), int(saved_resolution[1]))
+    except (TypeError, ValueError):
+        return None
 
 
 def detect_orange_ball(frame_bgr):
@@ -68,6 +222,11 @@ def calculate_ball_bearing_deg(centre_x, centre_y, frame_width, frame_height):
     """Match the bearing convention used by camera.py."""
     bearing_rad = math.atan2(centre_y - (frame_height / 2.0), centre_x - (frame_width / 2.0))
     return math.degrees(bearing_rad) - 90.0
+
+
+def apply_camera_bearing_offset(bearing_deg):
+    """Match camera.py's additional 180 degree offset."""
+    return bearing_deg + 180.0
 
 
 def _calculate_rmse(actual_values, predicted_values):
@@ -269,73 +428,68 @@ def _format_polynomial(coefficients):
     return " + ".join(terms) if terms else "0.0"
 
 
-def run_interactive_calibration(resolution=(2000, 2000), frame_rate=60, calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE):
-    """Capture samples interactively and save a radial-pixels-to-distance fit."""
+def run_interactive_calibration(
+    resolution=(2000, 2000),
+    frame_rate=60,
+    calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE,
+    stream_port=8000,
+):
+    """Capture samples in the terminal and save a radial-pixels-to-distance fit."""
     from picamera2 import Picamera2
 
     picam2 = Picamera2()
     picam2.configure(picam2.create_video_configuration(main={"size": resolution, "format": "RGB888"}))
     picam2.controls.FrameRate = frame_rate
+    picam2.controls.AnalogueGain = 2.0
     picam2.start()
 
     samples = []
-    window_name = "Ball Distance Calibration"
+    output = StreamingOutput()
+    stream_server = StreamingServer(output, ("", stream_port), StreamingHandler)
+    stream_thread = threading.Thread(target=stream_server.serve_forever, daemon=True)
+    stream_thread.start()
+
+    print("Ball distance calibration")
+    print(f"Stream available at http://localhost:{stream_port}/stream.mjpg")
+    print("Press Enter to capture a fresh frame.")
+    print("Type a distance in mm to save a sample.")
+    print("Add # to the distance to mark the sample as captured.")
+    print("Commands: r = remove last sample, f = fit and save, q = quit")
 
     try:
         while True:
             frame = picam2.capture_array()
             detection = detect_orange_ball(frame)
-            display_frame = frame.copy()
-
-            frame_centre_x = int(display_frame.shape[1] / 2)
-            frame_centre_y = int(display_frame.shape[0] / 2)
-            cv2.line(display_frame, (frame_centre_x - 20, frame_centre_y), (frame_centre_x + 20, frame_centre_y), (0, 0, 255), 2)
-            cv2.line(display_frame, (frame_centre_x, frame_centre_y - 20), (frame_centre_x, frame_centre_y + 20), (0, 0, 255), 2)
-
-            status_lines = [
-                "s: save sample  use # for captured  f: fit+save  r: remove last  q: quit",
-                f"samples: {len(samples)}",
-            ]
-
+            display_frame = _draw_status_overlay(frame, detection, samples)
+            success, encoded_frame = cv2.imencode(".jpg", display_frame)
+            if success:
+                output.write(encoded_frame.tobytes())
+            print()
+            print(f"Samples: {len(samples)}")
             if detection is not None:
-                x, y, width, height = detection["bbox"]
                 centre_x, centre_y = detection["centre"]
                 radial_pixels = detection["radial_pixels"]
-                bearing_deg = detection["bearing_deg"]
-                cv2.drawContours(display_frame, [detection["contour"]], -1, (0, 165, 255), 2)
-                cv2.rectangle(display_frame, (x, y), (x + width, y + height), (0, 255, 0), 2)
-                cv2.circle(display_frame, (int(round(centre_x)), int(round(centre_y))), 6, (255, 255, 255), -1)
-                cv2.line(
-                    display_frame,
-                    (frame_centre_x, frame_centre_y),
-                    (int(round(centre_x)), int(round(centre_y))),
-                    (255, 255, 255),
-                    2,
+                bearing_deg = apply_camera_bearing_offset(detection["bearing_deg"])
+                print(
+                    "Ball detected:",
+                    f"radial={radial_pixels:.2f} px,",
+                    f"bearing={bearing_deg:.2f} deg,",
+                    f"centre=({centre_x:.1f}, {centre_y:.1f})",
                 )
-                status_lines.append(f"radial pixels: {radial_pixels:.2f}")
-                status_lines.append(f"bearing: {bearing_deg:.2f} deg")
             else:
-                status_lines.append("ball not detected")
+                print("Ball not detected in the current frame.")
 
-            for line_index, line in enumerate(status_lines):
-                cv2.putText(
-                    display_frame,
-                    line,
-                    (20, 40 + (line_index * 35)),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.9,
-                    (255, 255, 255),
-                    2,
-                    cv2.LINE_AA,
-                )
+            command = input(
+                "Distance in mm, blank refresh, or command [r/f/q]: "
+            ).strip()
 
-            cv2.imshow(window_name, display_frame)
-            key = cv2.waitKey(1) & 0xFF
+            if command == "":
+                continue
 
-            if key == ord("q"):
+            if command.lower() == "q":
                 break
 
-            if key == ord("r"):
+            if command.lower() == "r":
                 if samples:
                     removed_sample = samples.pop()
                     print(
@@ -348,47 +502,7 @@ def run_interactive_calibration(resolution=(2000, 2000), frame_rate=60, calibrat
                     print("No samples to remove.")
                 continue
 
-            if key == ord("s"):
-                if detection is None:
-                    print("Ball not detected. Move the ball into view before saving a sample.")
-                    continue
-
-                distance_text = input(
-                    "Enter the real ball distance from the bot in mm. Include # to mark this as captured: "
-                ).strip()
-                captured = "#" in distance_text
-                normalized_distance_text = distance_text.replace("#", "").strip()
-                try:
-                    distance_mm = float(normalized_distance_text)
-                except ValueError:
-                    print("Invalid distance. Sample discarded.")
-                    continue
-
-                centre_x, centre_y = detection["centre"]
-                sample = {
-                    "distance_mm": distance_mm,
-                    "radial_pixels": float(detection["radial_pixels"]),
-                    "centre_x": float(centre_x),
-                    "centre_y": float(centre_y),
-                    "bounding_box_area": float(detection["bounding_box_area"]),
-                    "captured": captured,
-                }
-                if captured:
-                    sample["bearing_deg"] = float(detection["bearing_deg"])
-                samples.append(sample)
-                print_parts = [
-                    "Saved sample:",
-                    f"distance={distance_mm:.2f} mm,",
-                    f"radial={sample['radial_pixels']:.2f} px,",
-                    f"centre=({sample['centre_x']:.1f}, {sample['centre_y']:.1f}),",
-                    f"captured={captured}",
-                ]
-                if captured:
-                    print_parts.append(f"bearing={sample['bearing_deg']:.2f} deg")
-                print(*print_parts)
-                continue
-
-            if key == ord("f"):
+            if command.lower() == "f":
                 if len(samples) < 2:
                     print("Need at least 2 samples before fitting.")
                     continue
@@ -420,8 +534,47 @@ def run_interactive_calibration(resolution=(2000, 2000), frame_rate=60, calibrat
                         f"training_rmse={candidate_model['training_rmse_mm']:.2f} mm,",
                         f"leave_one_out_rmse={candidate_model['leave_one_out_rmse_mm']}",
                     )
+                continue
+
+            if detection is None:
+                print("Ball not detected. Move the ball into view before saving a sample.")
+                continue
+
+            captured = "#" in command
+            normalized_distance_text = command.replace("#", "").strip()
+            try:
+                distance_mm = float(normalized_distance_text)
+            except ValueError:
+                print("Invalid input. Enter a distance in mm, or use r, f, q.")
+                continue
+
+            centre_x, centre_y = detection["centre"]
+            sample = {
+                "distance_mm": distance_mm,
+                "radial_pixels": float(detection["radial_pixels"]),
+                "centre_x": float(centre_x),
+                "centre_y": float(centre_y),
+                "bounding_box_area": float(detection["bounding_box_area"]),
+                "captured": captured,
+            }
+            if captured:
+                sample["bearing_deg"] = float(
+                    apply_camera_bearing_offset(detection["bearing_deg"])
+                )
+            samples.append(sample)
+            print_parts = [
+                "Saved sample:",
+                f"distance={distance_mm:.2f} mm,",
+                f"radial={sample['radial_pixels']:.2f} px,",
+                f"centre=({sample['centre_x']:.1f}, {sample['centre_y']:.1f}),",
+                f"captured={captured}",
+            ]
+            if captured:
+                print_parts.append(f"bearing={sample['bearing_deg']:.2f} deg")
+            print(*print_parts)
     finally:
-        cv2.destroyAllWindows()
+        stream_server.shutdown()
+        stream_server.server_close()
         picam2.stop()
 
 
@@ -440,12 +593,19 @@ def main():
         default=DEFAULT_DISTANCE_CALIBRATION_FILE,
         help="Calibration JSON filename to write.",
     )
+    parser.add_argument(
+        "--stream-port",
+        type=int,
+        default=8000,
+        help="HTTP port for the MJPEG calibration stream.",
+    )
     args = parser.parse_args()
 
     run_interactive_calibration(
         resolution=(args.width, args.height),
         frame_rate=args.frame_rate,
         calibration_file=args.output,
+        stream_port=args.stream_port,
     )
 
 

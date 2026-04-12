@@ -209,3 +209,4 @@ __marimo__/
 *.pdf
 lidar_visualizer
 calibration_data.json
+ball_distance_calibration.json
