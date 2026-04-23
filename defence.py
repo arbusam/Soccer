@@ -330,9 +330,6 @@ if __name__ == "__main__":
         bot_mode = 2
 
     run = False
-    while switch2.read():
-        run = not run
-        time.sleep(0.01)
 
     from movement import (
         MotorCommunicationError,
@@ -424,7 +421,11 @@ if __name__ == "__main__":
         last_camera_frame_id = camera.frame_id
 
         while True:
-            if run: 
+            if switch2.read():
+                run = not run
+                while switch2.read():
+                    time.sleep(0.01)
+            if run:
                 if _enter_pressed():
                     print("Shutdown requested, exiting.")
                     break
@@ -495,14 +496,13 @@ if __name__ == "__main__":
                         other_bot_positions=other_bot_positions,
                     )
                 else:
-                    direction, speed, rotation, steering_state, kick = goalie(
+                    direction, speed, rotation, kick = goalie(
                         x_pos,
                         y_pos,
                         yaw_relative,
                         ball_x,
                         ball_y,
                         ball_captured,
-                        steering_state=steering_state,
                         other_bot_positions=other_bot_positions,
                     )
                 if kick:
@@ -583,6 +583,7 @@ if __name__ == "__main__":
                     bot_mode = 1
                 else:
                     bot_mode = 2
+                time.sleep(0.01)
     finally:
         if motors:
             try:
