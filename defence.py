@@ -320,12 +320,12 @@ if __name__ == "__main__":
     import lidar
     import switch
 
-    bot_mode = 1
+    bot_mode = 1 # 1 is defence, 2 is goalie
     switch = switch.Switch(board.D16)
     if switch.read():
-        bot_mode == 1
+        bot_mode = 1
     else:
-        bot_mode == 2
+        bot_mode = 2
 
     from movement import (
         MotorCommunicationError,
@@ -487,14 +487,13 @@ if __name__ == "__main__":
                     other_bot_positions=other_bot_positions,
                 )
             else:
-                direction, speed, rotation, steering_state, kick = goalie(
+                direction, speed, rotation, kick = goalie(
                     x_pos,
                     y_pos,
                     yaw_relative,
                     ball_x,
                     ball_y,
                     ball_captured,
-                    steering_state=steering_state,
                     other_bot_positions=other_bot_positions,
                 )
             if kick:
