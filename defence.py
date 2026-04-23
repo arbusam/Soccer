@@ -318,6 +318,15 @@ def _enter_pressed():
 if __name__ == "__main__":
     import board
     import lidar
+    import switch
+
+    bot_mode = 1
+    switch = switch.Switch(board.D16)
+    if switch.read():
+        bot_mode == 1
+    else:
+        bot_mode == 2
+
     from movement import (
         MotorCommunicationError,
         imu_yaw_to_relative_yaw,
@@ -466,16 +475,28 @@ if __name__ == "__main__":
                 send_log.update_latest_log(
                     ",".join("None" if value is None else str(value) for value in log_values)
                 )
-            direction, speed, rotation, steering_state, kick = defence(
-                x_pos,
-                y_pos,
-                yaw_relative,
-                ball_x,
-                ball_y,
-                ball_captured,
-                steering_state=steering_state,
-                other_bot_positions=other_bot_positions,
-            )
+            if bot_mode == 1:
+                direction, speed, rotation, steering_state, kick = defence(
+                    x_pos,
+                    y_pos,
+                    yaw_relative,
+                    ball_x,
+                    ball_y,
+                    ball_captured,
+                    steering_state=steering_state,
+                    other_bot_positions=other_bot_positions,
+                )
+            else:
+                direction, speed, rotation, steering_state, kick = goalie(
+                    x_pos,
+                    y_pos,
+                    yaw_relative,
+                    ball_x,
+                    ball_y,
+                    ball_captured,
+                    steering_state=steering_state,
+                    other_bot_positions=other_bot_positions,
+                )
             if kick:
                 kicker.kick()
             try:
