@@ -584,6 +584,9 @@ if __name__ == "__main__":
                 else:
                     bot_mode = 2
                 time.sleep(0.01)
+                if motors:
+                    stop_all_motors(motors)
+                    
     finally:
         if motors:
             try:
