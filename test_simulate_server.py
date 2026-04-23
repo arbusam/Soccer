@@ -1,79 +1,190 @@
-"""Host a fake websocket log stream for ``simulate.py --connect`` testing."""
+"""Stream real measured world state for ``simulate.py --connect``."""
 
-import asyncio
 import math
+import time
+
+import lidar
 
 import send_log
+from camera import Camera
+from defence import (
+    BALL_CAPTURED_DISTANCE,
+    BALL_TIMEOUT,
+    CAMERA_PORT,
+    LIDAR_BAUDRATE,
+    LIDAR_PORT,
+    TOF_ADDRESS,
+    _enter_pressed,
+    capture_startup_yaw,
+)
+from imu import IMU
+from tof import ToF
 
+PORT = send_log.PORT
 PITCH_WIDTH = 2430
 PITCH_HEIGHT = 1820
-FPS = 30
-PORT = send_log.PORT
 
 
-def clamp(value, lower, upper):
-    return max(lower, min(upper, value))
+def imu_yaw_to_relative_yaw(imu_yaw, startup_yaw):
+    """Match the startup-relative yaw conversion used by defence.py."""
+    return ((float(startup_yaw) - float(imu_yaw) + 180.0) % 360.0) - 180.0
 
 
-def build_log_line(t_seconds):
-    """Return one CSV frame in the format expected by simulate.py."""
-    bot_x = 650 + 320 * math.cos(t_seconds * 0.8)
-    bot_y = 910 + 220 * math.sin(t_seconds * 1.1)
-    yaw = math.degrees(math.atan2(math.cos(t_seconds * 1.1), -math.sin(t_seconds * 0.8))) % 360
-
-    ball_x = 1215 + 500 * math.cos(t_seconds * 0.55)
-    ball_y = 910 + 350 * math.sin(t_seconds * 0.7)
-
-    other_bots = [
-        (
-            1800 + 180 * math.cos(t_seconds * 0.6),
-            600 + 140 * math.sin(t_seconds * 0.9),
-        ),
-        (
-            1700 + 210 * math.sin(t_seconds * 0.75),
-            1220 + 170 * math.cos(t_seconds * 0.5),
-        ),
-        (
-            1180 + 260 * math.cos(t_seconds * 0.45),
-            420 + 110 * math.sin(t_seconds * 1.3),
-        ),
-    ]
-
-    values = [
-        clamp(int(bot_x), 0, PITCH_WIDTH),
-        clamp(int(bot_y), 0, PITCH_HEIGHT),
-        round(yaw, 2),
-        clamp(int(ball_x), 0, PITCH_WIDTH),
-        clamp(int(ball_y), 0, PITCH_HEIGHT),
-    ]
-    for other_x, other_y in other_bots:
-        values.extend(
-            (
-                clamp(int(other_x), 0, PITCH_WIDTH),
-                clamp(int(other_y), 0, PITCH_HEIGHT),
-            )
-        )
-    return ",".join(str(value) for value in values)
+def format_log_line(x_pos, y_pos, yaw_relative, ball_x, ball_y, other_bot_positions):
+    values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
+    for other_x, other_y in other_bot_positions:
+        values.extend((other_x, other_y))
+    return ",".join("None" if value is None else str(value) for value in values)
 
 
-async def stream_test_world():
+def main():
+    camera = None
+    imu = None
+    tof = None
+
     send_log.start_server_background()
-    await asyncio.sleep(0.05)
-
-    print(f"Test websocket server running on ws://0.0.0.0:{PORT}")
+    time.sleep(0.05)
+    print(f"Websocket log server running on ws://0.0.0.0:{PORT}")
     print(f"Connect with: python simulate.py --connect 127.0.0.1:{PORT}")
 
-    start_time = asyncio.get_running_loop().time()
-    frame_period = 1.0 / FPS
+    try:
+        print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
+        try:
+            lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to initialize LIDAR: {exc}") from exc
 
-    while True:
-        elapsed = asyncio.get_running_loop().time() - start_time
-        send_log.update_latest_log(build_log_line(elapsed))
-        await asyncio.sleep(frame_period)
+        print("Waiting for first scan data...")
+        while not lidar.is_scan_ready():
+            if _enter_pressed():
+                print("Shutdown requested, exiting.")
+                return
+            time.sleep(0.1)
+
+        lidar.start_coordinates(PITCH_WIDTH, PITCH_HEIGHT)
+
+        print("Waiting for first coordinate estimate...")
+        while not lidar.is_coordinates_ready():
+            if _enter_pressed():
+                print("Shutdown requested, exiting.")
+                return
+            time.sleep(0.1)
+
+        camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
+        camera.start()
+        imu = IMU()
+        tof = ToF(address=TOF_ADDRESS)
+
+        startup_yaw = capture_startup_yaw(imu)
+        print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
+        print("Streaming measured positions. Press Enter to shut down.")
+
+        ball_dx = 0.0
+        ball_dy = 0.0
+        last_ball_update = time.time()
+        last_ball_x = None
+        last_ball_y = None
+        last_camera_frame_id = camera.frame_id
+
+        while True:
+            if _enter_pressed():
+                print("Shutdown requested, exiting.")
+                break
+
+            yaw_world = imu.get_yaw()
+            if yaw_world is None:
+                time.sleep(0.01)
+                continue
+
+            yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
+            lidar.set_yaw(yaw_world)
+
+            x_pos, y_pos = lidar.get_coordinates()
+            other_bot_positions = lidar.get_other_bot_positions() or []
+
+            camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
+            has_new_camera_frame = camera_frame_id != last_camera_frame_id
+            last_camera_frame_id = camera_frame_id
+
+            if has_new_camera_frame:
+                if (
+                    ball_distance is not None
+                    and ball_direction is not None
+                    and x_pos is not None
+                    and y_pos is not None
+                ):
+                    ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction))
+                    ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction))
+                else:
+                    ball_x = None
+                    ball_y = None
+            else:
+                ball_x = None
+                ball_y = None
+
+            now = time.time()
+            if ball_x is not None and ball_y is not None:
+                dt = now - last_ball_update
+                if last_ball_x is not None and last_ball_y is not None and dt > 0:
+                    ball_dx = (ball_x - last_ball_x) / dt
+                    ball_dy = (ball_y - last_ball_y) / dt
+                last_ball_x = ball_x
+                last_ball_y = ball_y
+                last_ball_update = now
+            elif (
+                last_ball_x is not None
+                and last_ball_y is not None
+                and now - last_ball_update < BALL_TIMEOUT
+            ):
+                dt_lost = now - last_ball_update
+                ball_x = last_ball_x + ball_dx * dt_lost
+                ball_y = last_ball_y + ball_dy * dt_lost
+            else:
+                ball_x = None
+                ball_y = None
+
+            distance_to_ball = tof.read()
+            if (
+                distance_to_ball is not None
+                and distance_to_ball < BALL_CAPTURED_DISTANCE
+                and x_pos is not None
+                and y_pos is not None
+            ):
+                ball_x = x_pos + 150 * math.cos(math.radians(yaw_relative))
+                ball_y = y_pos + 150 * math.sin(math.radians(yaw_relative))
+
+            send_log.update_latest_log(
+                format_log_line(
+                    x_pos,
+                    y_pos,
+                    yaw_relative,
+                    ball_x,
+                    ball_y,
+                    other_bot_positions,
+                )
+            )
+            time.sleep(0.01)
+    finally:
+        if tof is not None:
+            try:
+                tof.close()
+            except Exception as exc:
+                print(f"Warning: failed to close ToF cleanly: {exc}")
+        if camera is not None:
+            try:
+                camera.stop()
+            except Exception as exc:
+                print(f"Warning: failed to stop camera cleanly: {exc}")
+        if imu is not None:
+            try:
+                imu.close()
+            except Exception as exc:
+                print(f"Warning: failed to close IMU cleanly: {exc}")
+        try:
+            lidar.shutdown()
+        except Exception as exc:
+            print(f"Warning: failed to shut down lidar cleanly: {exc}")
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(stream_test_world())
-    except KeyboardInterrupt:
-        print("\nStopped test websocket server.")
+    main()
