@@ -318,6 +318,19 @@ def _enter_pressed():
 if __name__ == "__main__":
     import board
     import lidar
+    import switch
+
+    bot_mode = 1 # 1 is defence, 2 is goalie
+    switch1 = switch.Switch(board.D16)
+    switch2 = switch.Switch(board.D21)
+
+    if switch1.read():
+        bot_mode = 1
+    else:
+        bot_mode = 2
+
+    run = False
+
     from movement import (
         MotorCommunicationError,
         imu_yaw_to_relative_yaw,
@@ -408,81 +421,172 @@ if __name__ == "__main__":
         last_camera_frame_id = camera.frame_id
 
         while True:
-            if _enter_pressed():
-                print("Shutdown requested, exiting.")
-                break
-            yaw_world = imu.get_yaw()
-            if yaw_world is None:
-                time.sleep(0.01)
-                continue
-            yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
+            if switch2.read():
+                run = not run
+                while switch2.read():
+                    time.sleep(0.01)
+            if run:
+                if _enter_pressed():
+                    print("Shutdown requested, exiting.")
+                    break
+                yaw_world = imu.get_yaw()
+                if yaw_world is None:
+                    time.sleep(0.01)
+                    continue
+                yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
 
-            # print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
-            lidar.set_yaw(yaw_world)
-            x_pos, y_pos = lidar.get_coordinates()
-            # print(f"LIDAR: {x_pos}, {y_pos}; Yaw: {yaw_relative:.6f} deg")
-            other_bot_positions = lidar.get_other_bot_positions()
-            camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
-            has_new_camera_frame = camera_frame_id != last_camera_frame_id
-            last_camera_frame_id = camera_frame_id
-            if has_new_camera_frame:
-                ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and x_pos is not None else None
-                ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and y_pos is not None else None
+                # print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
+                lidar.set_yaw(yaw_world)
+                x_pos, y_pos = lidar.get_coordinates()
+                # print(f"LIDAR: {x_pos}, {y_pos}; Yaw: {yaw_relative:.6f} deg")
+                other_bot_positions = lidar.get_other_bot_positions()
+                camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
+                has_new_camera_frame = camera_frame_id != last_camera_frame_id
+                last_camera_frame_id = camera_frame_id
+                if has_new_camera_frame:
+                    ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and x_pos is not None else None
+                    ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None and y_pos is not None else None
+                else:
+                    ball_x = None
+                    ball_y = None
+                now = time.time()
+                if ball_x is not None and ball_y is not None:
+                    dt = now - last_ball_update
+                    if last_ball_x is not None and last_ball_y is not None and dt > 0:
+                        ball_dx = (ball_x - last_ball_x) / dt
+                        ball_dy = (ball_y - last_ball_y) / dt
+                    last_ball_x = ball_x
+                    last_ball_y = ball_y
+                    last_ball_update = now
+                elif (
+                    last_ball_x is not None
+                    and last_ball_y is not None
+                    and now - last_ball_update < BALL_TIMEOUT
+                ):
+                    dt_lost = now - last_ball_update
+                    ball_x = last_ball_x + ball_dx * dt_lost
+                    ball_y = last_ball_y + ball_dy * dt_lost
+                else:
+                    ball_x = None
+                    ball_y = None
+                distance_to_ball = tof.read()
+                # print(f"Distance to ball: {distance_to_ball} mm")
+                if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE:
+                    ball_captured = True
+                    ball_x = x_pos + 150 * math.cos(math.radians(yaw_relative))
+                    ball_y = y_pos + 150 * math.sin(math.radians(yaw_relative))
+                else:
+                    ball_captured = False
+                if args.stream:
+                    log_values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
+                    for other_x, other_y in other_bot_positions:
+                        log_values.extend((other_x, other_y))
+                    send_log.update_latest_log(
+                        ",".join("None" if value is None else str(value) for value in log_values)
+                    )
+                if bot_mode == 1:
+                    direction, speed, rotation, steering_state, kick = defence(
+                        x_pos,
+                        y_pos,
+                        yaw_relative,
+                        ball_x,
+                        ball_y,
+                        ball_captured,
+                        steering_state=steering_state,
+                        other_bot_positions=other_bot_positions,
+                    )
+                else:
+                    direction, speed, rotation, kick = goalie(
+                        x_pos,
+                        y_pos,
+                        yaw_relative,
+                        ball_x,
+                        ball_y,
+                        ball_captured,
+                        other_bot_positions=other_bot_positions,
+                    )
+                if kick:
+                    kicker.kick()
+                try:
+                    move(direction, speed, rotation, 1.0, yaw_relative, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+                except MotorCommunicationError as exc:
+                    print(exc)
+                    raise
+                else:
+                    ball_x = None
+                    ball_y = None
+                now = time.time()
+                if ball_x is not None and ball_y is not None:
+                    dt = now - last_ball_update
+                    if last_ball_x is not None and last_ball_y is not None and dt > 0:
+                        ball_dx = (ball_x - last_ball_x) / dt
+                        ball_dy = (ball_y - last_ball_y) / dt
+                    last_ball_x = ball_x
+                    last_ball_y = ball_y
+                    last_ball_update = now
+                elif (
+                    last_ball_x is not None
+                    and last_ball_y is not None
+                    and now - last_ball_update < BALL_TIMEOUT
+                ):
+                    dt_lost = now - last_ball_update
+                    ball_x = last_ball_x + ball_dx * dt_lost
+                    ball_y = last_ball_y + ball_dy * dt_lost
+                else:
+                    ball_x = None
+                    ball_y = None
+                distance_to_ball = tof.read()
+                # print(f"Distance to ball: {distance_to_ball} mm")
+                if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE:
+                    ball_captured = True
+                    ball_x = x_pos + 150 * math.cos(math.radians(yaw_relative))
+                    ball_y = y_pos + 150 * math.sin(math.radians(yaw_relative))
+                else:
+                    ball_captured = False
+                if args.stream:
+                    log_values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
+                    for other_x, other_y in other_bot_positions:
+                        log_values.extend((other_x, other_y))
+                    send_log.update_latest_log(
+                        ",".join("None" if value is None else str(value) for value in log_values)
+                    )
+                if bot_mode == 1:
+                    direction, speed, rotation, steering_state, kick = defence(
+                        x_pos,
+                        y_pos,
+                        yaw_relative,
+                        ball_x,
+                        ball_y,
+                        ball_captured,
+                        steering_state=steering_state,
+                        other_bot_positions=other_bot_positions,
+                    )
+                else:
+                    direction, speed, rotation, kick = goalie(
+                        x_pos,
+                        y_pos,
+                        yaw_relative,
+                        ball_x,
+                        ball_y,
+                        ball_captured,
+                        other_bot_positions=other_bot_positions,
+                    )
+                if kick:
+                    kicker.kick()
+                try:
+                    move(direction, speed, rotation, 1.0, yaw_relative, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+                except MotorCommunicationError as exc:
+                    print(exc)
+                    raise
             else:
-                ball_x = None
-                ball_y = None
-            now = time.time()
-            if ball_x is not None and ball_y is not None:
-                dt = now - last_ball_update
-                if last_ball_x is not None and last_ball_y is not None and dt > 0:
-                    ball_dx = (ball_x - last_ball_x) / dt
-                    ball_dy = (ball_y - last_ball_y) / dt
-                last_ball_x = ball_x
-                last_ball_y = ball_y
-                last_ball_update = now
-            elif (
-                last_ball_x is not None
-                and last_ball_y is not None
-                and now - last_ball_update < BALL_TIMEOUT
-            ):
-                dt_lost = now - last_ball_update
-                ball_x = last_ball_x + ball_dx * dt_lost
-                ball_y = last_ball_y + ball_dy * dt_lost
-            else:
-                ball_x = None
-                ball_y = None
-            distance_to_ball = tof.read()
-            # print(f"Distance to ball: {distance_to_ball} mm")
-            if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE:
-                ball_captured = True
-                ball_x = x_pos + 150 * math.cos(math.radians(yaw_relative))
-                ball_y = y_pos + 150 * math.sin(math.radians(yaw_relative))
-            else:
-                ball_captured = False
-            if args.stream:
-                log_values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
-                for other_x, other_y in other_bot_positions:
-                    log_values.extend((other_x, other_y))
-                send_log.update_latest_log(
-                    ",".join("None" if value is None else str(value) for value in log_values)
-                )
-            direction, speed, rotation, steering_state, kick = defence(
-                x_pos,
-                y_pos,
-                yaw_relative,
-                ball_x,
-                ball_y,
-                ball_captured,
-                steering_state=steering_state,
-                other_bot_positions=other_bot_positions,
-            )
-            if kick:
-                kicker.kick()
-            try:
-                move(direction, speed, rotation, 1.0, yaw_relative, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
-            except MotorCommunicationError as exc:
-                print(exc)
-                raise
+                if switch1.read():
+                    bot_mode = 1
+                else:
+                    bot_mode = 2
+                time.sleep(0.01)
+                if motors:
+                    stop_all_motors(motors)
+                    
     finally:
         if motors:
             try:
