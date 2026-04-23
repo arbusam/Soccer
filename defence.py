@@ -513,6 +513,11 @@ if __name__ == "__main__":
                 except MotorCommunicationError as exc:
                     print(exc)
                     raise
+            else:
+                if switch.read():
+                    bot_mode == 1
+                else:
+                    bot_mode == 2
     finally:
         if motors:
             try:
