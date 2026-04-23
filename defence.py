@@ -321,10 +321,10 @@ if __name__ == "__main__":
     import switch
 
     bot_mode = 1 # 1 is defence, 2 is goalie
-    switch = switch.Switch(board.D16)
+    switch1 = switch.Switch(board.D16)
     switch2 = switch.Switch(board.D21)
 
-    if switch.read():
+    if switch1.read():
         bot_mode = 1
     else:
         bot_mode = 2
@@ -579,7 +579,7 @@ if __name__ == "__main__":
                     print(exc)
                     raise
             else:
-                if switch.read():
+                if switch1.read():
                     bot_mode = 1
                 else:
                     bot_mode = 2
