@@ -1190,8 +1190,15 @@ else:
                 controller_yaw = bot.yaw
                 controller_ball_x = ball_x
                 controller_ball_y = ball_y
-                controller_other_bot_positions = [
-                    (other_bot.x, other_bot.y) for other_bot in bots if other_bot is not bot
+                controller_friendly_bot_positions = [
+                    (other_bot.x, other_bot.y)
+                    for other_bot in bots
+                    if other_bot is not bot and other_bot.base_color == bot.base_color
+                ]
+                controller_enemy_bot_positions = [
+                    (other_bot.x, other_bot.y)
+                    for other_bot in bots
+                    if other_bot.base_color != bot.base_color
                 ]
                 controller_inverted = (
                     bot.controller in (defence, striker, goalie) and bot.base_color != yellow
@@ -1202,9 +1209,13 @@ else:
                     controller_ball_x, controller_ball_y = invert_optional_pitch_point(
                         ball_x, ball_y
                     )
-                    controller_other_bot_positions = [
+                    controller_friendly_bot_positions = [
                         invert_pitch_point(other_x, other_y)
-                        for other_x, other_y in controller_other_bot_positions
+                        for other_x, other_y in controller_friendly_bot_positions
+                    ]
+                    controller_enemy_bot_positions = [
+                        invert_pitch_point(other_x, other_y)
+                        for other_x, other_y in controller_enemy_bot_positions
                     ]
 
                 if bot.controller is defence:
@@ -1216,7 +1227,8 @@ else:
                         controller_ball_y,
                         ball_captured,
                         bot.steering,
-                        other_bot_positions=controller_other_bot_positions,
+                        friendly_bot_positions=controller_friendly_bot_positions,
+                        enemy_bot_positions=controller_enemy_bot_positions,
                     )
                     if controller_inverted:
                         direction = invert_angle_deg(direction)
@@ -1231,6 +1243,8 @@ else:
                         controller_ball_y,
                         ball_captured,
                         bot.steering,
+                        friendly_bot_positions=controller_friendly_bot_positions,
+                        enemy_bot_positions=controller_enemy_bot_positions,
                     )
                     if controller_inverted:
                         direction = invert_angle_deg(direction)
@@ -1244,7 +1258,8 @@ else:
                         controller_ball_x,
                         controller_ball_y,
                         ball_captured,
-                        other_bot_positions=controller_other_bot_positions,
+                        friendly_bot_positions=controller_friendly_bot_positions,
+                        enemy_bot_positions=controller_enemy_bot_positions,
                     )
                     if controller_inverted:
                         direction = invert_angle_deg(direction)

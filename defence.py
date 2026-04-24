@@ -90,7 +90,8 @@ def is_ball_out(ball_x, ball_y):
 # ball_captured: True when the ball is touching the capture zone
 # steering_state: caller-provided flag indicating if this bot is currently steering
 
-# other_bot_positions: optional iterable of (x, y) positions for other robots detected on the pitch
+# friendly_bot_positions: optional iterable of (x, y) positions for friendly robots
+# enemy_bot_positions: optional iterable of (x, y) positions for enemy robots
 # Outputs: direction, speed, rotation, steering, kick
 # direction: degrees to move in
 # speed: mm/s to move at
@@ -105,11 +106,13 @@ def defence(
     ball_y,
     ball_captured=False,
     steering_state=False,
-    other_bot_positions=None,
-    other_bots=None,
+    friendly_bot_positions=None,
+    enemy_bot_positions=None,
 ):
-    if other_bot_positions is None:
-        other_bot_positions = other_bots
+    if friendly_bot_positions is None:
+        friendly_bot_positions = []
+    if enemy_bot_positions is None:
+        enemy_bot_positions = []
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
         target_x = 1215
@@ -183,7 +186,8 @@ def defence(
 # ball_x: x position of the ball
 # ball_y: y position of the ball
 # ball_captured: True when the ball is touching the capture zone
-# other_bot_positions: optional iterable of (x, y) positions for other robots detected on the pitch
+# friendly_bot_positions: optional iterable of (x, y) positions for friendly robots
+# enemy_bot_positions: optional iterable of (x, y) positions for enemy robots
 # Outputs: direction, speed, rotation
 # direction: degrees to move in
 # speed: mm/s to move at
@@ -196,13 +200,13 @@ def goalie(
     ball_x,
     ball_y,
     ball_captured=False,
-    other_bot_positions=None,
-    other_bots=None,
+    friendly_bot_positions=None,
+    enemy_bot_positions=None,
 ):
-    if other_bot_positions is None:
-        other_bot_positions = other_bots
-    if other_bot_positions is None:
-        other_bot_positions = []
+    if friendly_bot_positions is None:
+        friendly_bot_positions = []
+    if enemy_bot_positions is None:
+        enemy_bot_positions = []
     if ball_x is None or ball_y is None:
         target_x = YELLOW_GOAL_CENTRE_X
         target_y = GOAL_CENTRE_Y
@@ -226,8 +230,8 @@ def goalie(
         m1 = (math.tan(math.radians(yaw)))
         c1 = y_pos - m1 * x_pos
         kick = True
-        if other_bots is not None:
-            for bot in other_bots:
+        if enemy_bot_positions is not None:
+            for bot in enemy_bot_positions:
                 m2 = (-1/m1)
                 c2 = bot[1] - m2 * bot[0]
                 xint = (c2 - c1) / (m1 - m2)
@@ -439,7 +443,7 @@ if __name__ == "__main__":
                 lidar.set_yaw(yaw_world)
                 x_pos, y_pos = lidar.get_coordinates()
                 # print(f"LIDAR: {x_pos}, {y_pos}; Yaw: {yaw_relative:.6f} deg")
-                other_bot_positions = lidar.get_other_bot_positions()
+                enemy_bot_positions = lidar.get_other_bot_positions() or []
                 camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
                 has_new_camera_frame = camera_frame_id != last_camera_frame_id
                 last_camera_frame_id = camera_frame_id
@@ -479,7 +483,7 @@ if __name__ == "__main__":
                     ball_captured = False
                 if args.stream:
                     log_values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
-                    for other_x, other_y in other_bot_positions:
+                    for other_x, other_y in enemy_bot_positions:
                         log_values.extend((other_x, other_y))
                     send_log.update_latest_log(
                         ",".join("None" if value is None else str(value) for value in log_values)
@@ -493,7 +497,8 @@ if __name__ == "__main__":
                         ball_y,
                         ball_captured,
                         steering_state=steering_state,
-                        other_bot_positions=other_bot_positions,
+                        friendly_bot_positions=[],
+                        enemy_bot_positions=enemy_bot_positions,
                     )
                 else:
                     direction, speed, rotation, kick = goalie(
@@ -503,7 +508,8 @@ if __name__ == "__main__":
                         ball_x,
                         ball_y,
                         ball_captured,
-                        other_bot_positions=other_bot_positions,
+                        friendly_bot_positions=[],
+                        enemy_bot_positions=enemy_bot_positions,
                     )
                 if kick:
                     kicker.kick()
@@ -545,7 +551,7 @@ if __name__ == "__main__":
                     ball_captured = False
                 if args.stream:
                     log_values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
-                    for other_x, other_y in other_bot_positions:
+                    for other_x, other_y in enemy_bot_positions:
                         log_values.extend((other_x, other_y))
                     send_log.update_latest_log(
                         ",".join("None" if value is None else str(value) for value in log_values)
@@ -559,7 +565,8 @@ if __name__ == "__main__":
                         ball_y,
                         ball_captured,
                         steering_state=steering_state,
-                        other_bot_positions=other_bot_positions,
+                        friendly_bot_positions=[],
+                        enemy_bot_positions=enemy_bot_positions,
                     )
                 else:
                     direction, speed, rotation, kick = goalie(
@@ -569,7 +576,8 @@ if __name__ == "__main__":
                         ball_x,
                         ball_y,
                         ball_captured,
-                        other_bot_positions=other_bot_positions,
+                        friendly_bot_positions=[],
+                        enemy_bot_positions=enemy_bot_positions,
                     )
                 if kick:
                     kicker.kick()
