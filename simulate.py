@@ -1194,7 +1194,7 @@ else:
                     (other_bot.x, other_bot.y) for other_bot in bots if other_bot is not bot
                 ]
                 controller_inverted = (
-                    bot.controller in (defence, goalie) and bot.base_color != yellow
+                    bot.controller in (defence, striker, goalie) and bot.base_color != yellow
                 )
                 if controller_inverted:
                     controller_x, controller_y = invert_pitch_point(bot.x, bot.y)
@@ -1232,6 +1232,9 @@ else:
                         ball_captured,
                         bot.steering,
                     )
+                    if controller_inverted:
+                        direction = invert_angle_deg(direction)
+                        rotation = invert_angle_deg(rotation)
                     bot.steering = steering_state
                 else:
                     direction, speed, rotation, kick_state = bot.controller(
