@@ -42,6 +42,8 @@ def striker(
     ball_y,
     ball_captured=False,
     steering_state=False,
+    friendly_bot_positions=None,
+    enemy_bot_positions=None,
 ):
     """Placeholder striker strategy; fill in later."""
     # Keep steering state stable until real striker logic is implemented.
