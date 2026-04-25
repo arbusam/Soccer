@@ -54,7 +54,7 @@ def striker(
     direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2) # Calculate the distance to the ball.
     rotation = 0 # Sets the desired rotation. 0 is always the startup/ideal heading in this frame.
-    speed = 500 # mm/s, Default speed of the bot.
+    speed = 800 # mm/s, Default speed of the bot.
     offset = 0 # deg, Offset to the direction to the ball. Used to avoid own goals.
     # Only activate own goal prevention if the ball is close to the bot.
     if dist < 300:
@@ -90,11 +90,25 @@ def striker(
         target_y_max = GOAL_BACK_Y_MAX
 
         dist_to_goal = math.sqrt((target_x - ball_x) ** 2 + (GOAL_CENTRE_Y - ball_y) ** 2)
+        degrees_to_goal = math.degrees(math.atan2(GOAL_CENTRE_Y - ball_y, target_x - ball_x))
+        for enemy_bot in enemy_bot_positions:
+            enemy_bot_vector = (enemy_bot[0] - ball_x, enemy_bot[1] - ball_y)
+            degrees_to_enemy_bots = math.degrees(math.atan2(enemy_bot[1] - ball_y, enemy_bot[0] - ball_x))
+            if degrees_to_goal + 50 < degrees_to_enemy_bots < degrees_to_goal - 50:
+                if 0 < degrees_to_goal < 90:
+                    offset = 80
+                elif -90 < degrees_to_goal < 0:
+                    offset = -80
+
+        
 
         yaw_rad = math.radians(yaw % 360)
         dir_x = math.cos(yaw_rad)
         dir_y = math.sin(yaw_rad)
         epsilon = 1e-6
+
+        
+
 
         if abs(dir_x) > epsilon and dist_to_goal < 500:
             t = (target_x - ball_x) / dir_x

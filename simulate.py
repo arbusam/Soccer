@@ -12,6 +12,7 @@ import websockets
 
 from defence import defence, goalie
 from striker import striker
+from test_bot import test_bot
 
 parser = argparse.ArgumentParser(
     description="Visualize a simulated match from a log file.",
@@ -49,6 +50,14 @@ parser.add_argument(
     action="store_true",
     help="Use the striker strategy from striker.py instead of keyboard control.",
 )
+
+parser.add_argument(
+    "-t",
+    "--test_bot",
+    action="store_true",
+    help="Run a bot that does nothing.",
+)
+
 parser.add_argument(
     "--team1",
     nargs="+",
@@ -112,6 +121,8 @@ ROLE_CONTROLLER_MAP = {
     "goalie": ("goalie", goalie),
     "s": ("striker", striker),
     "striker": ("striker", striker),
+    "t": ("test_bot", test_bot),
+    "test_bot": ("test_bot", test_bot),
 }
 
 TEAM_DEFAULTS = {
@@ -1127,7 +1138,7 @@ else:
             bots.extend(create_team(args.team1, 1))
         if args.team2:
             bots.extend(create_team(args.team2, 2))
-        if args.defence or args.goalie or args.striker:
+        if args.defence or args.goalie or args.striker or args.test_bot:
             print("Team selections override single-bot '-d'/'-g'/'-s' flags.")
     else:
         start_x = 500
@@ -1139,6 +1150,8 @@ else:
             controller = goalie
         elif args.striker:
             controller = striker
+        elif args.test_bot:
+            controller = test_bot
         bots.append(
             Bot(
                 x=start_x,
@@ -1201,7 +1214,7 @@ else:
                     if other_bot.base_color != bot.base_color
                 ]
                 controller_inverted = (
-                    bot.controller in (defence, striker, goalie) and bot.base_color != yellow
+                    bot.controller in (defence, striker, goalie, test_bot) and bot.base_color != yellow
                 )
                 if controller_inverted:
                     controller_x, controller_y = invert_pitch_point(bot.x, bot.y)
@@ -1235,6 +1248,22 @@ else:
                         rotation = invert_angle_deg(rotation)
                     bot.steering = steering_state
                 elif bot.controller is striker:
+                    direction, speed, rotation, steering_state, kick_state = bot.controller(
+                        controller_x,
+                        controller_y,
+                        controller_yaw,
+                        controller_ball_x,
+                        controller_ball_y,
+                        ball_captured,
+                        bot.steering,
+                        friendly_bot_positions=controller_friendly_bot_positions,
+                        enemy_bot_positions=controller_enemy_bot_positions,
+                    )
+                    if controller_inverted:
+                        direction = invert_angle_deg(direction)
+                        rotation = invert_angle_deg(rotation)
+                    bot.steering = steering_state
+                elif bot.controller is test_bot:
                     direction, speed, rotation, steering_state, kick_state = bot.controller(
                         controller_x,
                         controller_y,
