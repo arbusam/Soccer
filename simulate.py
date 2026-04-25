@@ -57,18 +57,24 @@ parser.add_argument(
     action="store_true",
     help="Run a bot that does nothing.",
 )
+parser.add_argument(
+    "-m",
+    "--manual",
+    action="store_true",
+    help="Use arrow-key manual control.",
+)
 
 parser.add_argument(
     "--team1",
     nargs="+",
     metavar="ROLE",
-    help="Space-separated roles (e.g., d g) for Team 1 (yellow, yaw 0).",
+    help="Space-separated roles (e.g., m d) for Team 1 (yellow, yaw 0).",
 )
 parser.add_argument(
     "--team2",
     nargs="+",
     metavar="ROLE",
-    help="Space-separated roles (e.g., d d) for Team 2 (cyan, yaw 180).",
+    help="Space-separated roles (e.g., m d) for Team 2 (cyan, yaw 180).",
 )
 args = parser.parse_args()
 
@@ -115,6 +121,8 @@ GOAL_LINE_WIDTH = 10
 ControllerFunc = Callable[..., Sequence[float]]
 
 ROLE_CONTROLLER_MAP = {
+    "m": ("manual", None),
+    "manual": ("manual", None),
     "d": ("defence", defence),
     "defence": ("defence", defence),
     "g": ("goalie", goalie),
@@ -281,7 +289,8 @@ def create_team(role_tokens: Sequence[str], team_number: int) -> List[Bot]:
         else:
             start_x = random.randint(1830, 1980)
             start_y = random.randint(510, 1410)
-        if token == "m":
+        role_name, controller = parse_role_token(token)
+        if controller is None:
             bots.append(
                 Bot(
                     x=start_x,
@@ -294,7 +303,6 @@ def create_team(role_tokens: Sequence[str], team_number: int) -> List[Bot]:
                 )
             )
         else:
-            role_name, controller = parse_role_token(token)
             bots.append(
                 Bot(
                     x=start_x,
@@ -1138,8 +1146,8 @@ else:
             bots.extend(create_team(args.team1, 1))
         if args.team2:
             bots.extend(create_team(args.team2, 2))
-        if args.defence or args.goalie or args.striker or args.test_bot:
-            print("Team selections override single-bot '-d'/'-g'/'-s' flags.")
+        if args.defence or args.goalie or args.striker or args.test_bot or args.manual:
+            print("Team selections override single-bot '-d'/'-g'/'-s'/'-t'/'-m' flags.")
     else:
         start_x = 500
         start_y = pitch.get_height() // 2
@@ -1152,6 +1160,8 @@ else:
             controller = striker
         elif args.test_bot:
             controller = test_bot
+        elif args.manual:
+            controller = None
         bots.append(
             Bot(
                 x=start_x,
