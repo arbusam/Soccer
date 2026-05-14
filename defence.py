@@ -427,8 +427,10 @@ if __name__ == "__main__":
         while True:
             if switch2.read():
                 run = not run
+                startup_yaw = capture_startup_yaw(imu)
                 while switch2.read():
                     time.sleep(0.01)
+                time.sleep(0.5)
             if run:
                 if _enter_pressed():
                     print("Shutdown requested, exiting.")
