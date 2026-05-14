@@ -329,9 +329,9 @@ if __name__ == "__main__":
     switch2 = switch.Switch(board.D21)
 
     if switch1.read():
-        bot_mode = 1
-    else:
         bot_mode = 2
+    else:
+        bot_mode = 1
 
     run = False
 
