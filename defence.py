@@ -323,10 +323,12 @@ if __name__ == "__main__":
     import board
     import lidar
     import switch
+    import break_beam
 
     bot_mode = 1 # 1 is defence, 2 is goalie
     switch1 = switch.Switch(board.D16)
     switch2 = switch.Switch(board.D21)
+    bb = break_beam.Breakbeam(board.D27)
 
     if switch1.read():
         bot_mode = 2
@@ -544,8 +546,9 @@ if __name__ == "__main__":
                     ball_x = None
                     ball_y = None
                 distance_to_ball = tof.read()
+                touching_kicker = bb.read()
                 # print(f"Distance to ball: {distance_to_ball} mm")
-                if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE:
+                if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE and touching_kicker:
                     ball_captured = True
                     ball_x = x_pos + 150 * math.cos(math.radians(yaw_relative))
                     ball_y = y_pos + 150 * math.sin(math.radians(yaw_relative))
