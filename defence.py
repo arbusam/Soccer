@@ -329,9 +329,9 @@ if __name__ == "__main__":
     switch2 = switch.Switch(board.D21)
 
     if switch1.read():
-        bot_mode = 1
-    else:
         bot_mode = 2
+    else:
+        bot_mode = 1
 
     run = False
 
@@ -427,8 +427,10 @@ if __name__ == "__main__":
         while True:
             if switch2.read():
                 run = not run
+                startup_yaw = capture_startup_yaw(imu)
                 while switch2.read():
                     time.sleep(0.01)
+                time.sleep(0.5)
             if run:
                 if _enter_pressed():
                     print("Shutdown requested, exiting.")
