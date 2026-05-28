@@ -8,5 +8,5 @@ smbus2
 picamera2
 adafruit-blinka
 adafruit-circuitpython-bno08x
-matoplotlib
+matplotlib
 pandas-stubs
