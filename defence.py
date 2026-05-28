@@ -333,7 +333,7 @@ if __name__ == "__main__":
     if switch1.read():
         bot_mode = 2
     else:
-        bot_mode = 1
+        bot_mode = 2
 
     run = False
 
