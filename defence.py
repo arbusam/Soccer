@@ -153,7 +153,7 @@ def defence(
             offset = 80
         else:
             offset = -80
-    elif dist > 500:
+    else:
         speed = 800
 
     # By default, the bot should not kick the ball.
