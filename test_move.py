@@ -4,10 +4,8 @@ import time
 from imu import IMU
 from movement import (
     MotorCommunicationError,
+    MovementController,
     imu_yaw_to_relative_yaw,
-    init_motors,
-    move,
-    stop_all_motors,
 )
 
 WHEEL_DIAMETER = 50
@@ -42,8 +40,7 @@ def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02):
 
 def main():
     imu = None
-    motors = []
-    motor_modes = []
+    movement_controller = None
     startup_yaw = None
     try:
         print("Initializing IMU...")
@@ -56,7 +53,13 @@ def main():
                 time.sleep(0.01)
 
         print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
-        motors, motor_modes = init_motors(I2C_ADDRESSES)
+        movement_controller = MovementController.from_i2c_addresses(
+            I2C_ADDRESSES,
+            WHEEL_DIAMETER,
+            MAX_YAW_RPM,
+            MAX_MOTOR_RPM,
+            YAW_CORRECT_THRESHOLD,
+        )
         startup_yaw = capture_startup_yaw(imu)
         print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
         print(
@@ -72,18 +75,12 @@ def main():
                 continue
             yaw_relative = imu_yaw_to_relative_yaw(yaw, startup_yaw)
             print(f"Yaw: {yaw:.6f} deg (relative {yaw_relative:.6f} deg)")
-            move(
+            movement_controller.move(
                 TEST_DIRECTION,
                 TEST_SPEED,
                 TEST_ROTATION,
                 TEST_ROTATION_SPEED,
                 yaw_relative,
-                motors,
-                motor_modes,
-                WHEEL_DIAMETER,
-                MAX_YAW_RPM,
-                MAX_MOTOR_RPM,
-                YAW_CORRECT_THRESHOLD,
             )
             time.sleep(COMMAND_INTERVAL)
     except KeyboardInterrupt:
@@ -94,8 +91,8 @@ def main():
     finally:
         if imu is not None:
             imu.close()
-        if motors:
-            stop_all_motors(motors)
+        if movement_controller is not None:
+            movement_controller.stop()
 
 
 if __name__ == "__main__":

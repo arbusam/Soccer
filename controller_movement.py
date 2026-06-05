@@ -1,6 +1,6 @@
 import pygame
 from math import atan2, degrees, hypot
-from movement import move, init_motors, stop_all_motors
+from movement import MovementController
 
 WHEEL_DIAMETER = 50 # mm
 WHEEL_LEVER_ARM = 100 # mm (distance from center to wheel contact)
@@ -43,7 +43,13 @@ def _prompt_i2c_addresses():
     return addresses
 
 
-motors, motor_modes = init_motors(_prompt_i2c_addresses())
+movement_controller = MovementController.from_i2c_addresses(
+    _prompt_i2c_addresses(),
+    WHEEL_DIAMETER,
+    MAX_YAW_RPM,
+    MAX_MOTOR_RPM,
+    YAW_CORRECT_THRESHOLD,
+)
 
 direction_degrees = 0.0
 direction_magnitude = 0.0
@@ -89,6 +95,12 @@ try:
             # print(f"left_trigger={left_trigger:.2f} right_trigger={right_trigger:.2f} speed={speed:.1f}")
 
         movement_speed = min(direction_magnitude * speed, speed)
-        move(direction_degrees, movement_speed, rotation_degrees, rotation_magnitude, 0.0, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+        movement_controller.move(
+            direction_degrees,
+            movement_speed,
+            rotation_degrees,
+            rotation_magnitude,
+            0.0,
+        )
 finally:
-    stop_all_motors(motors)
+    movement_controller.stop()

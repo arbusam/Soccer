@@ -339,10 +339,8 @@ if __name__ == "__main__":
 
     from movement import (
         MotorCommunicationError,
+        MovementController,
         imu_yaw_to_relative_yaw,
-        init_motors,
-        move,
-        stop_all_motors,
     )
     from camera import Camera
     from imu import IMU
@@ -369,8 +367,7 @@ if __name__ == "__main__":
     camera = None
     imu = None
     kicker = None
-    motors = []
-    motor_modes = []
+    movement_controller = None
     try:
         kicker = Kicker(board.D26, 0.1)
         tof = ToF(address=TOF_ADDRESS)
@@ -413,7 +410,13 @@ if __name__ == "__main__":
         startup_yaw = None
 
         print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
-        motors, motor_modes = init_motors(I2C_ADDRESSES)
+        movement_controller = MovementController.from_i2c_addresses(
+            I2C_ADDRESSES,
+            WHEEL_DIAMETER,
+            MAX_YAW_RPM,
+            MAX_MOTOR_RPM,
+            YAW_CORRECT_THRESHOLD,
+        )
         startup_yaw = capture_startup_yaw(imu)
         print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
         print("Press Enter to shut down.")
@@ -437,6 +440,7 @@ if __name__ == "__main__":
                 if _enter_pressed():
                     print("Shutdown requested, exiting.")
                     break
+                loop_start = time.monotonic()
                 yaw_world = imu.get_yaw()
                 if yaw_world is None:
                     time.sleep(0.01)
@@ -518,7 +522,7 @@ if __name__ == "__main__":
                 if kick:
                     kicker.kick()
                 try:
-                    move(direction, speed, rotation, 1.0, yaw_relative, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+                    movement_controller.move(direction, speed, rotation, 1.0, yaw_relative)
                 except MotorCommunicationError as exc:
                     print(exc)
                     raise
@@ -587,23 +591,26 @@ if __name__ == "__main__":
                 if kick:
                     kicker.kick()
                 try:
-                    move(direction, speed, rotation, 1.0, yaw_relative, motors, motor_modes, WHEEL_DIAMETER, MAX_YAW_RPM, MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD)
+                    movement_controller.move(direction, speed, rotation, 1.0, yaw_relative)
                 except MotorCommunicationError as exc:
                     print(exc)
                     raise
+                loop_elapsed = time.monotonic() - loop_start
+                if loop_elapsed > 0:
+                    print(f"FPS: {1.0 / loop_elapsed:.1f}")
             else:
                 if switch1.read():
                     bot_mode = 1
                 else:
                     bot_mode = 2
                 time.sleep(0.01)
-                if motors:
-                    stop_all_motors(motors)
-                    
+                if movement_controller is not None:
+                    movement_controller.stop()
+
     finally:
-        if motors:
+        if movement_controller is not None:
             try:
-                stop_all_motors(motors)
+                movement_controller.stop()
             except Exception as exc:
                 print(f"Warning: failed to stop motors cleanly: {exc}")
         if kicker is not None:
