@@ -15,7 +15,6 @@ I2C_ADDRESSES = [28, 32, 31, 30]
 SQUARE_DIRECTIONS = (0, 90, 180, 270)
 DEFAULT_SIDE_SECONDS = 1.0
 DEFAULT_SPEED = 100  # mm/s
-COMMAND_INTERVAL = 0.05
 
 
 def _run_side(direction, duration, speed, movement_controller):
@@ -23,7 +22,6 @@ def _run_side(direction, duration, speed, movement_controller):
     end_time = time.monotonic() + duration
     while time.monotonic() < end_time:
         movement_controller.move(direction, speed, 0, 0.0, 0)
-        time.sleep(COMMAND_INTERVAL)
 
 
 def main(argv: list[str]) -> int:
