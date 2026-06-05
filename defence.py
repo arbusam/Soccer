@@ -153,7 +153,7 @@ def defence(
             offset = 80
         else:
             offset = -80
-    else:
+    elif dist > 500:
         speed = 800
 
     # By default, the bot should not kick the ball.
@@ -220,7 +220,7 @@ def goalie(
     direction = None
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
     angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
-    rotation = angle_to_ball
+    rotation = 0
     angle_to_ball %= 360
     angle_error = ((angle_to_ball - yaw + 180) % 360) - 180
     speed = 700
@@ -323,17 +323,16 @@ if __name__ == "__main__":
     import board
     import lidar
     import switch
-    import break_beam
 
     bot_mode = 1 # 1 is defence, 2 is goalie
     switch1 = switch.Switch(board.D16)
     switch2 = switch.Switch(board.D21)
-    bb = break_beam.Breakbeam(board.D27)
 
     if switch1.read():
         bot_mode = 2
     else:
-        bot_mode = 2
+        bot_mode = 1
+    print(bot_mode)
 
     run = False
 
@@ -432,15 +431,16 @@ if __name__ == "__main__":
         while True:
             if switch2.read():
                 run = not run
-                startup_yaw = capture_startup_yaw(imu)
+                if run:
+                    startup_yaw = capture_startup_yaw(imu)
                 while switch2.read():
                     time.sleep(0.01)
-                time.sleep(0.5)
+                if not run:
+                    time.sleep(0.5)
             if run:
                 if _enter_pressed():
                     print("Shutdown requested, exiting.")
                     break
-                loop_start = time.monotonic()
                 yaw_world = imu.get_yaw()
                 if yaw_world is None:
                     time.sleep(0.01)
@@ -550,9 +550,8 @@ if __name__ == "__main__":
                     ball_x = None
                     ball_y = None
                 distance_to_ball = tof.read()
-                touching_kicker = bb.read()
                 # print(f"Distance to ball: {distance_to_ball} mm")
-                if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE and touching_kicker:
+                if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE:
                     ball_captured = True
                     ball_x = x_pos + 150 * math.cos(math.radians(yaw_relative))
                     ball_y = y_pos + 150 * math.sin(math.radians(yaw_relative))
@@ -595,12 +594,9 @@ if __name__ == "__main__":
                 except MotorCommunicationError as exc:
                     print(exc)
                     raise
-                loop_elapsed = time.monotonic() - loop_start
-                if loop_elapsed > 0:
-                    print(f"FPS: {1.0 / loop_elapsed:.1f}")
             else:
                 if switch1.read():
-                    bot_mode = 1
+                    bot_mode = 2
                 else:
                     bot_mode = 2
                 time.sleep(0.01)
