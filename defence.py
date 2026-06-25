@@ -437,12 +437,7 @@ if __name__ == "__main__":
                     time.sleep(0.01)
                 if not run:
                     time.sleep(0.5)
-                    ball_dx = 0
-                    ball_dy = 0
-                    last_ball_update = time.time()
-                    last_ball_x = None
-                    last_ball_y = None
-                    last_camera_frame_id = camera.frame_id
+                    steering_state = False
             if run:
                 if _enter_pressed():
                     print("Shutdown requested, exiting.")
