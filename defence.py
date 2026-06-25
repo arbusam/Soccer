@@ -115,7 +115,7 @@ def defence(
         enemy_bot_positions = []
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
-        target_x = 1215
+        target_x = 1515
         target_y = 910
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
@@ -138,14 +138,14 @@ def defence(
         if -10 < direction < 10:
             speed = 1000
             if steering and y_pos < 850 and dist < 200:
-                offset = 30
+                offset = 20
             elif steering and y_pos > 1050 and dist < 200:
-                offset = -30
+                offset = -20
             if y_pos < 800 and ball_captured:
-                offset = 30
+                offset = 20
                 steering = True
             elif y_pos > 1000 and ball_captured:
-                offset = -30
+                offset = -20
                 steering = True
             else:
                 steering = False
@@ -154,7 +154,7 @@ def defence(
         else:
             offset = -80
     elif dist > 500:
-        speed = 800
+        speed = 600
 
     # By default, the bot should not kick the ball.
     kick = False
@@ -437,6 +437,12 @@ if __name__ == "__main__":
                     time.sleep(0.01)
                 if not run:
                     time.sleep(0.5)
+                    ball_dx = 0
+                    ball_dy = 0
+                    last_ball_update = time.time()
+                    last_ball_x = None
+                    last_ball_y = None
+                    last_camera_frame_id = camera.frame_id
             if run:
                 if _enter_pressed():
                     print("Shutdown requested, exiting.")
