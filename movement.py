@@ -13,10 +13,7 @@ i2c = busio.I2C(board.SCL, board.SDA)
 # Conversion factor from RPM to motor speed units.
 # Formula: rpm * 7 (pole pairs) * 36 (36:1 gear ratio) / 60 (seconds per minute) / 2^-16 (electrical revolutions per second)
 RPM_TO_MOTOR_SPEED = 275251.2
-DEFAULT_DIRECTION_SLEW_RATE_DEG_PER_SEC = 1000.0
-
-_actual_direction_deg = None
-_last_direction_update_time = None
+SMOOTHING_TIME = 0.30 # seconds, time to smooth the direction change
 
 
 class MotorCommunicationError(RuntimeError):
@@ -26,56 +23,6 @@ class MotorCommunicationError(RuntimeError):
 def wrap_angle_deg(angle):
     """Wrap an angle to the shortest signed equivalent in [-180, 180)."""
     return ((float(angle) + 180.0) % 360.0) - 180.0
-
-
-def _shortest_angle_delta_deg(current_angle, target_angle):
-    """Return the shortest signed delta from current to target.
-
-    Exact 180 degree differences keep the sign from the caller's requested
-    change so 0 -> 180 ramps upward instead of always choosing -180.
-    """
-    raw_delta = float(target_angle) - float(current_angle)
-    wrapped_delta = wrap_angle_deg(raw_delta)
-    if math.isclose(wrapped_delta, -180.0, abs_tol=1e-9) and raw_delta > 0.0:
-        return 180.0
-    return wrapped_delta
-
-
-def reset_move_direction_state():
-    """Forget the smoothed translation direction so the next call snaps to target."""
-    global _actual_direction_deg, _last_direction_update_time
-    _actual_direction_deg = None
-    _last_direction_update_time = None
-
-
-def _get_smoothed_direction(target_direction, direction_slew_rate_deg_per_sec):
-    """Rate-limit translation direction changes between successive move() calls."""
-    global _actual_direction_deg, _last_direction_update_time
-
-    target_direction = float(target_direction)
-    direction_slew_rate_deg_per_sec = abs(float(direction_slew_rate_deg_per_sec))
-    now = time.monotonic()
-
-    if (
-        _actual_direction_deg is None
-        or _last_direction_update_time is None
-        or direction_slew_rate_deg_per_sec == 0.0
-    ):
-        _actual_direction_deg = target_direction
-        _last_direction_update_time = now
-        return _actual_direction_deg
-
-    elapsed = max(0.0, now - _last_direction_update_time)
-    _last_direction_update_time = now
-
-    max_step = direction_slew_rate_deg_per_sec * elapsed
-    direction_error = _shortest_angle_delta_deg(_actual_direction_deg, target_direction)
-    if abs(direction_error) <= max_step:
-        _actual_direction_deg = target_direction
-    else:
-        direction_step = _clamp(direction_error, -max_step, max_step)
-        _actual_direction_deg = wrap_angle_deg(_actual_direction_deg + direction_step)
-    return _actual_direction_deg
 
 
 def imu_yaw_to_relative_yaw(imu_yaw, startup_yaw):
@@ -182,8 +129,101 @@ def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
         motors[setup_motor_count].configure_operating_mode_and_sensor(3, 1)  # configure FOC mode and sin/cos encoder
         motors[setup_motor_count].configure_command_mode(12)  # configure speed command mode
         motor_modes[setup_motor_count] = 12
-    reset_move_direction_state()
     return motors, motor_modes
+
+
+class MovementController:
+    """Own the drive motor state and convert movement commands into motor speeds."""
+
+    current_direction = 0.0
+    current_speed = 0.0
+
+    def __init__(
+        self,
+        motors,
+        motor_modes,
+        diameter,
+        max_yaw_rpm,
+        max_rpm,
+        yaw_correct_threshold,
+    ):
+        self.motors = motors
+        self.motor_modes = motor_modes
+        self.diameter = diameter
+        self.max_yaw_rpm = max_yaw_rpm
+        self.max_rpm = max_rpm
+        self.yaw_correct_threshold = yaw_correct_threshold
+        self.last_update_time = time.monotonic()
+
+    @classmethod
+    def from_i2c_addresses(
+        cls,
+        i2c_addresses,
+        diameter,
+        max_yaw_rpm,
+        max_rpm,
+        yaw_correct_threshold,
+        calibration_file="calibration_data.json",
+    ):
+        """Initialise motors and return a ready-to-use movement controller."""
+        motors, motor_modes = init_motors(i2c_addresses, calibration_file=calibration_file)
+        return cls(
+            motors,
+            motor_modes,
+            diameter,
+            max_yaw_rpm,
+            max_rpm,
+            yaw_correct_threshold,
+        )
+
+    def move(self, direction, speed, rotation, rotation_speed, yaw):
+        """Move using the controller's configured motors and drive limits."""
+        drive_motors = self.motors[:4]
+        if any(motor is None for motor in drive_motors):
+            raise ValueError("MovementController.move() requires 4 initialized drive motors in motors[0:4].")
+        if self.current_direction != direction or self.current_speed != speed:
+            dx = math.cos(math.radians(self.current_direction)) * self.current_speed
+            dy = math.sin(math.radians(self.current_direction)) * self.current_speed
+
+            target_dx = math.cos(math.radians(direction)) * speed
+            target_dy = math.sin(math.radians(direction)) * speed
+
+            dt = time.monotonic() - self.last_update_time
+            self.last_update_time = time.monotonic()
+
+            new_dx = dx + ((target_dx - dx) / SMOOTHING_TIME) * dt
+            new_dy = dy + ((target_dy - dy) / SMOOTHING_TIME) * dt
+
+            self.current_direction = math.degrees(math.atan2(new_dy, new_dx))
+            self.current_speed = math.hypot(new_dx, new_dy)
+
+        a_speed, b_speed, c_speed, d_speed = _calculate_drive_rpms(
+            self.current_direction,
+            self.current_speed,
+            rotation,
+            rotation_speed,
+            yaw,
+            self.diameter,
+            self.max_yaw_rpm,
+            self.max_rpm,
+            self.yaw_correct_threshold,
+        )
+
+        a_val = int(a_speed * RPM_TO_MOTOR_SPEED)
+        b_val = int(b_speed * RPM_TO_MOTOR_SPEED)
+        c_val = int(c_speed * RPM_TO_MOTOR_SPEED)
+        d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
+
+        _set_motor_speed(drive_motors[0], a_val, 0)
+        _set_motor_speed(drive_motors[1], b_val, 1)
+        _set_motor_speed(drive_motors[2], c_val, 2)
+        _set_motor_speed(drive_motors[3], d_val, 3)
+
+    def stop(self):
+        """Set speed to 0 on all owned motors."""
+        for index, motor in enumerate(self.motors):
+            if motor is not None:
+                _set_motor_speed(motor, 0, index, ignore_errors=True)
 
 
 # Used by calibrate.py to calibrate the motors and save the results to the calibration file to be re used.
@@ -316,75 +356,13 @@ def _calculate_drive_rpms(
         for rpm in translation_rpms
     )
 
-# Inputs:
-# direction: int - global movement direction in degrees, where 0 is startup-forward and 90 is startup-right.
-# speed: int - translation speed of the robot in mm/s
-# rotation: int - desired robot heading in degrees in the same frame as direction and yaw.
-# rotation_speed: float - the strength of the yaw correction in 0.0-1.0
-# yaw: int - measured robot heading in degrees in the same frame as direction and rotation.
-# motors: list - the list of motor objects
-# motor_modes: list - the list of motor modes
-# diameter: int - the diameter of the wheels in mm. Used to convert bot speed to motor rpm.
-# max_yaw_rpm: int - the maximum yaw rpm. Used to limit the yaw correction speed.
-# max_rpm: int - the maximum rpm for the motors. Used to limit the motor speed.
-# yaw_correct_threshold: int - the threshold for the yaw correction in degrees. If yaw error is less than this, no correction is applied. This is to prevent overcorrection.
-# direction_slew_rate_deg_per_sec: float - maximum change in translation direction per second. 180 by default.
-def move(
-    direction,
-    speed,
-    rotation,
-    rotation_speed,
-    yaw,
-    motors,
-    motor_modes,
-    diameter,
-    max_yaw_rpm,
-    max_rpm,
-    yaw_correct_threshold,
-    direction_slew_rate_deg_per_sec=DEFAULT_DIRECTION_SLEW_RATE_DEG_PER_SEC,
-):
-    # Gets the first 4 motors from the list of motors
-    drive_motors = motors[:4]
-    # Checks if any of the motors are None
-    if any(motor is None for motor in drive_motors):
-        raise ValueError("move() requires 4 initialized drive motors in motors[0:4].")
-
-    actual_direction = _get_smoothed_direction(direction, direction_slew_rate_deg_per_sec)
-
-    a_speed, b_speed, c_speed, d_speed = _calculate_drive_rpms(
-        actual_direction,
-        speed,
-        rotation,
-        rotation_speed,
-        yaw,
-        diameter,
-        max_yaw_rpm,
-        max_rpm,
-        yaw_correct_threshold,
-    )
-
-    # Uses the formula to convert rpm to motor speed units.
-    a_val = int(a_speed * RPM_TO_MOTOR_SPEED)
-    b_val = int(b_speed * RPM_TO_MOTOR_SPEED)
-    c_val = int(c_speed * RPM_TO_MOTOR_SPEED)
-    d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
-
-    # Sends the desired speed to the motor drivers.
-    _set_motor_speed(drive_motors[0], a_val, 0)
-    _set_motor_speed(drive_motors[1], b_val, 1)
-    _set_motor_speed(drive_motors[2], c_val, 2)
-    _set_motor_speed(drive_motors[3], d_val, 3)
-
-
 def stop_all_motors(motors):
     """Set speed to 0 on all non-None motors. Call on exit to avoid runaway motors."""
     for index, m in enumerate(motors):
         if m is not None:
             _set_motor_speed(m, 0, index, ignore_errors=True)
-    reset_move_direction_state()
 
 
-# TODO: Automatically use i2c addresses using a fixed array in order: [28, 32, 31, 30]
 def _prompt_i2c_addresses():
     """Gets i2c addresses from the user."""
     print("Please enter the number of motor drivers you want to control:")

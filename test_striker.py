@@ -31,31 +31,12 @@ WHITE_MAX_Y = 1570
 BALL_RADIUS = 21 # mm, radius of the ball
 
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
+OWN_GOAL_PREVENTION_OFFSET = 10 # deg, how much to offset the direction to the ball when preventing own goals.
 
 CAMERA_PORT = 8000
 I2C_ADDRESSES = [28, 32, 31, 30]
 
 BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
-
-# Wrap to the shortest signed angle in [-180, 180).
-def wrap_angle_deg(angle):
-    return ((angle + 180) % 360) - 180
-
-
-def point_to_segment_distance(px, py, x1, y1, x2, y2):
-    dx = x2 - x1
-    dy = y2 - y1
-    line_len_sq = dx * dx + dy * dy
-    if line_len_sq <= 1e-9:
-        return math.hypot(px - x1, py - y1)
-
-    t = ((px - x1) * dx + (py - y1) * dy) / line_len_sq
-    t = max(0.0, min(1.0, t))
-    closest_x = x1 + t * dx
-    closest_y = y1 + t * dy
-    return math.hypot(px - closest_x, py - closest_y)
-
-
 def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02):
     """Average a short burst of IMU samples so startup yaw is not just the first reading."""
     print("Stabilizing IMU yaw reference...")
@@ -98,7 +79,7 @@ def is_ball_out(ball_x, ball_y):
 # rotation: yaw value to rotate towards
 # steering_state: Whether the bot is currently steering. Is not used elsewhere, only exists to persist state for the next call.
 # kick: True if the bot should kick the ball
-def defence(
+def striker(
     x_pos,
     y_pos,
     yaw,
@@ -115,7 +96,7 @@ def defence(
         enemy_bot_positions = []
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
-        target_x = 1515
+        target_x = 1215
         target_y = 910
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
@@ -134,18 +115,18 @@ def defence(
     speed = 500 # mm/s, Default speed of the bot.
     offset = 0 # deg, Offset to the direction to the ball. Used to avoid own goals.
     # Only activate own goal prevention if the ball is close to the bot.
-    if dist < 400:
+    if dist < 300:
         if -10 < direction < 10:
             speed = 1000
             if steering and y_pos < 850 and dist < 200:
-                offset = 20
+                offset = OWN_GOAL_PREVENTION_OFFSET
             elif steering and y_pos > 1050 and dist < 200:
-                offset = -20
+                offset = -OWN_GOAL_PREVENTION_OFFSET
             if y_pos < 800 and ball_captured:
-                offset = 20
+                offset = OWN_GOAL_PREVENTION_OFFSET
                 steering = True
             elif y_pos > 1000 and ball_captured:
-                offset = -20
+                offset = -OWN_GOAL_PREVENTION_OFFSET
                 steering = True
             else:
                 steering = False
@@ -154,7 +135,7 @@ def defence(
         else:
             offset = -80
     elif dist > 500:
-        speed = 600
+        speed = 800
 
     # By default, the bot should not kick the ball.
     kick = False
@@ -165,12 +146,23 @@ def defence(
         target_y_min = GOAL_BACK_Y_MIN
         target_y_max = GOAL_BACK_Y_MAX
 
+        dist_to_goal = math.sqrt((target_x - ball_x) ** 2 + (GOAL_CENTRE_Y - ball_y) ** 2)
+        degrees_to_goal = math.degrees(math.atan2(GOAL_CENTRE_Y - ball_y, target_x - ball_x))
+        for enemy_bot in enemy_bot_positions:
+            enemy_bot_vector = (enemy_bot[0] - ball_x, enemy_bot[1] - ball_y)
+            degrees_to_enemy_bots = math.degrees(math.atan2(enemy_bot[1] - ball_y, enemy_bot[0] - ball_x))
+            if degrees_to_goal + 50 < degrees_to_enemy_bots < degrees_to_goal - 50:
+                if 0 < degrees_to_goal < 90:
+                    offset = 80
+                elif -90 < degrees_to_goal < 0:
+                    offset = -80
+
         yaw_rad = math.radians(yaw % 360)
         dir_x = math.cos(yaw_rad)
         dir_y = math.sin(yaw_rad)
         epsilon = 1e-6
 
-        if abs(dir_x) > epsilon:
+        if abs(dir_x) > epsilon and dist_to_goal < 500:
             t = (target_x - ball_x) / dir_x
             if t >= 0:
                 y_hit = ball_y + t * dir_y
@@ -179,114 +171,6 @@ def defence(
 
     return direction + offset, speed, rotation, steering, kick
 
-# Inputs: 
-# x_pos: x position of the robot
-# y_pos: y position of the robot
-# yaw: yaw value of the robot
-# ball_x: x position of the ball
-# ball_y: y position of the ball
-# ball_captured: True when the ball is touching the capture zone
-# friendly_bot_positions: optional iterable of (x, y) positions for friendly robots
-# enemy_bot_positions: optional iterable of (x, y) positions for enemy robots
-# Outputs: direction, speed, rotation
-# direction: degrees to move in
-# speed: mm/s to move at
-# rotation: yaw value to rotate towards
-# kick: True if the bot wants to kick the ball
-def goalie(
-    x_pos,
-    y_pos,
-    yaw,
-    ball_x,
-    ball_y,
-    ball_captured=False,
-    friendly_bot_positions=None,
-    enemy_bot_positions=None,
-):
-    if friendly_bot_positions is None:
-        friendly_bot_positions = []
-    if enemy_bot_positions is None:
-        enemy_bot_positions = []
-    if ball_x is None or ball_y is None:
-        target_x = YELLOW_GOAL_CENTRE_X
-        target_y = GOAL_CENTRE_Y
-        vector = (target_x - x_pos), (target_y - y_pos)
-        direction = math.degrees(math.atan2(vector[1], vector[0]))
-        speed = 600
-        rotation = 0
-        kick = False
-        return direction, speed, rotation, kick
-    vector = (ball_x - x_pos), (ball_y - y_pos)
-    direction = None
-    dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
-    angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
-    rotation = 0
-    angle_to_ball %= 360
-    angle_error = ((angle_to_ball - yaw + 180) % 360) - 180
-    speed = 700
-    kick = False
-
-    if ball_captured and -90 < yaw < 90:
-        m1 = (math.tan(math.radians(yaw)))
-        c1 = y_pos - m1 * x_pos
-        kick = True
-        if enemy_bot_positions is not None:
-            for bot in enemy_bot_positions:
-                m2 = (-1/m1)
-                c2 = bot[1] - m2 * bot[0]
-                xint = (c2 - c1) / (m1 - m2)
-                yint = m1 * xint + c1
-                distanceToEnemyBot = math.dist((xint, yint), (x_pos, y_pos))
-                if distanceToEnemyBot < 200:
-                    kick = False
-                    
-
-    if y_pos > 1360:
-        direction = 270
-    elif y_pos < 460:
-        direction = 90
-    elif x_pos < 420:
-        direction = 0
-    elif x_pos > 600 and not ball_captured:
-        direction = 180
-    else:
-        if is_ball_out(ball_x, ball_y):
-            if abs(y_pos - 910) > 5:
-                if y_pos < 910:
-                    direction = 90
-                else:
-                    direction = 270
-            else:
-                direction = yaw
-                speed = 0
-        elif dist < 500 and abs(angle_error) < 10:
-            direction = yaw
-        else:
-            goal_dx = YELLOW_GOAL_BACK_X - ball_x
-            goal_dy = GOAL_CENTRE_Y - ball_y
-            line_len_sq = goal_dx * goal_dx + goal_dy * goal_dy
-            epsilon = 1e-6
-            if line_len_sq < epsilon:
-                intercept_x = CYAN_GOAL_CENTRE_X
-                intercept_y = GOAL_CENTRE_Y
-            else:
-                t = ((x_pos - ball_x) * goal_dx + (y_pos - ball_y) * goal_dy) / line_len_sq
-                intercept_x = ball_x + t * goal_dx
-                intercept_y = ball_y + t * goal_dy
-
-            if intercept_x < 430:
-                intercept_x = 430
-                if abs(goal_dx) > epsilon:
-                    t = (intercept_x - ball_x) / goal_dx
-                    intercept_y = ball_y + t * goal_dy
-
-            dif_x = intercept_x - x_pos
-            dif_y = intercept_y - y_pos
-            if math.hypot(dif_x, dif_y) < 10:
-                speed = 0
-            direction = math.degrees(math.atan2(dif_y, dif_x))
-
-    return direction, speed, rotation, kick
 
 def _prompt_i2c_addresses():
     print("Please enter the number of motor drivers you want to control:")
@@ -324,15 +208,7 @@ if __name__ == "__main__":
     import lidar
     import switch
 
-    bot_mode = 1 # 1 is defence, 2 is goalie
-    switch1 = switch.Switch(board.D16)
     switch2 = switch.Switch(board.D21)
-
-    if switch1.read():
-        bot_mode = 2
-    else:
-        bot_mode = 1
-    print(bot_mode)
 
     run = False
 
@@ -437,7 +313,6 @@ if __name__ == "__main__":
                     time.sleep(0.01)
                 if not run:
                     time.sleep(0.5)
-                    steering_state = False
             if run:
                 if _enter_pressed():
                     print("Shutdown requested, exiting.")
@@ -497,28 +372,16 @@ if __name__ == "__main__":
                     send_log.update_latest_log(
                         ",".join("None" if value is None else str(value) for value in log_values)
                     )
-                if bot_mode == 1:
-                    direction, speed, rotation, steering_state, kick = defence(
-                        x_pos,
-                        y_pos,
-                        yaw_relative,
-                        ball_x,
-                        ball_y,
-                        ball_captured,
-                        steering_state=steering_state,
-                        friendly_bot_positions=[],
-                        enemy_bot_positions=enemy_bot_positions,
-                    )
-                else:
-                    direction, speed, rotation, kick = goalie(
-                        x_pos,
-                        y_pos,
-                        yaw_relative,
-                        ball_x,
-                        ball_y,
-                        ball_captured,
-                        friendly_bot_positions=[],
-                        enemy_bot_positions=enemy_bot_positions,
+                direction, speed, rotation, steering_state, kick = striker(
+                    x_pos,
+                    y_pos,
+                    yaw_relative,
+                    ball_x,
+                    ball_y,
+                    ball_captured,
+                    steering_state=steering_state,
+                    friendly_bot_positions=[],
+                    enemy_bot_positions=enemy_bot_positions,
                     )
                 if kick:
                     kicker.kick()
@@ -565,29 +428,18 @@ if __name__ == "__main__":
                     send_log.update_latest_log(
                         ",".join("None" if value is None else str(value) for value in log_values)
                     )
-                if bot_mode == 1:
-                    direction, speed, rotation, steering_state, kick = defence(
-                        x_pos,
-                        y_pos,
-                        yaw_relative,
-                        ball_x,
-                        ball_y,
-                        ball_captured,
-                        steering_state=steering_state,
-                        friendly_bot_positions=[],
-                        enemy_bot_positions=enemy_bot_positions,
-                    )
-                else:
-                    direction, speed, rotation, kick = goalie(
-                        x_pos,
-                        y_pos,
-                        yaw_relative,
-                        ball_x,
-                        ball_y,
-                        ball_captured,
-                        friendly_bot_positions=[],
-                        enemy_bot_positions=enemy_bot_positions,
-                    )
+                direction, speed, rotation, steering_state, kick = striker(
+                    x_pos,
+                    y_pos,
+                    yaw_relative,
+                    ball_x,
+                    ball_y,
+                    ball_captured,
+                    steering_state=steering_state,
+                    friendly_bot_positions=[],
+                    enemy_bot_positions=enemy_bot_positions,
+                )
+
                 if kick:
                     kicker.kick()
                 try:
@@ -596,10 +448,6 @@ if __name__ == "__main__":
                     print(exc)
                     raise
             else:
-                if switch1.read():
-                    bot_mode = 2
-                else:
-                    bot_mode = 2
                 time.sleep(0.01)
                 if movement_controller is not None:
                     movement_controller.stop()
