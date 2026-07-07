@@ -324,10 +324,14 @@ if __name__ == "__main__":
                 yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
 
                 # print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
-                lidar.set_yaw(yaw_world)
-                x_pos, y_pos = lidar.get_coordinates()
-                # print(f"LIDAR: {x_pos}, {y_pos}; Yaw: {yaw_relative:.6f} deg")
-                enemy_bot_positions = lidar.get_other_bot_positions() or []
+                lidar.predict_odometry(0.0, 0.0, 0.0, 0.01)
+                x_pos, y_pos, mcl_yaw, _confidence = lidar.get_pose()
+                if mcl_yaw is not None:
+                    yaw_relative = mcl_yaw
+                if x_pos is None or y_pos is None:
+                    time.sleep(0.01)
+                    continue
+                enemy_bot_positions = []
                 camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
                 has_new_camera_frame = camera_frame_id != last_camera_frame_id
                 last_camera_frame_id = camera_frame_id

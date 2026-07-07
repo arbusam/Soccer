@@ -1,38 +1,24 @@
 /*
  * RPLidar C1 Python Module (pybind11)
- * 
- * Exposes LIDAR scanning functionality to Python.
- * Runs a background thread to continuously capture scan data.
- * Estimates bot's position by calculating theoretical distances for a given position, and comparing them to the measured distances.
-
-Definitions:
- - position: The (x, y) coordinates of the robot on the pitch.
- - yaw: The angle of the robot's heading.
- - inlier: A ray that is close to the expected distance.
- - outlier: A ray that is far from the expected distance (usually a blocking object).
- - confidence: A measure of how confident we are that the position estimate is correct.
- - local search: A search for the best position in the immediate vicinity of the previous position. Is much faster than the global search.
- - global search: A search for the best position in the entire pitch. Uses a coarse grid to find the approximate area, then refines locally. Triggered when the local search has a low confidence.
- - Cauchy loss: A loss function that is less sensitive to outliers. Formula: ln(1 + (z / COORD_CAUCHY_C)^2), where z is the error over the expected noise.
- - MAD: Median Absolute Deviation. A measure of the spread of the inliers. Formula: 1.4826 * median(|e_i|), where e_i are the absolute residuals of inlier rays.
-*/
+ *
+ * LIDAR scan capture plus Monte Carlo localization (3-DOF: x, y, yaw).
+ */
 
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 #include <pybind11/stl.h>
 
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 #include <cmath>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <mutex>
 #include <thread>
 #include <vector>
-#include <chrono>
 #include <stdexcept>
 
+#include "localisation.h"
 #include "sl_lidar.h"
 #include "sl_lidar_driver.h"
 
@@ -42,14 +28,6 @@ using namespace sl;
 #ifndef _countof
 #define _countof(_Array) (int)(sizeof(_Array) / sizeof(_Array[0]))
 #endif
-
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
-// ===========================================================================
-// Scan data
-// ===========================================================================
 
 static ILidarDriver* g_driver = nullptr;
 static IChannel* g_channel = nullptr;
@@ -66,395 +44,12 @@ struct ScanPoint {
 static std::vector<ScanPoint> g_latest_scan;
 static std::atomic<bool> g_scan_ready{false};
 
-// ===========================================================================
-// Coordinate estimation
-// ===========================================================================
+static std::atomic<bool> g_loc_running{false};
+static std::thread g_loc_thread;
 
-static std::atomic<bool> g_coord_running{false};
-static std::thread g_coord_thread;
-static std::mutex g_coord_mutex;
-
-struct Segment {
-    float x1;
-    float y1;
-    float x2;
-    float y2;
-};
-
-// Default pitch dimensions in mm. Overwritten by start_coordinates().
-static float g_pitch_x = 2430.0f;
-static float g_pitch_y = 1820.0f;
-static std::atomic<float> g_yaw_deg{0.0f};
-static std::vector<Segment> g_static_segments;
-
-struct CoordResult {
-    float x;
-    float y;
-    float confidence; // Confidence in the estimate
-    bool ok; // Whether the estimate is valid
-};
-
-static CoordResult g_latest_coord = {-1, -1, 0, false};
-static float g_good_x = -1.0f;
-static float g_good_y = -1.0f;
-static bool g_has_good_coord = false;
-static std::vector<std::pair<float, float>> g_latest_other_bots;
-static std::atomic<bool> g_coord_ready{false};
-
-// Only touched by the coordinate thread
-static float g_prev_x = -1.0f; // Previous x coordinate
-static float g_prev_y = -1.0f; // Previous y coordinate
-static bool g_has_prev_pose = false; // Whether a previous pose is available
-
-// Tuning constants
-static constexpr float COORD_EPS        = 1e-9f;   // Small epsilon to avoid floating point errors
-static constexpr float COORD_SIGMA      = 30.0f;   // expected range noise (mm)
-static constexpr float COORD_CAUCHY_C   = 2.5f;    // Cauchy loss constant
-static constexpr float MIN_RANGE_MM     = 80.0f;   // Avoids measuring itself
-static constexpr float MAX_RANGE_MM     = 6000.0f; // Anything greater than 6m is definetly outside the pitch
-static constexpr int   MIN_BEAM_QUALITY = 5;
-static constexpr int   MIN_BEAM_COUNT   = 30;
-static constexpr float CONF_THRESHOLD   = 0.35f;
-static constexpr float INLIER_THRESH    = 80.0f;   // mm, max allowed error between measured and predicted distance for a ray to count as an inlier
-static constexpr float GOAL_LEFT_BACK_X = 226.0f;
-static constexpr float GOAL_RIGHT_BACK_X = 2204.0f;
-static constexpr float GOAL_LEFT_FRONT_X = 300.0f;
-static constexpr float GOAL_RIGHT_FRONT_X = 2130.0f;
-static constexpr float GOAL_TOP_Y = 685.0f;
-static constexpr float GOAL_BOTTOM_Y = 1135.0f;
-static constexpr float GOAL_BACK_BOTTOM_Y = 1140.0f;
-static constexpr float OTHER_BOT_RADIUS_MM = 110.0f;
-static constexpr float OUTLIER_OBJECT_THRESH_MM = 140.0f;
-static constexpr float OTHER_BOT_CLUSTER_DIST_MM = 220.0f;
-static constexpr int   OTHER_BOT_MIN_CLUSTER_POINTS = 3;
-
-// ===========================================================================
-// Coordinate estimation
-// ===========================================================================
-
-static inline float cauchy_loss(float z) {
-    // z is the error over the expected noise
-    float r = z / COORD_CAUCHY_C;
-    // Downweights errors on the curve of f(x) = ln(1 + x^2)
-    // This is much less sensitive to outliers than simply squaring the error
-    // This is important as other objects on the pitch will be detected as outliers, but they should not effect the position too much.
-    return std::log(1.0f + r * r);
-}
-
-// Returns the smallest distance between a point and a line segment along a ray.
-static inline float ray_segment_intersection_distance(float px, float py,
-                                                      float ux, float uy,
-                                                      const Segment& seg) {
-    // Calculate the gradient of the line segment.
-    float sx = seg.x2 - seg.x1;
-    float sy = seg.y2 - seg.y1;
-
-    float denom = ux * sy - uy * sx;
-    if (std::fabs(denom) <= COORD_EPS) {
-        return 1e30f; // Return a very large number if the line segment is parallel to the ray.
-    }
-
-    float qpx = seg.x1 - px;
-    float qpy = seg.y1 - py;
-
-    // t is ray parameter, u is segment parameter in [0,1]
-    float t = (qpx * sy - qpy * sx) / denom;
-    float u = (qpx * uy - qpy * ux) / denom;
-
-    if (t > COORD_EPS && u >= -COORD_EPS && u <= 1.0f + COORD_EPS) {
-        return t;
-    }
-    return 1e30f;
-}
-
-// Predicted range from (x,y) along direction (ux,uy) to pitch boundaries and
-// static goal-hardware segments.
-// Outputs the smallest distance to the first geometry hit by the ray.
-static inline float predict_range(float x, float y,
-                                  float ux, float uy,
-                                  float Lx, float Ly) {
-    float t_min = 1e30f;
-    if (ux < -COORD_EPS) { // Left wall
-        float t = -x / ux;
-        if (t > 0 && t < t_min) t_min = t;
-    } else if (ux > COORD_EPS) { // Right wall
-        float t = (Lx - x) / ux;
-        if (t > 0 && t < t_min) t_min = t;
-    }
-
-    if (uy < -COORD_EPS) { // Top wall
-        float t = -y / uy;
-        if (t > 0 && t < t_min) t_min = t;
-    } else if (uy > COORD_EPS) { // Bottom wall
-        float t = (Ly - y) / uy;
-        if (t > 0 && t < t_min) t_min = t;
-    }
-
-    // Check if ray hits any goal line segments.
-    for (const auto& seg : g_static_segments) {
-        float t = ray_segment_intersection_distance(x, y, ux, uy, seg);
-        if (t < t_min) t_min = t;
-    }
-
-    return t_min;
-}
-
-// Predicts a range of distances for every ray for a given position, then compares it to the measured distance using the Cauchy loss function.
-// Inputs:
-// - x, y: The position to score.
-// - ux, uy: The unit vectors of the rays.
-// - r_meas: The measured distances of the rays.
-// - weights: Per-ray weights derived from the rplidar sdk's quality values. Higher quality rays have more influence on the total cost.
-// - n: The number of rays.
-// - Lx, Ly: The dimensions of the pitch.
-// Outputs:
-// - The total cost of the position. The lower the cost, the more likely the position is correct.
-static float score_pose(float x, float y,
-                        const float* ux, const float* uy,
-                        const float* r_meas, const float* weights,
-                        int n, float Lx, float Ly) {
-    float cost = 0.0f;
-    // Iterate over all rays and calculate the cost of the position.
-    for (int i = 0; i < n; i++) {
-        float r_pred = predict_range(x, y, ux[i], uy[i], Lx, Ly);
-        // Calculate the error over the expected noise. Used as z in the Cauchy loss function.
-        // e=1 means the error is 1 standard deviation of the expected noise.
-        float e = (r_meas[i] - r_pred) / COORD_SIGMA;
-        // Calculate the Cauchy loss of the error.
-        // Scales the ray's contribution to total cost based on quality; higher quality rays have more influence.
-        cost += weights[i] * cauchy_loss(e);
-    }
-    return cost;
-}
-
-struct PoseStats {
-    float inlier_ratio;
-    float mad_mm;
-};
-
-// Given a position, calculates the ratio of inliers and their spread.
-// Inputs:
-// - x, y: The position to score.
-// - ux, uy: The unit vectors of the rays.
-// - r_meas: The measured distances of the rays.
-// - n: The number of rays.
-// - Lx, Ly: The dimensions of the pitch.
-// Outputs:
-// - The ratio of inliers and their spread (MAD).
-static PoseStats compute_stats(float x, float y,
-                               const float* ux, const float* uy,
-                               const float* r_meas, int n,
-                               float Lx, float Ly) {
-    std::vector<float> inlier_errors;
-    inlier_errors.reserve(n);
-    int inlier_count = 0;
-
-    for (int i = 0; i < n; i++) {
-        float r_pred = predict_range(x, y, ux[i], uy[i], Lx, Ly); // Predict the distance to the wall along the ray.
-        float e = std::fabs(r_meas[i] - r_pred); // Calculate the raw error between the predicted and measured distance.
-        if (e < INLIER_THRESH) { // If the error is less than the threshold, it is an inlier.
-            inlier_count++;
-            inlier_errors.push_back(e);
-        }
-    }
-
-    PoseStats stats;
-    stats.inlier_ratio = (float)inlier_count / std::max(n, 1); // Calculate the ratio of inliers to the total number of rays.
-
-    if (inlier_errors.empty()) {
-        stats.mad_mm = 1e9f; // If there are no inliers, set the MAD to a very large number.
-    } else {
-        std::sort(inlier_errors.begin(), inlier_errors.end()); // Sort the inlier errors to find the median.
-        stats.mad_mm = 1.4826f * inlier_errors[inlier_errors.size() / 2]; // Calculate the MAD.
-    }
-    return stats;
-}
-
-// Uses the inlier ratio and MAD to calculate the confidence in the position.
-static float compute_confidence(const PoseStats& s) {
-    return 0.7f * s.inlier_ratio + 0.3f * std::exp(-s.mad_mm / 80.0f);
-}
-
-static std::vector<std::pair<float, float>> detect_other_bot_positions(
-    float robot_x, float robot_y,
-    const float* ux, const float* uy,
-    const float* r_meas, int n,
-    float Lx, float Ly) {
-    struct OutlierPoint {
-        float x;
-        float y;
-    };
-
-    struct Cluster {
-        float sum_x;
-        float sum_y;
-        int count;
-    };
-
-    std::vector<OutlierPoint> outlier_points;
-    outlier_points.reserve(n);
-
-    for (int i = 0; i < n; i++) {
-        float r_pred = predict_range(robot_x, robot_y, ux[i], uy[i], Lx, Ly);
-        float residual_mm = r_pred - r_meas[i];
-        if (residual_mm < OUTLIER_OBJECT_THRESH_MM) {
-            continue;
-        }
-
-        float hit_x = robot_x + ux[i] * r_meas[i];
-        float hit_y = robot_y + uy[i] * r_meas[i];
-        if (hit_x < 0.0f || hit_x > Lx || hit_y < 0.0f || hit_y > Ly) {
-            continue;
-        }
-        outlier_points.push_back({hit_x, hit_y});
-    }
-
-    std::vector<Cluster> clusters;
-    for (const auto& pt : outlier_points) {
-        int best_cluster = -1;
-        float best_dist = 1e30f;
-
-        for (size_t idx = 0; idx < clusters.size(); idx++) {
-            float cx = clusters[idx].sum_x / clusters[idx].count;
-            float cy = clusters[idx].sum_y / clusters[idx].count;
-            float dist = std::hypot(pt.x - cx, pt.y - cy);
-            if (dist < OTHER_BOT_CLUSTER_DIST_MM && dist < best_dist) {
-                best_dist = dist;
-                best_cluster = (int)idx;
-            }
-        }
-
-        if (best_cluster < 0) {
-            clusters.push_back({pt.x, pt.y, 1});
-        } else {
-            clusters[best_cluster].sum_x += pt.x;
-            clusters[best_cluster].sum_y += pt.y;
-            clusters[best_cluster].count++;
-        }
-    }
-
-    std::vector<std::pair<float, float>> bots;
-    for (const auto& cluster : clusters) {
-        if (cluster.count < OTHER_BOT_MIN_CLUSTER_POINTS) {
-            continue;
-        }
-
-        float surface_x = cluster.sum_x / cluster.count;
-        float surface_y = cluster.sum_y / cluster.count;
-        float dir_x = surface_x - robot_x;
-        float dir_y = surface_y - robot_y;
-        float norm = std::hypot(dir_x, dir_y);
-        if (norm <= COORD_EPS) {
-            continue;
-        }
-
-        float center_x = surface_x + (dir_x / norm) * OTHER_BOT_RADIUS_MM;
-        float center_y = surface_y + (dir_y / norm) * OTHER_BOT_RADIUS_MM;
-        center_x = std::min(std::max(center_x, 0.0f), Lx);
-        center_y = std::min(std::max(center_y, 0.0f), Ly);
-
-        bool merged = false;
-        for (auto& bot : bots) {
-            float dist = std::hypot(center_x - bot.first, center_y - bot.second);
-            if (dist < OTHER_BOT_RADIUS_MM) {
-                bot.first = 0.5f * (bot.first + center_x);
-                bot.second = 0.5f * (bot.second + center_y);
-                merged = true;
-                break;
-            }
-        }
-        if (!merged) {
-            bots.emplace_back(center_x, center_y);
-        }
-    }
-
-    return bots;
-}
-
-// Derivative-free coarse-to-fine local search. Is much faster than the global search.
-// Inputs:
-// - x, y: The position to refine.
-// - best_cost: The best cost found so far.
-// - ux, uy: The unit vectors of the rays.
-// - r_meas: The measured distances of the rays.
-// - weights: Per-ray weights derived from quality values.
-// - n: The number of rays.
-// - Lx, Ly: The dimensions of the pitch.
-// - step0: The initial step size.
-// - levels: The number of levels to search. More levels means more precise, but slower.
-// Outputs:
-// - The refined position.
-static void local_refine(float& x, float& y, float& best_cost,
-                         const float* ux, const float* uy,
-                         const float* r_meas, const float* weights,
-                         int n, float Lx, float Ly,
-                         float step0 = 120.0f, int levels = 4) {
-    static const float dirs[][2] = { // 8 directions to search in.
-        {1,0},{-1,0},{0,1},{0,-1},
-        {1,1},{1,-1},{-1,1},{-1,-1}
-    };
-
-    float step = step0;
-    for (int level = 0; level < levels; level++) {
-        bool improved = true;
-        while (improved) {
-            improved = false;
-            for (const auto& d : dirs) { // Iterate over all directions and search in each direction.
-                float xn = std::min(std::max(x + d[0] * step, 0.0f), Lx); // The new x coordinate after the step.
-                float yn = std::min(std::max(y + d[1] * step, 0.0f), Ly); // The new y coordinate after the step.
-                float c = score_pose(xn, yn, ux, uy, r_meas, weights, n, Lx, Ly); // Score the new position.
-                if (c < best_cost) { // Only save the best position so far.
-                    x = xn;
-                    y = yn;
-                    best_cost = c;
-                    improved = true;
-                }
-            }
-        }
-        step *= 0.5f; // Halve the step size for the next level.
-    }
-}
-
-// Coarse grid over the entire pitch. Used if current position is unknown or has low confidence.
-// After the wide grid search, the best position is refined using the local search.
-// Inputs:
-// - x, y: The position to refine.
-// - best_cost: The best cost found so far.
-// - ux, uy: The unit vectors of the rays.
-// - r_meas: The measured distances of the rays.
-// - weights: Per-ray weights derived from quality values.
-// - n: The number of rays.
-// - Lx, Ly: The dimensions of the pitch.
-// Outputs:
-// - The approximate position.
-static void global_search(float& x, float& y, float& best_cost,
-                          const float* ux, const float* uy,
-                          const float* r_meas, const float* weights,
-                          int n, float Lx, float Ly) {
-    const int nx = 9, ny = 7; // 9x7 grid of points to test over the entire pitch.
-    best_cost = 1e30f; // Initialize the best cost found so far to a very large number.
-    x = Lx * 0.5f; // Start in the center of the pitch.
-    y = Ly * 0.5f; // Start in the center of the pitch.
-
-    for (int ix = 0; ix < nx; ix++) {
-        for (int iy = 0; iy < ny; iy++) {
-            float cx = Lx * ix / (nx - 1); // The x coordinate of the current point.
-            float cy = Ly * iy / (ny - 1); // The y coordinate of the current point.
-            float c = score_pose(cx, cy, ux, uy, r_meas, weights, n, Lx, Ly); // Score the current point.
-            if (c < best_cost) { // Only save the best position so far.
-                best_cost = c;
-                x = cx;
-                y = cy;
-            }
-        }
-    }
-
-    local_refine(x, y, best_cost, ux, uy, r_meas, weights, n, Lx, Ly); // Refine the best position using the local search.
-}
-
-// ===========================================================================
-// Driver helpers
-// ===========================================================================
+static constexpr float MIN_RANGE_MM = 80.0f;
+static constexpr float MAX_RANGE_MM = 6000.0f;
+static constexpr int MIN_BEAM_QUALITY = 5;
 
 static void release_driver_resources() {
     if (g_driver) {
@@ -466,10 +61,6 @@ static void release_driver_resources() {
         g_channel = nullptr;
     }
 }
-
-// ===========================================================================
-// Scan thread
-// ===========================================================================
 
 static void scan_thread_func() {
     sl_lidar_response_measurement_node_hq_t nodes[8192];
@@ -489,7 +80,7 @@ static void scan_thread_func() {
 
                 int quality = nodes[i].quality
                               >> SL_LIDAR_RESP_MEASUREMENT_QUALITY_SHIFT;
-                if (quality < 5) continue;
+                if (quality < MIN_BEAM_QUALITY) continue;
 
                 ScanPoint pt;
                 pt.angle_deg = (nodes[i].angle_z_q14 * 90.0f) / 16384.0f;
@@ -509,127 +100,38 @@ static void scan_thread_func() {
     }
 }
 
-// ===========================================================================
-// Coordinate estimation thread
-// ===========================================================================
-
-// Main loop for coordinate estimation.
-static void coord_thread_func() {
-    std::vector<float> ux, uy, r_meas, weights; // Unit vectors of the rays, measured distances, and weights.
-
-    while (g_coord_running.load()) {
-        // Wait for scan data to be ready.
+static void localization_thread_func() {
+    while (g_loc_running.load()) {
         if (!g_scan_ready.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
 
-        // Snapshot scan data
         std::vector<ScanPoint> scan_copy;
         {
             std::lock_guard<std::mutex> lock(g_data_mutex);
             scan_copy = g_latest_scan;
         }
 
-        // Skips if no scan data is available.
         if (scan_copy.empty()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
 
-        float yaw = g_yaw_deg.load(); // Get the current yaw. Is set from python.
-        float psi = yaw * (float)(M_PI / 180.0); // Convert the yaw to radians.
-
-        // Convert local beams to world-frame unit vectors
-        ux.clear();
-        uy.clear();
-        r_meas.clear();
-        weights.clear();
-
-        // Calculates the unit vectors and measured distances for each ray in the scan.
-        for (const auto& pt : scan_copy) {
-            if (pt.distance_mm < MIN_RANGE_MM ||
-                pt.distance_mm > MAX_RANGE_MM)
-                continue;
-            if (pt.quality < MIN_BEAM_QUALITY) continue;
-
-            float a = pt.angle_deg * (float)(M_PI / 180.0);
-            float theta = psi + a;
-            ux.push_back(std::cos(theta));
-            uy.push_back(std::sin(theta));
-            r_meas.push_back(pt.distance_mm);
-
-            // Calculates the weight of the ray. Used to scale the ray's contribution to total cost based on quality.
-            float w = (float)(pt.quality - MIN_BEAM_QUALITY) / 30.0f;
-            if (w > 1.0f) w = 1.0f; // Clamp the weight to 1.0.
-            weights.push_back(w);
+        std::vector<LocScanPoint> loc_scan(scan_copy.size());
+        for (size_t i = 0; i < scan_copy.size(); i++) {
+            loc_scan[i].angle_deg = scan_copy[i].angle_deg;
+            loc_scan[i].distance_mm = scan_copy[i].distance_mm;
+            loc_scan[i].quality = scan_copy[i].quality;
         }
 
-        int n = (int)ux.size();
-        if (n < MIN_BEAM_COUNT) { // Skips if not enough rays are available.
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-            continue;
-        }
-
-        const float* ux_p = ux.data();
-        const float* uy_p = uy.data();
-        const float* r_p  = r_meas.data();
-        const float* w_p  = weights.data();
-        float Lx = g_pitch_x, Ly = g_pitch_y;
-
-        float x, y, cost;
-        float conf;
-
-        if (g_has_prev_pose) { // If a previous position is available, use the local search to refine it.
-            x = g_prev_x;
-            y = g_prev_y;
-            cost = score_pose(x, y, ux_p, uy_p, r_p, w_p, n, Lx, Ly);
-            local_refine(x, y, cost, ux_p, uy_p, r_p, w_p, n, Lx, Ly);
-
-            PoseStats stats = compute_stats(x, y, ux_p, uy_p, r_p, n, Lx, Ly);
-            conf = compute_confidence(stats);
-
-            if (conf < CONF_THRESHOLD) { // If the confidence is too low, use the global search to find the best position.
-                global_search(x, y, cost, ux_p, uy_p, r_p, w_p, n, Lx, Ly);
-                stats = compute_stats(x, y, ux_p, uy_p, r_p, n, Lx, Ly);
-                conf = compute_confidence(stats);
-            }
-        } else { // If no previous position is available, use the global search first to find the best approximate position.
-            global_search(x, y, cost, ux_p, uy_p, r_p, w_p, n, Lx, Ly);
-            PoseStats stats = compute_stats(x, y, ux_p, uy_p, r_p, n, Lx, Ly);
-            conf = compute_confidence(stats);
-        }
-
-        bool ok = conf >= CONF_THRESHOLD; // Checks if the confidence is high enough to use.
-        std::vector<std::pair<float, float>> other_bots;
-        if (ok) {
-            g_prev_x = x;
-            g_prev_y = y;
-            g_has_prev_pose = true;
-            other_bots = detect_other_bot_positions(x, y, ux_p, uy_p, r_p, n, Lx, Ly);
-        }
-
-        {
-            std::lock_guard<std::mutex> lock(g_coord_mutex);
-            g_latest_coord = {x, y, conf, ok};
-            if (ok) { // Only update the good position if the confidence is high enough.
-                g_good_x = x;
-                g_good_y = y;
-                g_has_good_coord = true;
-            }
-            g_latest_other_bots = std::move(other_bots);
-            g_coord_ready.store(true);
-        }
+        loc_update_scan(loc_scan.data(), (int)loc_scan.size(),
+                        MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY);
 
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 
-// ===========================================================================
-// Init / shutdown
-// ===========================================================================
-
-// NOTE: Call this early as the lidar gets more accurate after spinning a while.
 static bool init_lidar(const std::string& port, int baudrate) {
     if (g_driver != nullptr) {
         throw std::runtime_error(
@@ -682,12 +184,12 @@ static bool init_lidar(const std::string& port, int baudrate) {
 }
 
 static void shutdown_lidar() {
-    // Stop coordinate thread first (it reads scan data).
-    if (g_coord_running.load()) {
-        g_coord_running.store(false);
-        if (g_coord_thread.joinable()) {
-            g_coord_thread.join();
+    if (g_loc_running.load()) {
+        g_loc_running.store(false);
+        if (g_loc_thread.joinable()) {
+            g_loc_thread.join();
         }
+        loc_stop();
     }
 
     if (g_driver == nullptr) {
@@ -711,21 +213,8 @@ static void shutdown_lidar() {
         g_scan_ready.store(false);
     }
 
-    {
-        std::lock_guard<std::mutex> lock(g_coord_mutex);
-        g_latest_coord = {-1, -1, 0, false};
-        g_has_good_coord = false;
-        g_latest_other_bots.clear();
-        g_coord_ready.store(false);
-    }
-    g_has_prev_pose = false;
-
     printf("LIDAR shutdown complete\n");
 }
-
-// ===========================================================================
-// Scan query functions
-// ===========================================================================
 
 static bool is_initialized() {
     return g_driver != nullptr && g_running.load();
@@ -830,103 +319,62 @@ static int get_scan_count() {
     return (int)g_latest_scan.size();
 }
 
-// ===========================================================================
-// Coordinate estimation Python bindings
-// ===========================================================================
-
 static void start_coordinates(float pitch_x, float pitch_y) {
-    if (g_coord_running.load()) {
-        throw std::runtime_error(
-            "Coordinate estimation already running.");
+    if (g_loc_running.load()) {
+        throw std::runtime_error("Localization already running.");
     }
-    g_pitch_x = pitch_x;
-    g_pitch_y = pitch_y;
-    g_static_segments.clear();
 
-    // Outer pitch boundaries as finite segments.
-    g_static_segments.push_back({0.0f, 0.0f, pitch_x, 0.0f});
-    g_static_segments.push_back({pitch_x, 0.0f, pitch_x, pitch_y});
-    g_static_segments.push_back({pitch_x, pitch_y, 0.0f, pitch_y});
-    g_static_segments.push_back({0.0f, pitch_y, 0.0f, 0.0f});
+    loc_init_map(pitch_x, pitch_y);
+    loc_start();
 
-    // Goal hardware segments (matches simulate.py GOAL_LINES geometry).
-    g_static_segments.push_back({GOAL_LEFT_FRONT_X, GOAL_TOP_Y, 0.0f, GOAL_TOP_Y});
-    g_static_segments.push_back({GOAL_LEFT_BACK_X, GOAL_TOP_Y, GOAL_LEFT_BACK_X, GOAL_BACK_BOTTOM_Y});
-    g_static_segments.push_back({0.0f, GOAL_BOTTOM_Y, GOAL_LEFT_FRONT_X, GOAL_BOTTOM_Y});
-    g_static_segments.push_back({GOAL_RIGHT_FRONT_X, GOAL_TOP_Y, pitch_x, GOAL_TOP_Y});
-    g_static_segments.push_back({GOAL_RIGHT_BACK_X, GOAL_TOP_Y, GOAL_RIGHT_BACK_X, GOAL_BACK_BOTTOM_Y});
-    g_static_segments.push_back({pitch_x, GOAL_BOTTOM_Y, GOAL_RIGHT_FRONT_X, GOAL_BOTTOM_Y});
-
-    g_has_prev_pose = false;
-    g_has_good_coord = false;
-    {
-        std::lock_guard<std::mutex> lock(g_coord_mutex);
-        g_latest_other_bots.clear();
-    }
-    g_coord_ready.store(false);
-
-    g_coord_running.store(true);
-    g_coord_thread = std::thread(coord_thread_func);
-    printf("Coordinate estimation started (pitch %.0f x %.0f mm)\n",
-           pitch_x, pitch_y);
+    g_loc_running.store(true);
+    g_loc_thread = std::thread(localization_thread_func);
+    printf("MCL localization started (pitch %.0f x %.0f mm)\n", pitch_x, pitch_y);
 }
 
-static void set_yaw(float yaw_deg) {
-    g_yaw_deg.store(yaw_deg);
+static void predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s) {
+    loc_predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s);
 }
 
-// Returns (x, y) of last confident estimate, or (None, None).
+static py::tuple get_pose_py() {
+    LocPose pose = loc_get_pose();
+    if (!pose.ok) {
+        return py::make_tuple(py::none(), py::none(), py::none(), pose.confidence);
+    }
+    return py::make_tuple(pose.x, pose.y, pose.yaw_deg, pose.confidence);
+}
+
 static py::tuple get_coordinates_py() {
-    std::lock_guard<std::mutex> lock(g_coord_mutex);
-    if (!g_has_good_coord) {
+    LocPose pose = loc_get_pose();
+    if (!pose.ok) {
         return py::make_tuple(py::none(), py::none());
     }
-    return py::make_tuple(g_good_x, g_good_y);
+    return py::make_tuple(pose.x, pose.y);
 }
 
-// Returns (x, y, confidence, ok) of the last confident position.
 static py::tuple get_coordinates_info_py() {
-    std::lock_guard<std::mutex> lock(g_coord_mutex);
-    if (!g_has_good_coord) {
-        return py::make_tuple(py::none(), py::none(),
-                              g_latest_coord.confidence,
-                              g_latest_coord.ok);
+    LocPose pose = loc_get_pose();
+    if (!pose.ok) {
+        return py::make_tuple(py::none(), py::none(), py::none(),
+                              pose.confidence, pose.ok);
     }
-    return py::make_tuple(g_good_x, g_good_y,
-                          g_latest_coord.confidence,
-                          g_latest_coord.ok);
-}
-
-static py::list get_other_bot_positions_py() {
-    std::lock_guard<std::mutex> lock(g_coord_mutex);
-    py::list result;
-    for (const auto& bot : g_latest_other_bots) {
-        result.append(py::make_tuple(bot.first, bot.second));
-    }
-    return result;
+    return py::make_tuple(pose.x, pose.y, pose.yaw_deg, pose.confidence, pose.ok);
 }
 
 static bool is_coordinates_ready() {
-    std::lock_guard<std::mutex> lock(g_coord_mutex);
-    return g_has_good_coord;
+    return loc_is_ready();
 }
 
-// ===========================================================================
-// Python module definition
-// ===========================================================================
-
 PYBIND11_MODULE(lidar, m) {
-    m.doc() = "RPLidar C1 Python module — real-time scan data and "
-              "coordinate estimation";
+    m.doc() = "RPLidar C1 Python module — scan data and MCL localization";
 
-    // --- lifecycle ---
     m.def("init", &init_lidar,
           py::arg("port") = "/dev/ttyUSB0",
           py::arg("baudrate") = 460800,
           "Initialize the LIDAR. Call once at startup.");
 
     m.def("shutdown", &shutdown_lidar,
-          "Shutdown the LIDAR and coordinate estimation.");
+          "Shutdown the LIDAR and localization.");
 
     m.def("is_initialized", &is_initialized,
           "Check if LIDAR is initialized and running.");
@@ -934,19 +382,15 @@ PYBIND11_MODULE(lidar, m) {
     m.def("is_scan_ready", &is_scan_ready,
           "Check if at least one scan has been captured.");
 
-    // --- raw scan access ---
     m.def("get_scan_numpy", &get_scan_numpy,
-          "Get latest scan as numpy array (Nx3: angle_deg, distance_mm, "
-          "quality).");
+          "Get latest scan as numpy array (Nx3: angle_deg, distance_mm, quality).");
 
     m.def("get_scan_list", &get_scan_list,
-          "Get latest scan as list of (angle_deg, distance_mm, quality) "
-          "tuples.");
+          "Get latest scan as list of (angle_deg, distance_mm, quality) tuples.");
 
     m.def("get_distance_at_angle", &get_distance_at_angle,
           py::arg("angle"),
-          "Get distance (mm) at closest angle to target. Returns -1 if "
-          "no reading.");
+          "Get distance (mm) at closest angle to target. Returns -1 if no reading.");
 
     m.def("get_sector_distances", &get_sector_distances,
           py::arg("num_sectors") = 8,
@@ -955,27 +399,24 @@ PYBIND11_MODULE(lidar, m) {
     m.def("get_scan_count", &get_scan_count,
           "Get number of points in latest scan.");
 
-    // --- coordinate estimation ---
     m.def("start_coordinates", &start_coordinates,
           py::arg("pitch_x"), py::arg("pitch_y"),
-          "Start background coordinate estimation thread. "
-          "pitch_x/pitch_y are field dimensions in mm.");
+          "Start background MCL localization thread.");
 
-    m.def("set_yaw", &set_yaw,
-          py::arg("yaw_deg"),
-          "Update robot yaw (degrees, 0 = facing +X). "
-          "Called each frame from the control loop.");
+    m.def("predict_odometry", &predict_odometry,
+          py::arg("vx_mm_s"), py::arg("vy_mm_s"),
+          py::arg("omega_deg_s"), py::arg("dt_s"),
+          "Propagate the particle filter between LIDAR scans.");
+
+    m.def("get_pose", &get_pose_py,
+          "Get (x, y, yaw_deg, confidence) from MCL.");
 
     m.def("get_coordinates", &get_coordinates_py,
-          "Get (x, y) of the last confident position estimate, "
-          "or (None, None) if unavailable.");
+          "Get (x, y) of the last confident pose, or (None, None).");
 
     m.def("get_coordinates_info", &get_coordinates_info_py,
-          "Get (x, y, confidence, ok) — last confident (x, y) with latest confidence and ok flag.");
-
-    m.def("get_other_bot_positions", &get_other_bot_positions_py,
-          "Get clustered positions of likely other bots detected from scan outliers.");
+          "Get (x, y, yaw_deg, confidence, ok).");
 
     m.def("is_coordinates_ready", &is_coordinates_ready,
-          "True once at least one confident position has been computed.");
+          "True once at least one confident pose has been computed.");
 }

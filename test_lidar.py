@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Test script for LIDAR coordinate estimation (lidar_module).
+Test script for LIDAR MCL localization (lidar_module).
 
-Connects to the LIDAR, starts coordinate estimation, and prints the bot's (x, y)
-coordinates. Runs continuously until interrupted with Ctrl+C.
+Connects to the LIDAR, starts localization, and prints the bot's (x, y, yaw).
+Runs continuously until interrupted with Ctrl+C.
 """
 
 import sys
@@ -18,12 +18,10 @@ LIDAR_BAUDRATE = 460800
 
 
 def main():
-    yaw = float(sys.argv[1]) if len(sys.argv) > 1 else 0.0
-
-    print("LIDAR coordinate test")
+    print("LIDAR localization test")
     print("=" * 40)
     print(f"Port: {LIDAR_PORT}, baud: {LIDAR_BAUDRATE}")
-    print(f"Pitch: {PITCH_X} x {PITCH_Y} mm, yaw: {yaw}°")
+    print(f"Pitch: {PITCH_X} x {PITCH_Y} mm")
     print()
 
     try:
@@ -38,20 +36,19 @@ def main():
     print("Scan ready.")
 
     lidar.start_coordinates(PITCH_X, PITCH_Y)
-    lidar.set_yaw(yaw)
 
-    print("Waiting for first coordinate estimate...")
+    print("Waiting for first pose estimate...")
     while not lidar.is_coordinates_ready():
         time.sleep(0.1)
-    print("Coordinates ready. Printing (Ctrl+C to stop):\n")
+    print("Pose ready. Printing (Ctrl+C to stop):\n")
 
     try:
         while True:
-            x, y = lidar.get_coordinates()
-            if x is not None and y is not None:
-                print(f"x = {x:.1f} mm, y = {y:.1f} mm")
+            x, y, yaw, confidence = lidar.get_pose()
+            if x is not None and y is not None and yaw is not None:
+                print(f"x = {x:.1f} mm, y = {y:.1f} mm, yaw = {yaw:.1f}°, conf = {confidence:.2f}")
             else:
-                print("x = None, y = None (no confident estimate)")
+                print("No confident pose")
             time.sleep(0.1)
     except KeyboardInterrupt:
         print("\nInterrupted by user")

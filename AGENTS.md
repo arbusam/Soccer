@@ -29,30 +29,30 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 - Yaw correction uses `yaw_error = wrap_angle_deg(rotation - yaw)`, so positive error means "turn clockwise to match the target heading". The requested yaw RPM is limited to `max_yaw_rpm`, then the translation RPMs are scaled down if needed to leave headroom for that yaw correction while preserving the requested movement direction.
 - With diameter 50 mm: `mmps_to_rpm ≈ 0.382`. Example: speed 500, `direction = yaw = 0` gives `local_direction = 45°`, which corresponds to local forward in the current wheel basis.
 
-## LIDAR coordinate estimation (`lidar_module.cpp`)
+## LIDAR localization (`lidar_module.cpp` + `localisation.cpp`)
 
-**Problem:** The old Python `get_coordinates(yaw)` used fixed 90° angle sectors to assign LIDAR rays to walls. Near corners or edges, rays in one sector would hit the wrong wall, producing bad position estimates.
+**Solution — 3-DOF Monte Carlo localization (MCL) in C++:**
 
-**Solution — robust scan-to-rectangle fitting (C++ background thread):**
-
-- For a candidate position `(x, y)`, every LIDAR ray is intersected with the four pitch walls using ray–line math. The wall each ray hits is determined geometrically per candidate pose, not by fixed angle sectors.
-- Predicted range is compared to measured range using a Cauchy robust loss, so outliers (ball, other robots, reflections) are automatically downweighted.
-- **Local refinement:** derivative-free coarse-to-fine 8-direction search around the previous pose. Fast (~1 ms).
-- **Global search:** 9×7 grid over the whole pitch, then local refinement of the best seed. Used on cold start or when confidence drops (e.g. robot picked up and moved). Slower (~5–10 ms in C++) but runs rarely.
-- **Confidence:** computed from inlier ratio + MAD of inlier residuals. If confidence drops below threshold after local refine, global search is triggered automatically.
-- All estimation runs in a dedicated background thread; the Python loop just reads the latest result.
+- Particles track `(x, y, yaw)` on the known pitch map (walls + goal hardware segments).
+- Each LIDAR scan reweights particles using per-ray Gaussian log-likelihood with a 3σ cap.
+- Systematic resampling after each scan; random particle injection on weight collapse for kidnap recovery.
+- `predict_odometry(vx, vy, omega, dt)` propagates particles between scans (call from Python each control loop). Pass IMU gyro z as `omega_deg_s` (clockwise positive); leave `vx`/`vy` at 0 until wheel odometry exists.
+- Estimation runs in a background thread; Python reads the latest pose.
 
 **Python API:**
 
 1. `lidar.init(port, baudrate)` — start scan thread.
-2. `lidar.start_coordinates(pitch_x, pitch_y)` — start coordinate estimation thread.
-3. `lidar.set_yaw(yaw_deg)` — update yaw each frame (0 = facing +X).
-4. `lidar.get_coordinates()` → `(x, y)` or `(None, None)` — last confident estimate.
-5. `lidar.get_coordinates_info()` → `(x, y, confidence, ok)` — diagnostics.
-6. `lidar.is_coordinates_ready()` → `bool` — true once first good estimate exists.
-7. `lidar.shutdown()` — stops coordinate thread, scan thread, and motor.
+2. `lidar.start_coordinates(pitch_x, pitch_y)` — start MCL thread and build pitch map.
+3. `lidar.predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s)` — propagate particles between scans.
+4. `lidar.get_pose()` → `(x, y, yaw_deg, confidence)` — last estimate (None if not confident).
+5. `lidar.get_coordinates()` → `(x, y)` — backward-compatible confident position only.
+6. `lidar.get_coordinates_info()` → `(x, y, yaw_deg, confidence, ok)` — diagnostics.
+7. `lidar.is_coordinates_ready()` → `bool` — true once first confident pose exists.
+8. `lidar.shutdown()` — stops localization, scan thread, and motor.
 
-**Rebuild after changing `lidar_module.cpp`:** `python setup.py build_ext --inplace`
+**IMU gyro in MCL predict:** `imu.py` enables `BNO_REPORT_GYROSCOPE` and exposes `get_gyro_z_deg_s()` (clockwise positive in project frame). `main.py` passes this as `omega_deg_s` to `predict_odometry(0, 0, omega, dt)` each control loop. The IMU is upside down; positive `gyro_z` from the sensor matches clockwise rotation in the project heading frame. Absolute IMU yaw is not fused into MCL yet — only gyro in the predict step.
+
+**Rebuild after changing `lidar_module.cpp` or `localisation.cpp`:** `python setup.py build_ext --inplace`
 
 **Build error `cannot find -lsl_lidar_sdk` / g++ exit code 1:** The Python extension links against the RPLidar SDK static library. If `rplidar_sdk/output/Linux/Release/` does not exist or has no `libsl_lidar_sdk.a`, build the SDK first: `make -C rplidar_sdk/sdk`. Then run `python setup.py build_ext --inplace` again.
 

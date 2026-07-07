@@ -19,7 +19,7 @@ sdk_lib = "./rplidar_sdk/output/Linux/Release"
 # Define the extension module
 lidar_module = Extension(
     'lidar',
-    sources=['lidar_module.cpp'],
+    sources=['lidar_module.cpp', 'localisation.cpp'],
     include_dirs=[
         pybind11_include,
         sdk_include,
