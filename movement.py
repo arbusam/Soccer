@@ -421,6 +421,84 @@ def global_velocity_to_body_mm_s(global_vx, global_vy, yaw_deg):
     return body_vx, body_vy
 
 
+WHEEL_SPEED_SLIP_MIN_MM_S = 50.0
+SLIP_RATIO_THRESHOLD = 0.5
+LIDAR_VELOCITY_MAX_AGE_S = 0.15
+LIDAR_VELOCITY_MIN_DT_S = 0.02
+LIDAR_POSE_UPDATE_MIN_MM = 2.0
+
+
+class LidarVelocityEstimator:
+    """Estimate body velocity from successive confident LIDAR pose updates.
+
+    Velocity is smoothed in the global (field) frame, which does not rotate
+    with the robot, so consecutive samples can be safely blended even when
+    yaw changes between updates. The result is converted to the body frame
+    on read using the caller's current yaw.
+    """
+
+    def __init__(self, smoothing=0.3):
+        self._smoothing = smoothing
+        self._last_x = None
+        self._last_y = None
+        self._last_time = None
+        self._global_vx = 0.0
+        self._global_vy = 0.0
+        self._last_update_time = None
+
+    def update(self, x, y, yaw, now):
+        """Record a new pose sample and refresh the smoothed global velocity."""
+        if self._last_x is None:
+            self._last_x = x
+            self._last_y = y
+            self._last_time = now
+            return
+
+        dt = now - self._last_time
+        if dt < LIDAR_VELOCITY_MIN_DT_S:
+            return
+
+        delta_mm = math.hypot(x - self._last_x, y - self._last_y)
+        if delta_mm < LIDAR_POSE_UPDATE_MIN_MM:
+            return
+
+        global_vx = (x - self._last_x) / dt
+        global_vy = (y - self._last_y) / dt
+
+        alpha = self._smoothing
+        self._global_vx = alpha * global_vx + (1.0 - alpha) * self._global_vx
+        self._global_vy = alpha * global_vy + (1.0 - alpha) * self._global_vy
+        self._last_update_time = now
+        self._last_x = x
+        self._last_y = y
+        self._last_time = now
+
+    def get_body_velocity(self, yaw_deg):
+        """Return the smoothed velocity in the body frame for the given yaw."""
+        return global_velocity_to_body_mm_s(self._global_vx, self._global_vy, yaw_deg)
+
+    def is_fresh(self, now):
+        if self._last_update_time is None:
+            return False
+        return (now - self._last_update_time) <= LIDAR_VELOCITY_MAX_AGE_S
+
+
+def compute_wheel_odometry_trust(wheel_vx, wheel_vy, lidar_vx, lidar_vy, lidar_fresh):
+    """Return 0..1 trust in wheel translation velocity based on LIDAR agreement."""
+    if not lidar_fresh:
+        return 1.0
+
+    wheel_speed = math.hypot(wheel_vx, wheel_vy)
+    if wheel_speed < WHEEL_SPEED_SLIP_MIN_MM_S:
+        return 1.0
+
+    lidar_speed = math.hypot(lidar_vx, lidar_vy)
+    slip_ratio = abs(wheel_speed - lidar_speed) / wheel_speed
+    if slip_ratio >= SLIP_RATIO_THRESHOLD:
+        return 0.0
+    return 1.0 - (slip_ratio / SLIP_RATIO_THRESHOLD)
+
+
 def stop_all_motors(motors):
     """Set speed to 0 on all non-None motors. Call on exit to avoid runaway motors."""
     for index, m in enumerate(motors):

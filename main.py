@@ -8,7 +8,12 @@ import lidar
 import switch
 import defence
 from imu import IMU
-from movement import MotorCommunicationError, MovementController
+from movement import (
+    LidarVelocityEstimator,
+    MotorCommunicationError,
+    MovementController,
+    compute_wheel_odometry_trust,
+)
 from camera import Camera
 from kicker import Kicker
 from tof import ToF
@@ -134,6 +139,7 @@ try:
     last_camera_frame_id = camera.frame_id
     last_pose_time = time.monotonic()
     last_mcl_yaw = None
+    lidar_velocity = LidarVelocityEstimator()
 
     while True:
         if pause_switch.read():
@@ -160,10 +166,24 @@ try:
             vx, vy = 0.0, 0.0
             if movement_controller is not None:
                 yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
-                vx, vy = movement_controller.get_measured_body_velocity_mm_s(yaw_for_odom)
+                vx_wheel, vy_wheel = movement_controller.get_measured_body_velocity_mm_s(
+                    yaw_for_odom
+                )
+                lidar_vx, lidar_vy = lidar_velocity.get_body_velocity(yaw_for_odom)
+                trust = compute_wheel_odometry_trust(
+                    vx_wheel,
+                    vy_wheel,
+                    lidar_vx,
+                    lidar_vy,
+                    lidar_velocity.is_fresh(now_pose),
+                )
+                vx = trust * vx_wheel
+                vy = trust * vy_wheel
             lidar.predict_odometry(vx, vy, omega, dt_pose)
 
             x_pos, y_pos, yaw, _confidence = lidar.get_pose()
+            if x_pos is not None and y_pos is not None and yaw is not None:
+                lidar_velocity.update(x_pos, y_pos, yaw, now_pose)
             if yaw is not None:
                 last_mcl_yaw = yaw
             if x_pos is None or y_pos is None or yaw is None:
