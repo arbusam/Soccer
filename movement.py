@@ -219,8 +219,16 @@ class MovementController:
         _set_motor_speed(drive_motors[2], c_val, 2)
         _set_motor_speed(drive_motors[3], d_val, 3)
 
+    def get_measured_body_velocity_mm_s(self, yaw_deg):
+        """Estimate robot-body translation speed (mm/s) from measured wheel RPMs."""
+        drive_motors = self.motors[:4]
+        rpms = read_wheel_rpms(drive_motors)
+        wheel_mm_s = wheel_rpms_to_linear_mm_s(rpms, self.diameter)
+        return measured_wheel_speeds_to_body_velocity_mm_s(wheel_mm_s, yaw_deg)
+
     def stop(self):
         """Set speed to 0 on all owned motors."""
+        self.current_speed = 0.0
         for index, motor in enumerate(self.motors):
             if motor is not None:
                 _set_motor_speed(motor, 0, index, ignore_errors=True)
@@ -355,6 +363,63 @@ def _calculate_drive_rpms(
         _clamp(rpm - yaw_correction_rpm, -max_rpm, max_rpm)
         for rpm in translation_rpms
     )
+
+
+def read_wheel_rpms(motors):
+    """Read the current speed of each drive motor in RPM."""
+    rpms = []
+    for motor in motors:
+        if motor is None:
+            rpms.append(0.0)
+            continue
+        motor.update_quick_data_readout()
+        if hasattr(motor, "get_speed_QDR"):
+            speed_units = motor.get_speed_QDR()
+        else:
+            speed_units = motor.get_qdr_speed()
+        rpms.append(speed_units / RPM_TO_MOTOR_SPEED)
+    return rpms
+
+
+def wheel_rpms_to_linear_mm_s(rpms, diameter):
+    """Convert wheel RPM values to linear speeds at the wheel contact point."""
+    mm_per_rev = math.pi * diameter
+    return [rpm * mm_per_rev / 60.0 for rpm in rpms]
+
+
+def measured_wheel_speeds_to_body_velocity_mm_s(wheel_mm_s, yaw_deg):
+    """Invert X-drive translation kinematics into body-frame (vx forward, vy left).
+
+    Rotation adds the same speed to all four wheels while the translation
+    multipliers sum to zero, so subtracting the mean removes the rotation
+    component using measurements only.
+    """
+    if len(wheel_mm_s) < 4:
+        return 0.0, 0.0
+
+    rotation_mm_s = sum(wheel_mm_s[:4]) / 4.0
+    corrected = [speed - rotation_mm_s for speed in wheel_mm_s[:4]]
+    sin_term = (corrected[2] - corrected[0]) * 0.5
+    cos_term = (corrected[3] - corrected[1]) * 0.5
+    translation_speed = math.hypot(sin_term, cos_term)
+    if translation_speed < 1e-3:
+        return 0.0, 0.0
+
+    local_direction_rad = math.atan2(sin_term, cos_term)
+    direction_deg = wrap_angle_deg(yaw_deg - math.degrees(local_direction_rad) + 45.0)
+    direction_rad = math.radians(direction_deg)
+    global_vx = translation_speed * math.cos(direction_rad)
+    global_vy = translation_speed * math.sin(direction_rad)
+    return global_velocity_to_body_mm_s(global_vx, global_vy, yaw_deg)
+
+
+def global_velocity_to_body_mm_s(global_vx, global_vy, yaw_deg):
+    """Convert a global-frame velocity into body-frame (vx forward, vy left)."""
+    yaw_rad = math.radians(yaw_deg)
+    body_vx = global_vx * math.cos(yaw_rad) + global_vy * math.sin(yaw_rad)
+    body_vy = -global_vx * math.sin(yaw_rad) + global_vy * math.cos(yaw_rad)
+    return body_vx, body_vy
+
 
 def stop_all_motors(motors):
     """Set speed to 0 on all non-None motors. Call on exit to avoid runaway motors."""

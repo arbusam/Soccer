@@ -133,6 +133,7 @@ try:
     last_ball_y = None
     last_camera_frame_id = camera.frame_id
     last_pose_time = time.monotonic()
+    last_mcl_yaw = None
 
     while True:
         if pause_switch.read():
@@ -156,9 +157,15 @@ try:
                 gyro_z = imu.get_gyro_z_deg_s()
                 if gyro_z is not None:
                     omega = gyro_z
-            lidar.predict_odometry(0.0, 0.0, omega, dt_pose)
+            vx, vy = 0.0, 0.0
+            if movement_controller is not None:
+                yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
+                vx, vy = movement_controller.get_measured_body_velocity_mm_s(yaw_for_odom)
+            lidar.predict_odometry(vx, vy, omega, dt_pose)
 
             x_pos, y_pos, yaw, _confidence = lidar.get_pose()
+            if yaw is not None:
+                last_mcl_yaw = yaw
             if x_pos is None or y_pos is None or yaw is None:
                 time.sleep(0.01)
                 continue
