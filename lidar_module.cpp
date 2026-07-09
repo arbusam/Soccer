@@ -10,16 +10,13 @@
 
 #include <cstdio>
 #include <cmath>
-#include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <mutex>
 #include <thread>
 #include <vector>
 #include <stdexcept>
 
 #include "localisation.h"
-#include "sl_lidar.h"
 #include "sl_lidar_driver.h"
 
 namespace py = pybind11;

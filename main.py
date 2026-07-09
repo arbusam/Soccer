@@ -26,7 +26,7 @@ TOF_ADDRESS = 0x50
 LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
-MAX_MOTOR_RPM = 400 # Maximum rpm that the wheels can spin at
+MAX_MOTOR_RPM = 1000  # Max translation ~2618 mm/s at 50 mm wheels; driver hardware max ~1984 RPM (~5194 mm/s)
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000

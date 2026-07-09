@@ -5,6 +5,7 @@ __pycache__/
 
 # C extensions
 *.so
+compile_commands.json
 
 # Distribution / packaging
 .Python
@@ -210,3 +211,5 @@ __marimo__/
 lidar_visualizer
 calibration_data.json
 ball_distance_calibration.json
+
+.vscode/

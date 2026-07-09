@@ -1,8 +1,6 @@
 #ifndef LOCALISATION_H
 #define LOCALISATION_H
 
-#include <cstddef>
-
 struct LocScanPoint {
     float angle_deg;
     float distance_mm;

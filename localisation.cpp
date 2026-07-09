@@ -6,10 +6,6 @@
 #include <random>
 #include <vector>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 struct Segment {
     float x1;
     float y1;
@@ -35,18 +31,19 @@ static LocPose g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
 static bool g_started = false;
 static bool g_ready = false;
 
-static constexpr float COORD_SIGMA = 30.0f;
-static constexpr float COORD_EPS = 1e-9f;
-static constexpr float INLIER_THRESH = 80.0f;
-static constexpr float CONF_THRESHOLD = 0.35f;
-static constexpr int PARTICLE_COUNT = 1000;
-static constexpr int MIN_BEAM_COUNT = 30;
-static constexpr int RAY_STRIDE = 2;
-static constexpr float TRANS_NOISE_MM = 8.0f;
-static constexpr float YAW_NOISE_DEG = 2.0f;
-static constexpr float RECOVERY_FRACTION = 0.05f;
-static constexpr float RECOVERY_WEIGHT_THRESHOLD = 1e-12f;
+static constexpr float COORD_SIGMA = 30.0f; // Standard deviation for coordinate error (mm)
+static constexpr float COORD_EPS = 1e-9f; // Epsilon for coordinate error (mm)
+static constexpr float INLIER_THRESH = 80.0f; // Inlier threshold (mm) Any ray with error less than this is considered an inlier, and is ignored.
+static constexpr float CONF_THRESHOLD = 0.35f; // Confidence threshold for pose estimation. If the confidence is less than this, the pose is not considered valid.
+static constexpr int PARTICLE_COUNT = 1000; // Number of particles to use for pose estimation.
+static constexpr int MIN_BEAM_COUNT = 30; // Minimum number of beams to use for pose estimation.
+static constexpr int RAY_STRIDE = 2; // Stride for ray casting.
+static constexpr float TRANS_NOISE_MM = 8.0f; // Standard deviation for translation noise (mm).
+static constexpr float YAW_NOISE_DEG = 2.0f; // Standard deviation for yaw noise (deg).
+static constexpr float RECOVERY_FRACTION = 0.05f; // Fraction of particles to inject when resampling.
+static constexpr float RECOVERY_WEIGHT_THRESHOLD = 1e-12f; // Threshold for resampling. If the weight sum is less than this, the particles are resampled.
 
+// Physical goal walls
 static constexpr float GOAL_LEFT_BACK_X = 226.0f;
 static constexpr float GOAL_RIGHT_BACK_X = 2204.0f;
 static constexpr float GOAL_LEFT_FRONT_X = 300.0f;

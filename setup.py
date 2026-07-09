@@ -5,8 +5,13 @@ Usage:
     python setup.py build_ext --inplace
 """
 
-from setuptools import setup, Extension
+import json
+import sysconfig
+from pathlib import Path
+
 import pybind11
+from setuptools import Extension, setup
+from setuptools.command.build_ext import build_ext
 
 # Get pybind11 include path
 pybind11_include = pybind11.get_include()
@@ -31,10 +36,43 @@ lidar_module = Extension(
     language='c++',
 )
 
+
+class BuildExtWithCompileCommands(build_ext):
+    """Build the extension and emit compile_commands.json for IDE/clangd."""
+
+    def build_extensions(self):
+        super().build_extensions()
+        root = Path(__file__).resolve().parent
+        python_include = sysconfig.get_path("include")
+        commands = []
+        for ext in self.extensions:
+            compile_flags = list(ext.extra_compile_args or [])
+            for include_dir in ext.include_dirs:
+                compile_flags.append(f"-I{include_dir}")
+            compile_flags.append(f"-I{python_include}")
+            for source in ext.sources:
+                source_path = Path(source)
+                if not source_path.is_absolute():
+                    source_path = root / source_path
+                commands.append(
+                    {
+                        "directory": str(root),
+                        "command": " ".join(
+                            ["g++", *compile_flags, "-c", source_path.name]
+                        ),
+                        "file": str(source_path),
+                    }
+                )
+        (root / "compile_commands.json").write_text(
+            json.dumps(commands, indent=2) + "\n"
+        )
+
+
 setup(
     name='lidar',
     version='1.0',
     description='RPLidar C1 Python module',
     ext_modules=[lidar_module],
+    cmdclass={'build_ext': BuildExtWithCompileCommands},
 )
 
