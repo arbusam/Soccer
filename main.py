@@ -5,7 +5,9 @@ import select
 import sys
 import math
 import threading
+from pathlib import Path
 import lidar
+import striker
 import switch
 import defence
 from imu import IMU
@@ -33,24 +35,59 @@ MAX_MOTOR_RPM = 1000  # Max translation ~2618 mm/s at 50 mm wheels; driver hardw
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000
-I2C_ADDRESSES = [28, 32, 31, 30]
 
 BALL_CAPTURED_DISTANCE = 27 # mm, distance from the ToF to the ball to consider it captured
 BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
+
+CONFIG_PATH = Path(__file__).resolve().parent / "config.txt"
+
 
 class BotMode(Enum):
     DEFENCE = 1
     GOALIE = 2
     STRIKER = 3
 
-bot_mode = BotMode.DEFENCE
+
+def load_config(path: Path = CONFIG_PATH) -> tuple[list[int], BotMode, BotMode]:
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Missing {path.name}. Copy example_config.txt to config.txt and edit as needed."
+        )
+
+    values: dict[str, str] = {}
+    with path.open(encoding="utf-8") as config_file:
+        for raw_line in config_file:
+            line = raw_line.split("#", 1)[0].strip()
+            if not line or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            values[key.strip().lower()] = value.strip()
+
+    try:
+        i2c_addresses = [int(part.strip()) for part in values["i2c_addresses"].split(",")]
+    except (KeyError, ValueError) as exc:
+        raise ValueError(
+            f"{path.name}: i2c_addresses must be a comma-separated list of integers"
+        ) from exc
+
+    valid_modes = ", ".join(mode.name for mode in BotMode)
+
+    def parse_mode(key: str) -> BotMode:
+        try:
+            return BotMode[values[key].upper()]
+        except KeyError as exc:
+            raise ValueError(
+                f"{path.name}: {key} must be one of: {valid_modes}"
+            ) from exc
+
+    return i2c_addresses, parse_mode("mode_switch_off"), parse_mode("mode_switch_on")
+
+
+I2C_ADDRESSES, MODE_SWITCH_OFF, MODE_SWITCH_ON = load_config()
+
 mode_switch = switch.Switch(board.D16)
 pause_switch = switch.Switch(board.D21)
-if mode_switch.read():
-    bot_mode = BotMode.GOALIE
-else:
-    bot_mode = BotMode.DEFENCE
-print(bot_mode)
+bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
 
 run = False
 
@@ -281,7 +318,7 @@ try:
             else:
                 ball_captured = False
             if bot_mode == BotMode.DEFENCE:
-                direction, speed, rotation, steering_state, kick = defence.defence(
+                direction, speed, rotation, steering_state, kick, dribbler = defence.defence(
                     x_pos,
                     y_pos,
                     yaw,
@@ -292,8 +329,17 @@ try:
                     friendly_bot_positions=[],
                     enemy_bot_positions=[],
                 )
-            else:
-                direction, speed, rotation, kick = defence.goalie(
+            elif bot_mode == BotMode.STRIKER:
+                direction, speed, rotation, steering_state, kick, dribbler = striker.striker(
+                    x_pos,
+                    y_pos,
+                    yaw,
+                    ball_x,
+                    ball_y,
+                    ball_captured,
+                )
+            elif bot_mode == BotMode.GOALIE:
+                direction, speed, rotation, kick, dribbler = defence.goalie(
                     x_pos,
                     y_pos,
                     yaw,
@@ -318,6 +364,7 @@ try:
                     speed,
                     rotation,
                     kick,
+                    dribbler,
                 ]
                 log_line = ",".join(
                     "None" if value is None else str(value) for value in log_values
@@ -329,15 +376,12 @@ try:
             if kick:
                 kicker.kick()
             try:
-                movement_controller.move(direction, speed, rotation, 1.0, yaw)
+                movement_controller.move(direction, speed, rotation, 1.0, yaw, dribbler)
             except MotorCommunicationError as exc:
                 print(exc)
                 raise
         else:
-            if mode_switch.read():
-                bot_mode = BotMode.GOALIE
-            else:
-                bot_mode = BotMode.DEFENCE
+            bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
             time.sleep(0.01)
             if movement_controller is not None:
                 movement_controller.stop()

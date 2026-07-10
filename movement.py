@@ -13,7 +13,11 @@ i2c = busio.I2C(board.SCL, board.SDA)
 # Conversion factor from RPM to motor speed units.
 # Formula: rpm * 7 (pole pairs) * 36 (36:1 gear ratio) / 60 (seconds per minute) / 2^-16 (electrical revolutions per second)
 RPM_TO_MOTOR_SPEED = 275251.2
-SMOOTHING_TIME = 0.30 # seconds, time to smooth the direction change
+MAX_VELOCITY_CHANGE_PER_SEC = 8000.0 # Max change in movement vector per second (mm/s/s)
+
+DRIBBLER_RPM = 1000
+DRIBBLER_MOTOR_SPEED = int(DRIBBLER_RPM * RPM_TO_MOTOR_SPEED)
+MAX_MOTORS = 8
 
 
 class MotorCommunicationError(RuntimeError):
@@ -80,13 +84,12 @@ def get_motors_for_calibration(i2c_addresses):
         quit()
 
     motor_count = len(normalized_addresses)
-    # Max of 4 motors
-    if motor_count == 0 or motor_count > 4:
+    # motors[0:4] = drive wheels; motors[4] = optional dribbler
+    if motor_count == 0 or motor_count > MAX_MOTORS:
         print("Error motor count out of range, please reboot microcontroller to try again.")
         quit()
 
-    # Creates an empty array of length 4
-    motors = [None] * 4
+    motors = [None] * motor_count
 
     # Creates a motor driver object for each address (PowerfulBLDCDriver)
     for setup_motor_count, address in enumerate(normalized_addresses):
@@ -113,7 +116,7 @@ def get_motors_for_calibration(i2c_addresses):
 def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
     """Initialises the motors and returns the motor objects and motor modes"""
     motors, motor_count, normalized_addresses = get_motors_for_calibration(i2c_addresses)
-    motor_modes = [None] * 4
+    motor_modes = [None] * motor_count
 
     # Loads the calibration data from the file. Calibration file is created by running calibrate.py
     cal_data = _load_calibration_data(calibration_file)
@@ -121,7 +124,7 @@ def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
     if len(cal_data["motors"]) < motor_count:
         print(f"Error: calibration file has {len(cal_data['motors'])} motor(s), but {motor_count} motor(s) were requested.")
         quit()
-    # Sets the calibration constants to each motor
+    # Sets the calibration constants to each motor (drive wheels and optional dribbler)
     for setup_motor_count in range(motor_count):
         motor_cal = cal_data["motors"][setup_motor_count]
         motors[setup_motor_count].set_ELECANGLEOFFSET(motor_cal["elecangleoffset"])
@@ -176,26 +179,37 @@ class MovementController:
             yaw_correct_threshold,
         )
 
-    def move(self, direction, speed, rotation, rotation_speed, yaw):
+    def move(self, direction, speed, rotation, rotation_speed, yaw, dribbler=False):
         """Move using the controller's configured motors and drive limits."""
         drive_motors = self.motors[:4]
         if any(motor is None for motor in drive_motors):
             raise ValueError("MovementController.move() requires 4 initialized drive motors in motors[0:4].")
-        if self.current_direction != direction or self.current_speed != speed:
-            dx = math.cos(math.radians(self.current_direction)) * self.current_speed
-            dy = math.sin(math.radians(self.current_direction)) * self.current_speed
 
-            target_dx = math.cos(math.radians(direction)) * speed
-            target_dy = math.sin(math.radians(direction)) * speed
+        dx = math.cos(math.radians(self.current_direction)) * self.current_speed
+        dy = math.sin(math.radians(self.current_direction)) * self.current_speed
 
-            dt = time.monotonic() - self.last_update_time
-            self.last_update_time = time.monotonic()
+        target_dx = math.cos(math.radians(direction)) * speed
+        target_dy = math.sin(math.radians(direction)) * speed
 
-            new_dx = dx + ((target_dx - dx) / SMOOTHING_TIME) * dt
-            new_dy = dy + ((target_dy - dy) / SMOOTHING_TIME) * dt
+        now = time.monotonic()
+        dt = now - self.last_update_time
+        self.last_update_time = now
 
-            self.current_direction = math.degrees(math.atan2(new_dy, new_dx))
-            self.current_speed = math.hypot(new_dx, new_dy)
+        delta_dx = target_dx - dx
+        delta_dy = target_dy - dy
+        delta_magnitude = math.hypot(delta_dx, delta_dy)
+
+        max_step = MAX_VELOCITY_CHANGE_PER_SEC * dt
+        if delta_magnitude > max_step and delta_magnitude > 0.0:
+            scale = max_step / delta_magnitude
+            delta_dx *= scale
+            delta_dy *= scale
+
+        new_dx = dx + delta_dx
+        new_dy = dy + delta_dy
+
+        self.current_direction = math.degrees(math.atan2(new_dy, new_dx))
+        self.current_speed = math.hypot(new_dx, new_dy)
 
         a_speed, b_speed, c_speed, d_speed = _calculate_drive_rpms(
             self.current_direction,
@@ -218,6 +232,10 @@ class MovementController:
         _set_motor_speed(drive_motors[1], b_val, 1)
         _set_motor_speed(drive_motors[2], c_val, 2)
         _set_motor_speed(drive_motors[3], d_val, 3)
+
+        if len(self.motors) > 4 and self.motors[4] is not None:
+            dribbler_speed = DRIBBLER_MOTOR_SPEED if dribbler else 0
+            _set_motor_speed(self.motors[4], dribbler_speed, 4, ignore_errors=True)
 
     def get_measured_body_velocity_mm_s(self, yaw_deg):
         """Estimate robot-body translation speed (mm/s) from measured wheel RPMs."""
@@ -510,7 +528,7 @@ def _prompt_i2c_addresses():
     """Gets i2c addresses from the user."""
     print("Please enter the number of motor drivers you want to control:")
     tempuint32 = int(input())
-    if tempuint32 == 0 or tempuint32 > 8:
+    if tempuint32 == 0 or tempuint32 > MAX_MOTORS:
         print("Error motor count out of range, please reboot microcontroller to try again.")
         quit()
 

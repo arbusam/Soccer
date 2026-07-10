@@ -74,6 +74,7 @@ def defence(
     friendly_bot_positions=None,
     enemy_bot_positions=None,
 ):
+    dribbler = False # Whether the dribbler should be on.
     if friendly_bot_positions is None:
         friendly_bot_positions = []
     if enemy_bot_positions is None:
@@ -88,7 +89,7 @@ def defence(
         rotation = 0
         steering = False
         kick = False
-        return direction, speed, rotation, steering, kick
+        return direction, speed, rotation, steering, kick, dribbler
     # Ensure the steering input is a boolean.
     steering = bool(steering_state)
     # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
@@ -142,7 +143,7 @@ def defence(
                 if target_y_min <= y_hit <= target_y_max:
                     kick = True
 
-    return direction + offset, speed, rotation, steering, kick
+    return direction + offset, speed, rotation, steering, kick, dribbler
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -168,6 +169,7 @@ def goalie(
     friendly_bot_positions=None,
     enemy_bot_positions=None,
 ):
+    dribbler = False # Whether the dribbler should be on.
     if friendly_bot_positions is None:
         friendly_bot_positions = []
     if enemy_bot_positions is None:
@@ -180,7 +182,7 @@ def goalie(
         speed = 600
         rotation = 0
         kick = False
-        return direction, speed, rotation, kick
+        return direction, speed, rotation, kick, dribbler
     vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = None
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
@@ -247,4 +249,4 @@ def goalie(
                 speed = 0
             direction = math.degrees(math.atan2(dif_y, dif_x))
 
-    return direction, speed, rotation, kick
+    return direction, speed, rotation, kick, dribbler

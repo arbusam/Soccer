@@ -20,7 +20,7 @@ parser = argparse.ArgumentParser(
     epilog=(
         "Game log format: "
         "x_pos,y_pos,yaw,ball_x,ball_y,"
-        "ball_captured,bot_mode,steering_state,direction,speed,rotation,kick"
+        "ball_captured,bot_mode,steering_state,direction,speed,rotation,kick,dribbler"
         "[,bot1_x,bot1_y,...]"
     ),
 )
@@ -251,6 +251,7 @@ CONTROLLER_LOG_FIELDS = (
     "speed",
     "rotation",
     "kick",
+    "dribbler",
 )
 CONTROLLER_LOG_START = 5
 CONTROLLER_LOG_END = CONTROLLER_LOG_START + len(CONTROLLER_LOG_FIELDS)
@@ -292,6 +293,13 @@ def parse_log_frame(tokens: Sequence[str]) -> Optional[dict]:
     controller = None
     other_start = 5
     if has_controller_log_fields(tokens):
+        dribbler = None
+        other_start = CONTROLLER_LOG_END - 1
+        if len(tokens) > CONTROLLER_LOG_END - 1:
+            dribbler_raw = parse_optional_bool(tokens[CONTROLLER_LOG_END - 1])
+            if dribbler_raw is not None:
+                dribbler = dribbler_raw
+                other_start = CONTROLLER_LOG_END
         controller = {
             "ball_captured": parse_optional_bool(tokens[5]),
             "bot_mode": tokens[6].strip() if tokens[6].strip().lower() != "none" else None,
@@ -300,8 +308,8 @@ def parse_log_frame(tokens: Sequence[str]) -> Optional[dict]:
             "speed": parse_optional_float(tokens[9]),
             "rotation": parse_optional_float(tokens[10]),
             "kick": parse_optional_bool(tokens[11]),
+            "dribbler": dribbler,
         }
-        other_start = CONTROLLER_LOG_END
 
     other_bots = []
     for i in range(other_start, len(tokens), 2):
@@ -597,7 +605,7 @@ def manual_control_from_keys(keys, current_yaw):
 YAW_CORRECT_PIXELS_PER_S = YAW_CORRECT_SPEED / MM_PER_PIXEL
 
 # Game log format:
-# x_pos,y_pos,yaw,ball_x,ball_y,ball_captured,bot_mode,steering_state,direction,speed,rotation,kick[,bot1_x,bot1_y,...]
+# x_pos,y_pos,yaw,ball_x,ball_y,ball_captured,bot_mode,steering_state,direction,speed,rotation,kick,dribbler[,bot1_x,bot1_y,...]
 
 def normalize_angle_deg(angle):
     return angle % 360
@@ -1202,6 +1210,7 @@ class LogControllerDebug:
         ("rotation", "Rotation"),
         ("steering_state", "Steering (out)"),
         ("kick", "Kick"),
+        ("dribbler", "Dribbler"),
     )
 
     def __init__(self, master: tk.Misc):
@@ -1284,6 +1293,7 @@ class LogControllerDebug:
         self.values["rotation"].set(format_log_value(controller.get("rotation")))
         self.values["steering_state"].set(format_log_value(controller.get("steering_state")))
         self.values["kick"].set(format_log_value(controller.get("kick")))
+        self.values["dribbler"].set(format_log_value(controller.get("dribbler")))
         other_bots = frame.get("other_bots") or []
         if not other_bots:
             self._other_bots_var.set("—")

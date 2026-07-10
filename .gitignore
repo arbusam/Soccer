@@ -211,5 +211,6 @@ __marimo__/
 lidar_visualizer
 calibration_data.json
 ball_distance_calibration.json
+config.txt
 
 .vscode/

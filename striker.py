@@ -81,6 +81,7 @@ def striker(
 
     # By default, the bot should not kick the ball.
     kick = False
+    dribbler = False # Whether the dribbler should be on.
 
     # Only kick if the ball is captured and lined up with the goal.
     # Kicks ball into goal when it's close to the goal
@@ -106,10 +107,7 @@ def striker(
         dir_x = math.cos(yaw_rad)
         dir_y = math.sin(yaw_rad)
         epsilon = 1e-6
-
         
-
-
         if abs(dir_x) > epsilon and dist_to_goal < 500:
             t = (target_x - ball_x) / dir_x
             if t >= 0:
@@ -117,4 +115,4 @@ def striker(
                 if target_y_min <= y_hit <= target_y_max:
                     kick = True
 
-    return direction + offset, speed, rotation, steering, kick
+    return direction + offset, speed, rotation, steering, kick, dribbler
