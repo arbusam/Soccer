@@ -4,6 +4,7 @@ import time
 import select
 import sys
 import math
+import threading
 import lidar
 import switch
 import defence
@@ -18,6 +19,8 @@ from camera import Camera
 from kicker import Kicker
 from tof import ToF
 from enum import Enum
+
+LOG_FPS = 30
 
 WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
@@ -52,13 +55,19 @@ print(bot_mode)
 run = False
 
 parser = argparse.ArgumentParser(
-    description="Run defence controller with optional live websocket streaming."
+    description="Run defence controller with optional live streaming and log recording."
 )
 parser.add_argument(
     "-s",
     "--stream",
     action="store_true",
     help="Enable websocket live log streaming for simulate.py --connect.",
+)
+parser.add_argument(
+    "-l",
+    "--save-log",
+    metavar="PATH",
+    help=f"Write game log lines to PATH at {LOG_FPS} FPS for playback with simulate.py.",
 )
 args = parser.parse_args()
 
@@ -67,6 +76,51 @@ if args.stream:
     # Start websocket log server in the background (it runs its own asyncio loop).
     send_log.start_server_background()
     time.sleep(0.05)
+
+log_recorder_stop = threading.Event()
+log_recorder_thread = None
+_latest_log_line = None
+_latest_log_lock = threading.Lock()
+
+
+def update_latest_log_snapshot(log_line: str) -> None:
+    global _latest_log_line
+    with _latest_log_lock:
+        _latest_log_line = log_line
+
+
+def _log_recorder_loop(path: str) -> None:
+    interval = 1.0 / LOG_FPS
+    next_write = time.monotonic()
+    try:
+        with open(path, "w", encoding="utf-8") as log_file_handle:
+            while not log_recorder_stop.is_set():
+                now = time.monotonic()
+                if now < next_write:
+                    time.sleep(min(next_write - now, 0.005))
+                    continue
+                next_write += interval
+                if next_write < now:
+                    # Avoid catch-up bursts after a stall.
+                    next_write = now + interval
+                with _latest_log_lock:
+                    line = _latest_log_line
+                if line is not None:
+                    log_file_handle.write(line + "\n")
+                    log_file_handle.flush()
+    except Exception as exc:
+        print(f"Warning: log recorder stopped with error: {exc}")
+
+
+if args.save_log is not None:
+    log_recorder_thread = threading.Thread(
+        target=_log_recorder_loop,
+        args=(args.save_log,),
+        daemon=True,
+        name="log-recorder",
+    )
+    log_recorder_thread.start()
+    print(f"Saving game log to {args.save_log} at {LOG_FPS} FPS")
 
 camera = None
 kicker = None
@@ -226,11 +280,6 @@ try:
                 ball_y = y_pos + 150 * math.sin(math.radians(yaw))
             else:
                 ball_captured = False
-            if args.stream:
-                log_values = [x_pos, y_pos, yaw, ball_x, ball_y]
-                send_log.update_latest_log(
-                    ",".join("None" if value is None else str(value) for value in log_values)
-                )
             if bot_mode == BotMode.DEFENCE:
                 direction, speed, rotation, steering_state, kick = defence.defence(
                     x_pos,
@@ -254,6 +303,29 @@ try:
                     friendly_bot_positions=[],
                     enemy_bot_positions=[],
                 )
+                steering_state = False
+            if args.stream or log_recorder_thread is not None:
+                log_values = [
+                    x_pos,
+                    y_pos,
+                    yaw,
+                    ball_x,
+                    ball_y,
+                    ball_captured,
+                    bot_mode.name,
+                    steering_state,
+                    direction,
+                    speed,
+                    rotation,
+                    kick,
+                ]
+                log_line = ",".join(
+                    "None" if value is None else str(value) for value in log_values
+                )
+                if args.stream:
+                    send_log.update_latest_log(log_line)
+                if log_recorder_thread is not None:
+                    update_latest_log_snapshot(log_line)
             if kick:
                 kicker.kick()
             try:
@@ -271,6 +343,9 @@ try:
                 movement_controller.stop()
 
 finally:
+    if log_recorder_thread is not None:
+        log_recorder_stop.set()
+        log_recorder_thread.join(timeout=1.0)
     if movement_controller is not None:
         try:
             movement_controller.stop()

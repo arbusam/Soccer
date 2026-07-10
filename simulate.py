@@ -5,6 +5,7 @@ import sys
 from dataclasses import dataclass, field
 import asyncio
 import threading
+import tkinter as tk
 from typing import Callable, List, Optional, Sequence
 
 import pygame
@@ -18,7 +19,9 @@ parser = argparse.ArgumentParser(
     description="Visualize a simulated match from a log file.",
     epilog=(
         "Game log format: "
-        "x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,..."
+        "x_pos,y_pos,yaw,ball_x,ball_y,"
+        "ball_captured,bot_mode,steering_state,direction,speed,rotation,kick"
+        "[,bot1_x,bot1_y,...]"
     ),
 )
 parser.add_argument(
@@ -203,6 +206,7 @@ clock = pygame.time.Clock()
 # Adjust this constant based on real-world pitch dimensions
 MM_PER_PIXEL = 1.0  # Default: 1mm per pixel (adjust as needed)
 FPS = 120
+LOG_FPS = 30  # Matches main.py --save-log recording rate
 
 BOT_RADIUS = ROBOT_RADIUS
 BOT_MIN_X = BOT_RADIUS
@@ -224,6 +228,98 @@ def parse_optional_float(token: Optional[str]) -> Optional[float]:
         return float(token)
     except (TypeError, ValueError):
         return None
+
+
+def parse_optional_bool(token: Optional[str]) -> Optional[bool]:
+    if token is None:
+        return None
+    token = token.strip().lower()
+    if token == "" or token == "none":
+        return None
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+CONTROLLER_LOG_FIELDS = (
+    "ball_captured",
+    "bot_mode",
+    "steering_state",
+    "direction",
+    "speed",
+    "rotation",
+    "kick",
+)
+CONTROLLER_LOG_START = 5
+CONTROLLER_LOG_END = CONTROLLER_LOG_START + len(CONTROLLER_LOG_FIELDS)
+
+
+def has_controller_log_fields(tokens: Sequence[str]) -> bool:
+    if len(tokens) < CONTROLLER_LOG_END:
+        return False
+    mode = tokens[CONTROLLER_LOG_START + 1].strip().upper()
+    if mode in {"DEFENCE", "GOALIE", "STRIKER"}:
+        return True
+    return parse_optional_bool(tokens[CONTROLLER_LOG_START]) is not None
+
+
+def format_log_value(value) -> str:
+    if value is None:
+        return "—"
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    return str(value)
+
+
+def parse_log_frame(tokens: Sequence[str]) -> Optional[dict]:
+    """Parse one CSV log line into pose / ball / optional controller fields."""
+    if len(tokens) < 3:
+        return None
+
+    x_raw = parse_optional_float(tokens[0])
+    y_raw = parse_optional_float(tokens[1])
+    yaw_raw = parse_optional_float(tokens[2])
+    if x_raw is None or y_raw is None or yaw_raw is None:
+        return None
+
+    ball_x_raw = parse_optional_float(tokens[3]) if len(tokens) > 3 else None
+    ball_y_raw = parse_optional_float(tokens[4]) if len(tokens) > 4 else None
+
+    controller = None
+    other_start = 5
+    if has_controller_log_fields(tokens):
+        controller = {
+            "ball_captured": parse_optional_bool(tokens[5]),
+            "bot_mode": tokens[6].strip() if tokens[6].strip().lower() != "none" else None,
+            "steering_state": parse_optional_bool(tokens[7]),
+            "direction": parse_optional_float(tokens[8]),
+            "speed": parse_optional_float(tokens[9]),
+            "rotation": parse_optional_float(tokens[10]),
+            "kick": parse_optional_bool(tokens[11]),
+        }
+        other_start = CONTROLLER_LOG_END
+
+    other_bots = []
+    for i in range(other_start, len(tokens), 2):
+        bot_x_raw = parse_optional_float(tokens[i])
+        bot_y_raw = parse_optional_float(tokens[i + 1]) if i + 1 < len(tokens) else None
+        if bot_x_raw is None or bot_y_raw is None:
+            continue
+        other_bots.append((int(bot_x_raw), int(bot_y_raw)))
+
+    return {
+        "x_pos": int(x_raw),
+        "y_pos": int(y_raw),
+        "yaw": float(yaw_raw),
+        "ball_x": int(ball_x_raw) if ball_x_raw is not None else None,
+        "ball_y": int(ball_y_raw) if ball_y_raw is not None else None,
+        "controller": controller,
+        "other_bots": other_bots,
+    }
 
 
 @dataclass
@@ -500,7 +596,8 @@ def manual_control_from_keys(keys, current_yaw):
 # Precompute per-second values for reuse; per-frame scaling uses actual dt.
 YAW_CORRECT_PIXELS_PER_S = YAW_CORRECT_SPEED / MM_PER_PIXEL
 
-# Game log format: x_pos,y_pos,yaw,ball_x,ball_y,bot1_x,bot1_y,bot2_x,bot2_y,...
+# Game log format:
+# x_pos,y_pos,yaw,ball_x,ball_y,ball_captured,bot_mode,steering_state,direction,speed,rotation,kick[,bot1_x,bot1_y,...]
 
 def normalize_angle_deg(angle):
     return angle % 360
@@ -1061,43 +1158,276 @@ def start_log_client(addr, stop_event):
     return thread
 
 def render_line(line_data):
-    tokens = list(line_data)
-    if len(tokens) < 3:
-        return
+    frame = parse_log_frame(line_data)
+    if frame is None:
+        return None
 
-    x_raw = parse_optional_float(tokens[0])
-    y_raw = parse_optional_float(tokens[1])
-    yaw_raw = parse_optional_float(tokens[2])
-
-    if x_raw is None or y_raw is None or yaw_raw is None:
-        return
-
-    x_pos = int(x_raw)
-    y_pos = int(y_raw)
-    yaw = float(yaw_raw)
-
-    ball_x_raw = parse_optional_float(tokens[3]) if len(tokens) > 3 else None
-    ball_y_raw = parse_optional_float(tokens[4]) if len(tokens) > 4 else None
-    ball_x = int(ball_x_raw) if ball_x_raw is not None else CENTRE_POINT[0]
-    ball_y = int(ball_y_raw) if ball_y_raw is not None else CENTRE_POINT[1]
-
-    bots = []
-    for i in range(5, len(tokens), 2):
-        bot_x_raw = parse_optional_float(tokens[i])
-        bot_y_raw = parse_optional_float(tokens[i + 1]) if i + 1 < len(tokens) else None
-        if bot_x_raw is None or bot_y_raw is None:
-            continue
-        bots.append((int(bot_x_raw), int(bot_y_raw)))
+    ball_x = frame["ball_x"] if frame["ball_x"] is not None else CENTRE_POINT[0]
+    ball_y = frame["ball_y"] if frame["ball_y"] is not None else CENTRE_POINT[1]
 
     render_bots = [
-        {"x": x_pos, "y": y_pos, "yaw": yaw, "color": yellow, "draw_geometry": True}
+        {
+            "x": frame["x_pos"],
+            "y": frame["y_pos"],
+            "yaw": frame["yaw"],
+            "color": yellow,
+            "draw_geometry": True,
+        }
     ]
     render_bots.extend(
         {"x": bot_x, "y": bot_y, "yaw": None, "color": cyan, "draw_geometry": False}
-        for bot_x, bot_y in bots
+        for bot_x, bot_y in frame["other_bots"]
     )
     frame_pitch = build_frame(ball_x, ball_y, render_bots)
     blit_frame(frame_pitch)
+    return frame
+
+
+class LogControllerDebug:
+    """Separate window showing controller inputs/outputs for the current log frame."""
+
+    INPUT_ROWS = (
+        ("x_pos", "X"),
+        ("y_pos", "Y"),
+        ("yaw", "Yaw"),
+        ("ball_x", "Ball X"),
+        ("ball_y", "Ball Y"),
+        ("ball_captured", "Ball captured"),
+        ("bot_mode", "Bot mode"),
+        ("steering_state_in", "Steering (in)"),
+    )
+    OUTPUT_ROWS = (
+        ("direction", "Direction"),
+        ("speed", "Speed"),
+        ("rotation", "Rotation"),
+        ("steering_state", "Steering (out)"),
+        ("kick", "Kick"),
+    )
+
+    def __init__(self, master: tk.Misc):
+        self.window = tk.Toplevel(master)
+        self.window.title("Controller Debug")
+        self.window.resizable(True, True)
+        self.closed = False
+        self.window.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self.values: dict[str, tk.StringVar] = {}
+        self._build_section("Inputs", self.INPUT_ROWS, row=0)
+        self._build_section("Outputs", self.OUTPUT_ROWS, row=1)
+        self._other_bots_frame = tk.LabelFrame(
+            self.window, text="Other bots", padx=10, pady=8
+        )
+        self._other_bots_frame.grid(row=2, column=0, sticky="nsew", padx=10, pady=8)
+        self.window.rowconfigure(2, weight=1)
+        self._other_bots_var = tk.StringVar(value="—")
+        tk.Label(
+            self._other_bots_frame,
+            textvariable=self._other_bots_var,
+            anchor="nw",
+            justify="left",
+            width=28,
+        ).grid(row=0, column=0, sticky="nsew")
+        self._other_bots_frame.columnconfigure(0, weight=1)
+        self.clear()
+
+    def _build_section(self, title: str, rows: Sequence[tuple[str, str]], row: int) -> None:
+        frame = tk.LabelFrame(self.window, text=title, padx=10, pady=8)
+        frame.grid(row=row, column=0, sticky="nsew", padx=10, pady=8)
+        self.window.rowconfigure(row, weight=1)
+        self.window.columnconfigure(0, weight=1)
+        for index, (key, label) in enumerate(rows):
+            tk.Label(frame, text=label, anchor="w").grid(
+                row=index, column=0, sticky="w", padx=(0, 12), pady=2
+            )
+            var = tk.StringVar(value="—")
+            self.values[key] = var
+            tk.Label(frame, textvariable=var, anchor="w", width=18).grid(
+                row=index, column=1, sticky="ew", pady=2
+            )
+        frame.columnconfigure(1, weight=1)
+
+    def _on_close(self) -> None:
+        self.closed = True
+        try:
+            self.window.destroy()
+        except tk.TclError:
+            pass
+
+    def close(self) -> None:
+        if not self.closed:
+            self._on_close()
+
+    def clear(self) -> None:
+        for var in self.values.values():
+            var.set("—")
+        self._other_bots_var.set("—")
+
+    def update(self, frame: Optional[dict], previous_frame: Optional[dict] = None) -> None:
+        if self.closed or frame is None:
+            return
+        controller = frame.get("controller") or {}
+        previous_controller = (previous_frame or {}).get("controller") or {}
+        self.values["x_pos"].set(format_log_value(frame.get("x_pos")))
+        self.values["y_pos"].set(format_log_value(frame.get("y_pos")))
+        self.values["yaw"].set(format_log_value(frame.get("yaw")))
+        self.values["ball_x"].set(format_log_value(frame.get("ball_x")))
+        self.values["ball_y"].set(format_log_value(frame.get("ball_y")))
+        self.values["ball_captured"].set(format_log_value(controller.get("ball_captured")))
+        self.values["bot_mode"].set(format_log_value(controller.get("bot_mode")))
+        # Defence persists steering across calls; input is the previous frame's output.
+        steering_in = previous_controller.get("steering_state")
+        if steering_in is None and previous_frame is None:
+            steering_in = False
+        self.values["steering_state_in"].set(format_log_value(steering_in))
+        self.values["direction"].set(format_log_value(controller.get("direction")))
+        self.values["speed"].set(format_log_value(controller.get("speed")))
+        self.values["rotation"].set(format_log_value(controller.get("rotation")))
+        self.values["steering_state"].set(format_log_value(controller.get("steering_state")))
+        self.values["kick"].set(format_log_value(controller.get("kick")))
+        other_bots = frame.get("other_bots") or []
+        if not other_bots:
+            self._other_bots_var.set("—")
+        else:
+            self._other_bots_var.set(
+                "\n".join(
+                    f"Bot {i + 1}: ({bot_x}, {bot_y})"
+                    for i, (bot_x, bot_y) in enumerate(other_bots)
+                )
+            )
+
+
+class LogPlaybackControls:
+    """Separate tkinter window for pause / play / scrub during log playback."""
+
+    def __init__(self, frame_count: int):
+        self.frame_count = max(frame_count, 1)
+        self.frame_index = 0
+        self.playing = True
+        self.closed = False
+        self._updating_slider = False
+
+        self.root = tk.Tk()
+        self.root.title("Log Playback")
+        self.root.resizable(True, False)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self.play_button = tk.Button(
+            self.root,
+            text="Pause",
+            width=8,
+            command=self.toggle_play,
+        )
+        self.play_button.grid(row=0, column=0, padx=(12, 6), pady=12)
+
+        self.step_back_button = tk.Button(
+            self.root,
+            text="|<",
+            width=4,
+            command=lambda: self.seek(self.frame_index - 1),
+        )
+        self.step_back_button.grid(row=0, column=1, padx=3, pady=12)
+
+        self.step_forward_button = tk.Button(
+            self.root,
+            text=">|",
+            width=4,
+            command=lambda: self.seek(self.frame_index + 1),
+        )
+        self.step_forward_button.grid(row=0, column=2, padx=3, pady=12)
+
+        self.slider = tk.Scale(
+            self.root,
+            from_=0,
+            to=self.frame_count - 1,
+            orient=tk.HORIZONTAL,
+            length=420,
+            showvalue=False,
+            command=self._on_slider,
+        )
+        self.slider.grid(row=0, column=3, padx=6, pady=12, sticky="ew")
+        self.slider.bind("<ButtonPress-1>", self._on_scrub_start)
+        self.slider.bind("<ButtonRelease-1>", self._on_scrub_end)
+
+        self.status_label = tk.Label(self.root, text="", width=16, anchor="e")
+        self.status_label.grid(row=0, column=4, padx=(6, 12), pady=12)
+
+        self.root.columnconfigure(3, weight=1)
+        self._was_playing_before_scrub = False
+        self._scrubbing = False
+        self._refresh_status()
+
+    def _on_close(self) -> None:
+        self.closed = True
+        try:
+            self.root.destroy()
+        except tk.TclError:
+            pass
+
+    def close(self) -> None:
+        if not self.closed:
+            self._on_close()
+
+    def _on_scrub_start(self, _event=None) -> None:
+        self._scrubbing = True
+        self._was_playing_before_scrub = self.playing
+        self.playing = False
+        self._refresh_play_button()
+
+    def _on_scrub_end(self, _event=None) -> None:
+        self._scrubbing = False
+        self.playing = self._was_playing_before_scrub
+        self._refresh_play_button()
+
+    def _on_slider(self, value: str) -> None:
+        if self._updating_slider:
+            return
+        self.seek(int(float(value)), update_slider=False)
+
+    def _refresh_play_button(self) -> None:
+        self.play_button.config(text="Pause" if self.playing else "Play")
+
+    def _refresh_status(self) -> None:
+        self.status_label.config(
+            text=f"{self.frame_index + 1} / {self.frame_count}"
+        )
+
+    def toggle_play(self) -> None:
+        if self.frame_index >= self.frame_count - 1 and not self.playing:
+            self.seek(0)
+        self.playing = not self.playing
+        self._refresh_play_button()
+
+    def seek(self, index: int, update_slider: bool = True) -> None:
+        self.frame_index = max(0, min(int(index), self.frame_count - 1))
+        if update_slider:
+            self._updating_slider = True
+            try:
+                self.slider.set(self.frame_index)
+            finally:
+                self._updating_slider = False
+        self._refresh_status()
+
+    def advance_if_playing(self) -> None:
+        if not self.playing or self._scrubbing:
+            return
+        if self.frame_index >= self.frame_count - 1:
+            self.playing = False
+            self._refresh_play_button()
+            return
+        self.seek(self.frame_index + 1)
+
+    def pump(self) -> bool:
+        """Process UI events. Returns False if the control window was closed."""
+        if self.closed:
+            return False
+        try:
+            self.root.update_idletasks()
+            self.root.update()
+        except tk.TclError:
+            self.closed = True
+            return False
+        return not self.closed
+
 
 if args.connect:
     log_client_stop_event.clear()
@@ -1117,14 +1447,45 @@ if args.connect:
     pygame.quit()
     exit()
 elif log_provided:
-    for line in lines:
+    frames = [line.strip().split(",") for line in lines if line.strip()]
+    if not frames:
+        print(f"Log file '{args.log_file}' has no frames to play back.")
+        pygame.quit()
+        sys.exit(1)
+
+    pygame.display.set_caption("Soccer Log Playback")
+    controls = LogPlaybackControls(len(frames))
+    debug = LogControllerDebug(controls.root)
+    last_debug_index = None
+    running = True
+    while running:
+        if not controls.pump():
+            break
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
-                pygame.quit()
-                exit()
-        line_data = line.strip().split(",")
-        render_line(line_data)
-        clock.tick(FPS)
+                running = False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE:
+                    controls.toggle_play()
+                elif event.key == pygame.K_LEFT:
+                    controls.seek(controls.frame_index - 1)
+                elif event.key == pygame.K_RIGHT:
+                    controls.seek(controls.frame_index + 1)
+        controls.advance_if_playing()
+        frame_index = controls.frame_index
+        if frame_index != last_debug_index:
+            frame = render_line(frames[frame_index])
+            previous = (
+                parse_log_frame(frames[frame_index - 1]) if frame_index > 0 else None
+            )
+            debug.update(frame, previous)
+            last_debug_index = frame_index
+        clock.tick(LOG_FPS)
+    debug.close()
+    if not controls.closed:
+        controls.close()
+    pygame.quit()
+    sys.exit(0)
 else:
     ball_x = pitch.get_width() // 2
     ball_y = pitch.get_height() // 2
