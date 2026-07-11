@@ -18,11 +18,13 @@ from movement import (
     compute_wheel_odometry_trust,
 )
 from camera import Camera
+from communication import Peer
 from kicker import Kicker
 from tof import ToF
 from enum import Enum
 
 LOG_FPS = 30
+PEER_PORT = 5005
 
 WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
@@ -163,6 +165,7 @@ camera = None
 kicker = None
 movement_controller = None
 imu = None
+peer = None
 last_pose_time = None
 
 def enter_pressed():
@@ -219,6 +222,9 @@ try:
         MAX_MOTOR_RPM,
         YAW_CORRECT_THRESHOLD,
     )
+    peer = Peer(port=PEER_PORT)
+    peer.start()
+    print(f"Peer communication started on UDP port {PEER_PORT} (bot_id={peer.bot_id})")
     print("Press Enter to shut down.")
     steering_state = False
 
@@ -317,6 +323,36 @@ try:
                 ball_y = y_pos + 150 * math.sin(math.radians(yaw))
             else:
                 ball_captured = False
+
+            peer.send(
+                {
+                    "x": x_pos,
+                    "y": y_pos,
+                    "yaw": yaw,
+                    "mode": bot_mode.name,
+                    "ball_x": ball_x,
+                    "ball_y": ball_y,
+                }
+            )
+            peer_msg = peer.receive()
+            if (
+                peer_msg is not None
+                and peer_msg.get("x") is not None
+                and peer_msg.get("y") is not None
+            ):
+                friendly_bot_positions = [(peer_msg["x"], peer_msg["y"])]
+            else:
+                friendly_bot_positions = []
+            if (
+                ball_x is None
+                and ball_y is None
+                and peer_msg is not None
+                and peer_msg.get("ball_x") is not None
+                and peer_msg.get("ball_y") is not None
+            ):
+                ball_x = peer_msg["ball_x"]
+                ball_y = peer_msg["ball_y"]
+
             if bot_mode == BotMode.DEFENCE:
                 direction, speed, rotation, steering_state, kick, dribbler = defence.defence(
                     x_pos,
@@ -326,7 +362,7 @@ try:
                     ball_y,
                     ball_captured,
                     steering_state=steering_state,
-                    friendly_bot_positions=[],
+                    friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=[],
                 )
             elif bot_mode == BotMode.STRIKER:
@@ -346,7 +382,7 @@ try:
                     ball_x,
                     ball_y,
                     ball_captured,
-                    friendly_bot_positions=[],
+                    friendly_bot_positions=friendly_bot_positions,
                     enemy_bot_positions=[],
                 )
                 steering_state = False
@@ -390,6 +426,11 @@ finally:
     if log_recorder_thread is not None:
         log_recorder_stop.set()
         log_recorder_thread.join(timeout=1.0)
+    if peer is not None:
+        try:
+            peer.stop()
+        except Exception as exc:
+            print(f"Warning: failed to stop peer communication cleanly: {exc}")
     if movement_controller is not None:
         try:
             movement_controller.stop()

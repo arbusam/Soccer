@@ -1,123 +1,110 @@
+import json
+import secrets
 import socket
-import struct
 import threading
-from queue import Empty, Queue
+import time
 
-class Server:
-    def __init__(self, port):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.socket.bind(("0.0.0.0", port))
-        self.socket.listen(1)
-        self.socket.settimeout(0.2)
-        self.connection = None
-        self.running = False
-        self.send_queue = Queue()
-        self.accept_thread = None
-        self.send_thread = None
-
-    def start(self):
-        self.running = True
-        self.accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
-        self.send_thread = threading.Thread(target=self._send_loop, daemon=True)
-        self.accept_thread.start()
-        self.send_thread.start()
-
-    def broadcast_coordinates(self, first_value, second_value):
-        packet = struct.pack("!ii", first_value, second_value)
-        self.send_queue.put_nowait(packet)
-
-    def stop(self):
-        self.running = False
-
-        if self.connection is not None:
-            self.connection.close()
-            self.connection = None
-
-        self.socket.close()
-
-        if self.accept_thread is not None:
-            self.accept_thread.join(timeout=0.5)
-
-        if self.send_thread is not None:
-            self.send_thread.join(timeout=0.5)
-
-    def _accept_loop(self):
-        while self.running and self.connection is None:
-            try:
-                self.connection, _ = self.socket.accept()
-            except TimeoutError:
-                continue
-            except OSError:
-                return
-
-    def _send_loop(self):
-        while self.running:
-            try:
-                packet = self.send_queue.get(timeout=0.2)
-            except Empty:
-                continue
-
-            while self.running and self.connection is None:
-                threading.Event().wait(0.05)
-
-            if not self.running or self.connection is None:
-                return
-
-            try:
-                self.connection.sendall(packet)
-            except OSError:
-                self.connection = None
+DEFAULT_PORT = 5005
+DEFAULT_PEER_TIMEOUT_S = 0.5
+DEFAULT_SOCKET_TIMEOUT_S = 0.05
+BROADCAST_ADDR = "255.255.255.255"
 
 
-class Client:
-    def __init__(self, host, port):
-        self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.host = host
+class Peer:
+    """Symmetric UDP broadcast peer for bot-to-bot state sharing."""
+
+    def __init__(self, port: int = DEFAULT_PORT, peer_timeout_s: float = DEFAULT_PEER_TIMEOUT_S):
         self.port = port
-        self.running = False
-        self.receiver_thread = None
-        self.last_coordinates = None
-        self.last_coordinates_lock = threading.Lock()
+        self.peer_timeout_s = peer_timeout_s
+        self.bot_id = secrets.token_hex(8)
 
-    def start(self):
-        self.socket.connect((self.host, self.port))
-        self.socket.settimeout(0.2)
-        self.running = True
-        self.receiver_thread = threading.Thread(target=self._receive_loop, daemon=True)
-        self.receiver_thread.start()
+        self._socket: socket.socket | None = None
+        self._running = False
+        self._receive_thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._last_message: dict | None = None
+        self._last_received_at: float | None = None
 
-    def receive_coordinates(self):
-        with self.last_coordinates_lock:
-            return self.last_coordinates
+    def start(self) -> None:
+        if self._running:
+            return
 
-    def stop(self):
-        self.running = False
-        self.socket.close()
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        udp_socket.settimeout(DEFAULT_SOCKET_TIMEOUT_S)
+        udp_socket.bind(("0.0.0.0", self.port))
+        self._socket = udp_socket
 
-        if self.receiver_thread is not None:
-            self.receiver_thread.join(timeout=0.5)
+        self._running = True
+        self._receive_thread = threading.Thread(target=self._receive_loop, daemon=True)
+        self._receive_thread.start()
 
-    def _receive_loop(self):
-        expected_bytes = struct.calcsize("!ii")
-        buffer = b""
+    def stop(self) -> None:
+        self._running = False
 
-        while self.running:
+        if self._receive_thread is not None:
+            self._receive_thread.join(timeout=0.5)
+            self._receive_thread = None
+
+        if self._socket is not None:
             try:
-                chunk = self.socket.recv(expected_bytes - len(buffer))
+                self._socket.close()
+            except OSError:
+                pass
+            self._socket = None
+
+        with self._lock:
+            self._last_message = None
+            self._last_received_at = None
+
+    def send(self, payload: dict) -> None:
+        if self._socket is None:
+            return
+
+        packet = dict(payload)
+        packet["bot_id"] = self.bot_id
+        try:
+            self._socket.sendto(
+                json.dumps(packet, separators=(",", ":")).encode("utf-8"),
+                (BROADCAST_ADDR, self.port),
+            )
+        except OSError:
+            pass
+
+    def receive(self) -> dict | None:
+        with self._lock:
+            if self._last_message is None or self._last_received_at is None:
+                return None
+            if time.monotonic() - self._last_received_at > self.peer_timeout_s:
+                return None
+            return self._last_message
+
+    def _receive_loop(self) -> None:
+        while self._running:
+            if self._socket is None:
+                time.sleep(DEFAULT_SOCKET_TIMEOUT_S)
+                continue
+
+            try:
+                packet, _addr = self._socket.recvfrom(65535)
             except TimeoutError:
                 continue
             except OSError:
-                return
-
-            if not chunk:
-                return
-
-            buffer += chunk
-            if len(buffer) < expected_bytes:
+                if self._running:
+                    time.sleep(DEFAULT_SOCKET_TIMEOUT_S)
                 continue
 
-            with self.last_coordinates_lock:
-                self.last_coordinates = struct.unpack("!ii", buffer[:expected_bytes])
+            try:
+                message = json.loads(packet.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                continue
 
-            buffer = buffer[expected_bytes:]
+            if not isinstance(message, dict):
+                continue
+            if message.get("bot_id") == self.bot_id:
+                continue
+
+            with self._lock:
+                self._last_message = message
+                self._last_received_at = time.monotonic()
