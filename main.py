@@ -25,6 +25,7 @@ from enum import Enum
 
 LOG_FPS = 30
 PEER_PORT = 5005
+ENABLE_COMMUNICATION = False
 
 WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
@@ -222,9 +223,10 @@ try:
         MAX_MOTOR_RPM,
         YAW_CORRECT_THRESHOLD,
     )
-    peer = Peer(port=PEER_PORT)
-    peer.start()
-    print(f"Peer communication started on UDP port {PEER_PORT} (bot_id={peer.bot_id})")
+    if ENABLE_COMMUNICATION:
+        peer = Peer(port=PEER_PORT)
+        peer.start()
+        print(f"Peer communication started on UDP port {PEER_PORT} (bot_id={peer.bot_id})")
     print("Press Enter to shut down.")
     steering_state = False
 
@@ -324,17 +326,19 @@ try:
             else:
                 ball_captured = False
 
-            peer.send(
-                {
-                    "x": x_pos,
-                    "y": y_pos,
-                    "yaw": yaw,
-                    "mode": bot_mode.name,
-                    "ball_x": ball_x,
-                    "ball_y": ball_y,
-                }
-            )
-            peer_msg = peer.receive()
+            peer_msg = None
+            if peer is not None:
+                peer.send(
+                    {
+                        "x": x_pos,
+                        "y": y_pos,
+                        "yaw": yaw,
+                        "mode": bot_mode.name,
+                        "ball_x": ball_x,
+                        "ball_y": ball_y,
+                    }
+                )
+                peer_msg = peer.receive()
             if (
                 peer_msg is not None
                 and peer_msg.get("x") is not None
