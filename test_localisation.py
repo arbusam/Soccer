@@ -3,8 +3,12 @@
 
 Interactive test: enter a target (x, y) in mm and the robot drives there while
 printing its localized position. Requires LIDAR, IMU, and motors.
+
+With ``-s`` / ``--stream``, poses are pushed to the websocket log server for live
+viewing with ``python simulate.py --connect 127.0.0.1:8765``.
 """
 
+import argparse
 import math
 import time
 
@@ -34,6 +38,35 @@ LIDAR_BAUDRATE = 460800
 PITCH_X = 2430
 PITCH_Y = 1820
 I2C_ADDRESSES = [28, 32, 31, 30]
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=(
+            "Drive to user-specified field coordinates using LIDAR MCL pose feedback."
+        )
+    )
+    parser.add_argument(
+        "-s",
+        "--stream",
+        action="store_true",
+        help="Enable websocket live pose streaming for simulate.py --connect.",
+    )
+    return parser.parse_args()
+
+
+def format_pose_log_line(x_pos, y_pos, yaw):
+    """CSV line matching simulate.py parse_log_frame (x, y, yaw, ball_x, ball_y)."""
+    values = [x_pos, y_pos, yaw, None, None]
+    return ",".join("None" if value is None else str(value) for value in values)
+
+
+def stream_pose(stream_enabled, send_log_module, x_pos, y_pos, yaw):
+    if not stream_enabled or send_log_module is None:
+        return
+    if x_pos is None or y_pos is None or yaw is None:
+        return
+    send_log_module.update_latest_log(format_pose_log_line(x_pos, y_pos, yaw))
 
 
 def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02):
@@ -131,6 +164,8 @@ def drive_to_target(
     lidar_velocity,
     last_pose_time,
     last_mcl_yaw,
+    stream_enabled=False,
+    send_log_module=None,
 ):
     """Drive toward (target_x, target_y) using localized pose feedback."""
     last_status_print = 0.0
@@ -163,6 +198,7 @@ def drive_to_target(
 
         last_mcl_yaw = mcl_yaw
         lidar_velocity.update(current_x, current_y, yaw, now)
+        stream_pose(stream_enabled, send_log_module, current_x, current_y, yaw)
 
         dx = target_x - current_x
         dy = target_y - current_y
@@ -180,6 +216,17 @@ def drive_to_target(
 
 
 def main():
+    args = parse_args()
+    send_log_module = None
+    if args.stream:
+        import send_log
+
+        send_log_module = send_log
+        send_log.start_server_background()
+        time.sleep(0.05)
+        print(f"Websocket log server running on ws://0.0.0.0:{send_log.PORT}")
+        print(f"Connect with: python simulate.py --connect 127.0.0.1:{send_log.PORT}")
+
     imu = None
     movement_controller = None
     try:
@@ -220,6 +267,9 @@ def main():
             target_y = float(input("What y position to move to? "))
 
             print_localisation_status(lidar)
+            pose = get_position(lidar)
+            if pose is not None:
+                stream_pose(args.stream, send_log_module, pose[0], pose[1], pose[2])
 
             last_pose_time, last_mcl_yaw = drive_to_target(
                 target_x,
@@ -231,6 +281,8 @@ def main():
                 lidar_velocity,
                 last_pose_time,
                 last_mcl_yaw,
+                stream_enabled=args.stream,
+                send_log_module=send_log_module,
             )
             print(f"Reached target ({target_x:.1f}, {target_y:.1f})")
     except KeyboardInterrupt:
