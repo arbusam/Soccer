@@ -22,6 +22,7 @@ TARGET_TOLERANCE_MM = 10
 MAX_SPEED_MM_S = 600
 SLOW_RADIUS_MM = 300
 LOOP_DELAY_SECONDS = 0.02
+STATUS_PRINT_INTERVAL_S = 0.2
 
 WHEEL_DIAMETER = 50
 MAX_YAW_RPM = 100
@@ -70,6 +71,22 @@ def get_position(lidar_module):
     return x_pos, y_pos, yaw
 
 
+def print_localisation_status(lidar_module):
+    """Print pose, confidence, and whether MCL is currently using LIDAR scans."""
+    x_pos, y_pos, yaw, confidence, ok = lidar_module.get_coordinates_info()
+    lidar_used = lidar_module.scan_updates_enabled()
+    lidar_label = "LIDAR" if lidar_used else "odom-only"
+    if ok and x_pos is not None and y_pos is not None and yaw is not None:
+        print(
+            f"pose=({x_pos:.1f}, {y_pos:.1f}) yaw={yaw:.1f} deg "
+            f"confidence={confidence:.2f} source={lidar_label}"
+        )
+    else:
+        print(
+            f"pose=unavailable confidence={confidence:.2f} source={lidar_label}"
+        )
+
+
 def predict_odometry(
     lidar_module,
     movement_controller,
@@ -116,6 +133,7 @@ def drive_to_target(
     last_mcl_yaw,
 ):
     """Drive toward (target_x, target_y) using localized pose feedback."""
+    last_status_print = 0.0
     while True:
         now = time.monotonic()
         yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
@@ -127,6 +145,10 @@ def drive_to_target(
             yaw_for_odom,
             last_pose_time,
         )
+
+        if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
+            print_localisation_status(lidar_module)
+            last_status_print = now
 
         pose = get_position(lidar_module)
         if pose is None:
@@ -197,11 +219,7 @@ def main():
             target_x = float(input("What x position to move to? "))
             target_y = float(input("What y position to move to? "))
 
-            pose = get_position(lidar)
-            if pose is not None:
-                print(f"Current position: ({pose[0]:.1f}, {pose[1]:.1f}), yaw={pose[2]:.1f} deg")
-            else:
-                print("Current position: unavailable")
+            print_localisation_status(lidar)
 
             last_pose_time, last_mcl_yaw = drive_to_target(
                 target_x,
