@@ -30,6 +30,9 @@ static float g_pitch_y = 1820.0f;
 static LocPose g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
 static bool g_started = false;
 static bool g_ready = false;
+static bool g_scan_updates_paused = false;
+static float g_last_omega_deg_s = 0.0f;
+static float g_omega_below_resume_s = 0.0f;
 
 static constexpr float COORD_SIGMA = 30.0f; // Standard deviation for coordinate error (mm)
 static constexpr float COORD_EPS = 1e-9f; // Epsilon for coordinate error (mm)
@@ -42,6 +45,9 @@ static constexpr float TRANS_NOISE_MM = 8.0f; // Standard deviation for translat
 static constexpr float YAW_NOISE_DEG = 2.0f; // Standard deviation for yaw noise (deg).
 static constexpr float RECOVERY_FRACTION = 0.05f; // Fraction of particles to inject when resampling.
 static constexpr float RECOVERY_WEIGHT_THRESHOLD = 1e-12f; // Threshold for resampling. If the weight sum is less than this, the particles are resampled.
+static constexpr float OMEGA_PAUSE_DEG_S = 50.0f; // Pause LIDAR scan updates when |omega| exceeds this (deg/s).
+static constexpr float OMEGA_RESUME_DEG_S = 25.0f; // Hysteresis floor before considering resume (deg/s).
+static constexpr float OMEGA_SETTLE_S = 0.15f; // Require |omega| below resume for this long before accepting scans again.
 
 // Physical goal walls
 static constexpr float GOAL_LEFT_BACK_X = 226.0f;
@@ -260,6 +266,38 @@ static LocPose estimate_pose_from_particles(const float* angle_deg,
     return pose;
 }
 
+static void reset_rotation_gate() {
+    g_scan_updates_paused = false;
+    g_last_omega_deg_s = 0.0f;
+    g_omega_below_resume_s = 0.0f;
+}
+
+static void update_rotation_gate(float omega_deg_s, float dt_s) {
+    g_last_omega_deg_s = omega_deg_s;
+    float abs_omega = std::fabs(omega_deg_s);
+
+    if (abs_omega > OMEGA_PAUSE_DEG_S) {
+        g_scan_updates_paused = true;
+        g_omega_below_resume_s = 0.0f;
+        return;
+    }
+
+    if (!g_scan_updates_paused) {
+        g_omega_below_resume_s = 0.0f;
+        return;
+    }
+
+    if (abs_omega < OMEGA_RESUME_DEG_S) {
+        g_omega_below_resume_s += dt_s;
+        if (g_omega_below_resume_s >= OMEGA_SETTLE_S) {
+            g_scan_updates_paused = false;
+            g_omega_below_resume_s = 0.0f;
+        }
+    } else {
+        g_omega_below_resume_s = 0.0f;
+    }
+}
+
 void loc_init_map(float pitch_x, float pitch_y) {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     g_pitch_x = pitch_x;
@@ -285,6 +323,7 @@ void loc_start() {
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_ready = false;
     g_started = true;
+    reset_rotation_gate();
 }
 
 void loc_stop() {
@@ -293,6 +332,7 @@ void loc_stop() {
     g_ready = false;
     g_particles.clear();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
+    reset_rotation_gate();
 }
 
 void loc_reset() {
@@ -303,6 +343,7 @@ void loc_reset() {
     init_particles_uniform();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_ready = false;
+    reset_rotation_gate();
 }
 
 void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s) {
@@ -314,6 +355,8 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
     if (!g_started || g_particles.empty()) {
         return;
     }
+
+    update_rotation_gate(omega_deg_s, dt_s);
 
     for (auto& particle : g_particles) {
         float yaw_rad = particle.yaw_deg * (float)(M_PI / 180.0);
@@ -338,6 +381,13 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
 
 void loc_update_scan(const LocScanPoint* points, int count,
                      float min_range_mm, float max_range_mm, int min_quality) {
+    {
+        std::lock_guard<std::mutex> lock(g_loc_mutex);
+        if (g_scan_updates_paused || !g_started || g_particles.empty()) {
+            return;
+        }
+    }
+
     std::vector<float> angle_deg;
     std::vector<float> r_meas;
     std::vector<float> weights;
@@ -368,7 +418,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
     }
 
     std::lock_guard<std::mutex> lock(g_loc_mutex);
-    if (!g_started || g_particles.empty()) {
+    if (g_scan_updates_paused || !g_started || g_particles.empty()) {
         return;
     }
 
@@ -405,6 +455,11 @@ void loc_update_scan(const LocScanPoint* points, int count,
     }
 
     resample_particles();
+}
+
+bool loc_scan_updates_allowed() {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    return !g_scan_updates_paused;
 }
 
 bool loc_is_ready() {

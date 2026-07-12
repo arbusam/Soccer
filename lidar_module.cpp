@@ -99,7 +99,7 @@ static void scan_thread_func() {
 
 static void localization_thread_func() {
     while (g_loc_running.load()) {
-        if (!g_scan_ready.load()) {
+        if (!g_scan_ready.load() || !loc_scan_updates_allowed()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
@@ -362,6 +362,10 @@ static bool is_coordinates_ready() {
     return loc_is_ready();
 }
 
+static bool scan_updates_enabled() {
+    return loc_scan_updates_allowed();
+}
+
 PYBIND11_MODULE(lidar, m) {
     m.doc() = "RPLidar C1 Python module — scan data and MCL localization";
 
@@ -416,4 +420,7 @@ PYBIND11_MODULE(lidar, m) {
 
     m.def("is_coordinates_ready", &is_coordinates_ready,
           "True once at least one confident pose has been computed.");
+
+    m.def("scan_updates_enabled", &scan_updates_enabled,
+          "True when MCL is accepting LIDAR scans (false during fast rotation).");
 }

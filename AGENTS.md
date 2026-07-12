@@ -38,17 +38,19 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 - Systematic resampling after each scan; random particle injection on weight collapse for kidnap recovery.
 - `predict_odometry(vx, vy, omega, dt)` propagates particles between scans (call from Python each control loop). Pass IMU gyro z as `omega_deg_s` (clockwise positive); leave `vx`/`vy` at 0 until wheel odometry exists.
 - Estimation runs in a background thread; Python reads the latest pose.
+- Fast rotation gate: when `|omega|` exceeds 50 deg/s, MCL skips LIDAR scan updates and dead-reckons via predict only. Scan updates resume after `|omega|` stays below 25 deg/s for 150 ms. `lidar.scan_updates_enabled()` reports whether scans are currently accepted.
 
 **Python API:**
 
 1. `lidar.init(port, baudrate)` — start scan thread.
 2. `lidar.start_coordinates(pitch_x, pitch_y)` — start MCL thread and build pitch map.
-3. `lidar.predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s)` — propagate particles between scans.
+3. `lidar.predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s)` — propagate particles between scans (also drives the fast-rotation gate from `omega_deg_s`).
 4. `lidar.get_pose()` → `(x, y, yaw_deg, confidence)` — last estimate (None if not confident).
 5. `lidar.get_coordinates()` → `(x, y)` — backward-compatible confident position only.
 6. `lidar.get_coordinates_info()` → `(x, y, yaw_deg, confidence, ok)` — diagnostics.
 7. `lidar.is_coordinates_ready()` → `bool` — true once first confident pose exists.
-8. `lidar.shutdown()` — stops localization, scan thread, and motor.
+8. `lidar.scan_updates_enabled()` → `bool` — false while MCL is pausing LIDAR updates during fast rotation.
+9. `lidar.shutdown()` — stops localization, scan thread, and motor.
 
 **IMU gyro in MCL predict:** `imu.py` enables `BNO_REPORT_GYROSCOPE` and exposes `get_gyro_z_deg_s()` (clockwise positive in project frame). `main.py` passes this as `omega_deg_s` to `predict_odometry(0, 0, omega, dt)` each control loop. The IMU is upside down; positive `gyro_z` from the sensor matches clockwise rotation in the project heading frame. Absolute IMU yaw is not fused into MCL yet — only gyro in the predict step.
 

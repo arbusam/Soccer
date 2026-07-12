@@ -25,6 +25,7 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
 void loc_update_scan(const LocScanPoint* points, int count,
                      float min_range_mm, float max_range_mm, int min_quality);
 
+bool loc_scan_updates_allowed();
 bool loc_is_ready();
 LocPose loc_get_pose();
 
