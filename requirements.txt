@@ -10,3 +10,4 @@ adafruit-blinka
 adafruit-circuitpython-bno08x
 matplotlib
 pandas-stubs
+ultralytics
