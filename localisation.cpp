@@ -182,13 +182,18 @@ static float compute_confidence(const PoseStats& s) {
     return 0.7f * s.inlier_ratio + 0.3f * std::exp(-s.mad_mm / 80.0f);
 }
 
+// Yaw prior: 270°..90° through 0° (wrapped: -90°..90°), i.e. forward-facing half.
+static float rand_init_yaw_deg() {
+    return rand_uniform(-90.0f, 90.0f);
+}
+
 static void init_particles_uniform() {
     g_particles.resize(PARTICLE_COUNT);
     const float weight = 1.0f / PARTICLE_COUNT;
     for (auto& particle : g_particles) {
         particle.x = rand_uniform(0.0f, g_pitch_x);
         particle.y = rand_uniform(0.0f, g_pitch_y);
-        particle.yaw_deg = rand_uniform(-180.0f, 180.0f);
+        particle.yaw_deg = rand_init_yaw_deg();
         particle.weight = weight;
     }
 }
@@ -199,7 +204,7 @@ static void inject_random_particles(float fraction) {
         int idx = (int)rand_uniform(0.0f, (float)(PARTICLE_COUNT - 1));
         g_particles[idx].x = rand_uniform(0.0f, g_pitch_x);
         g_particles[idx].y = rand_uniform(0.0f, g_pitch_y);
-        g_particles[idx].yaw_deg = rand_uniform(-180.0f, 180.0f);
+        g_particles[idx].yaw_deg = rand_init_yaw_deg();
     }
 }
 
