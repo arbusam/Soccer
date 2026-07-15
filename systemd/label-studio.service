@@ -1,0 +1,38 @@
+# User unit (already enabled; no sudo needed):
+#   cp systemd/label-studio.service ~/.config/systemd/user/
+#   # remove User=/Group= lines for user units
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now label-studio.service
+#   # boot without login: loginctl enable-linger $USER
+#
+# System unit (needs sudo password):
+#   sudo cp systemd/label-studio.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now label-studio.service
+#
+# UI: https://label-studio.arhan.tech
+# Data: /home/arhan/Soccer/label-studio-data
+# Venv: /home/arhan/Soccer/.labelstudio-venv
+#
+# Note: on Python 3.14, django-environ was upgraded to >=0.14.0
+# (label-studio pins 0.10.0, which imports removed pkgutil.find_loader).
+
+[Unit]
+Description=Label Studio annotation server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=arhan
+Group=arhan
+WorkingDirectory=/home/arhan/Soccer
+Environment=LABEL_STUDIO_BASE_DATA_DIR=/home/arhan/Soccer/label-studio-data
+Environment=HOME=/home/arhan
+Environment=CSRF_TRUSTED_ORIGINS=https://label-studio.arhan.tech
+ExecStart=/home/arhan/Soccer/.labelstudio-venv/bin/label-studio start --internal-host 0.0.0.0 --port 8080 --no-browser --data-dir /home/arhan/Soccer/label-studio-data
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

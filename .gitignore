@@ -145,6 +145,15 @@ ENV/
 env.bak/
 venv.bak/
 .labelstudio-venv/
+label-studio-data/
+
+# YOLO training artifacts
+training/datasets/
+training/runs/
+training/exports/
+training/*.pt
+**/yolo26*-obb.pt
+**/yolo26*.pt
 
 # Spyder project settings
 .spyderproject

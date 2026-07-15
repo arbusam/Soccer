@@ -66,3 +66,9 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 **Problem:** `defence()` and `goalie()` used to contain separate yellow/non-yellow branches. That made the cyan-side behavior drift from the yellow-side behavior, including cases where `defence()` would face its own goal instead of the enemy goal.
 
 **Solution:** Keep the strategy code in a single "yellow-side" frame inside `defence.py`, and let `simulate.py` rotate cyan bots into that frame before calling `defence()` or `goalie()`. The required transform is a 180° rotation of the full world state: `(x, y) -> (PITCH_WIDTH - x, PITCH_HEIGHT - y)` and `yaw/direction/rotation -> angle + 180° (mod 360)`. After the controller returns, rotate `direction` and `rotation` back into the real field frame.
+
+## YOLO26-OBB training (`training/`)
+
+**Problem:** Label Studio stores `rectanglelabels` as percent `x,y,width,height` plus clockwise `rotation`, while Ultralytics OBB wants `class x1 y1 x2 y2 x3 y3 x4 y4` (normalized corners).
+
+**Solution:** `training/export_label_studio.py` reads `label-studio-data/label_studio.sqlite3`, maps `/data/...` image URIs to `label-studio-data/media/...`, rotates box corners clockwise around the box center, and writes a YOLO-OBB dataset under `training/datasets/`. `training/train.py` trains `yolo26{n,s,m,l,x}-obb.pt` via `--size` (default `n`) on Intel XPU (`device=xpu`, same as `~/training`, via `training/xpu_patch.py`) and exports NCNN under `training/exports/open-soccer-obb-{size}_ncnn_model/`, with runs in `training/runs/open-soccer-obb-{size}/` so sizes coexist. Use `/home/arhan/training/.venv/bin/python training/train.py ...` (PyTorch XPU build); AMP stays off on XPU. Mosaic is on by default; if OBB+mosaic hits torch-xpu `scatter gather kernel index out of bounds`, rerun with `--no-mosaic` (or `--export-only` / `--resume` from saved weights).
