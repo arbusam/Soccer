@@ -33,6 +33,8 @@ static bool g_ready = false;
 static bool g_scan_updates_paused = false;
 static float g_last_omega_deg_s = 0.0f;
 static float g_omega_below_resume_s = 0.0f;
+static float g_imu_yaw_deg = 0.0f;
+static bool g_imu_yaw_valid = false;
 
 static constexpr float COORD_SIGMA = 30.0f; // Standard deviation for coordinate error (mm)
 static constexpr float COORD_EPS = 1e-9f; // Epsilon for coordinate error (mm)
@@ -43,6 +45,7 @@ static constexpr int MIN_BEAM_COUNT = 30; // Minimum number of beams to use for 
 static constexpr int RAY_STRIDE = 2; // Stride for ray casting.
 static constexpr float TRANS_NOISE_MM = 8.0f; // Standard deviation for translation noise (mm).
 static constexpr float YAW_NOISE_DEG = 2.0f; // Standard deviation for yaw noise (deg).
+static constexpr float YAW_PRIOR_SIGMA_DEG = 45.0f; // Soft IMU yaw prior sigma (deg); breaks 180° LIDAR symmetry.
 static constexpr float RECOVERY_FRACTION = 0.05f; // Fraction of particles to inject when resampling.
 static constexpr float RECOVERY_WEIGHT_THRESHOLD = 1e-12f; // Threshold for resampling. If the weight sum is less than this, the particles are resampled.
 static constexpr float OMEGA_PAUSE_DEG_S = 50.0f; // Pause LIDAR scan updates when |omega| exceeds this (deg/s).
@@ -182,9 +185,12 @@ static float compute_confidence(const PoseStats& s) {
     return 0.7f * s.inlier_ratio + 0.3f * std::exp(-s.mad_mm / 80.0f);
 }
 
-// Yaw prior: 270°..90° through 0° (wrapped: -90°..90°), i.e. forward-facing half.
+// Sample init/recovery yaw: IMU-centered when available, else full circle.
 static float rand_init_yaw_deg() {
-    return rand_uniform(-90.0f, 90.0f);
+    if (g_imu_yaw_valid) {
+        return wrap_angle_deg(g_imu_yaw_deg + rand_normal(YAW_PRIOR_SIGMA_DEG));
+    }
+    return rand_uniform(-180.0f, 180.0f);
 }
 
 static void init_particles_uniform() {
@@ -322,6 +328,12 @@ void loc_init_map(float pitch_x, float pitch_y) {
     g_static_segments.push_back({pitch_x, GOAL_BOTTOM_Y, GOAL_RIGHT_FRONT_X, GOAL_BOTTOM_Y});
 }
 
+void loc_set_imu_yaw(float yaw_deg) {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    g_imu_yaw_deg = wrap_angle_deg(yaw_deg);
+    g_imu_yaw_valid = true;
+}
+
 void loc_start() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     init_particles_uniform();
@@ -335,6 +347,7 @@ void loc_stop() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     g_started = false;
     g_ready = false;
+    g_imu_yaw_valid = false;
     g_particles.clear();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     reset_rotation_gate();
@@ -431,6 +444,11 @@ void loc_update_scan(const LocScanPoint* points, int count,
         float log_lik = score_pose(particle.x, particle.y, particle.yaw_deg,
                                    angle_deg.data(), r_meas.data(), weights.data(),
                                    n, g_pitch_x, g_pitch_y);
+        if (g_imu_yaw_valid) {
+            float yaw_err = wrap_angle_deg(particle.yaw_deg - g_imu_yaw_deg);
+            float e = yaw_err / YAW_PRIOR_SIGMA_DEG;
+            log_lik += -0.5f * e * e;
+        }
         particle.weight = std::exp(log_lik);
     }
 

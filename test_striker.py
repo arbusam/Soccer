@@ -262,6 +262,16 @@ if __name__ == "__main__":
                 raise KeyboardInterrupt
             time.sleep(0.1)
 
+        camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
+        camera.start_stream()
+
+        imu = IMU()
+        startup_yaw = capture_startup_yaw(imu)
+        print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
+        yaw_world = imu.get_yaw()
+        if yaw_world is not None:
+            lidar.set_imu_yaw(imu_yaw_to_relative_yaw(yaw_world, startup_yaw))
+
         lidar.start_coordinates(2430, 1820)
 
         print("Waiting for first coordinate estimate...")
@@ -269,20 +279,10 @@ if __name__ == "__main__":
             if _enter_pressed():
                 print("Shutdown requested, exiting.")
                 raise KeyboardInterrupt
+            yaw_world = imu.get_yaw()
+            if yaw_world is not None:
+                lidar.set_imu_yaw(imu_yaw_to_relative_yaw(yaw_world, startup_yaw))
             time.sleep(0.1)
-
-        camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
-        camera.start_stream()
-
-        imu = IMU()
-        # print("Waiting for IMU yaw...")
-        # initial_yaw = None
-        # while initial_yaw is None:
-        #     initial_yaw = imu.get_yaw()
-        #     if initial_yaw is None:
-        #         time.sleep(0.01)
-
-        startup_yaw = None
 
         print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
         movement_controller = MovementController.from_i2c_addresses(
@@ -292,8 +292,6 @@ if __name__ == "__main__":
             MAX_MOTOR_RPM,
             YAW_CORRECT_THRESHOLD,
         )
-        startup_yaw = capture_startup_yaw(imu)
-        print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
         print("Press Enter to shut down.")
         steering_state = False
 
@@ -322,6 +320,7 @@ if __name__ == "__main__":
                     time.sleep(0.01)
                     continue
                 yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
+                lidar.set_imu_yaw(yaw_relative)
 
                 # print(f"Yaw: {yaw_world:.6f} deg (relative {yaw_relative:.6f} deg)")
                 lidar.predict_odometry(0.0, 0.0, 0.0, 0.01)

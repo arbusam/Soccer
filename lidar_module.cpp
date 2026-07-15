@@ -329,6 +329,10 @@ static void start_coordinates(float pitch_x, float pitch_y) {
     printf("MCL localization started (pitch %.0f x %.0f mm)\n", pitch_x, pitch_y);
 }
 
+static void set_imu_yaw(float yaw_deg) {
+    loc_set_imu_yaw(yaw_deg);
+}
+
 static void predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s) {
     loc_predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s);
 }
@@ -403,6 +407,10 @@ PYBIND11_MODULE(lidar, m) {
     m.def("start_coordinates", &start_coordinates,
           py::arg("pitch_x"), py::arg("pitch_y"),
           "Start background MCL localization thread.");
+
+    m.def("set_imu_yaw", &set_imu_yaw,
+          py::arg("yaw_deg"),
+          "Set startup-relative IMU yaw for the soft MCL yaw prior.");
 
     m.def("predict_odometry", &predict_odometry,
           py::arg("vx_mm_s"), py::arg("vy_mm_s"),

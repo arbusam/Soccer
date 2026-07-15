@@ -44,15 +44,16 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 1. `lidar.init(port, baudrate)` — start scan thread.
 2. `lidar.start_coordinates(pitch_x, pitch_y)` — start MCL thread and build pitch map.
-3. `lidar.predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s)` — propagate particles between scans (also drives the fast-rotation gate from `omega_deg_s`).
-4. `lidar.get_pose()` → `(x, y, yaw_deg, confidence)` — last estimate (None if not confident).
-5. `lidar.get_coordinates()` → `(x, y)` — backward-compatible confident position only.
-6. `lidar.get_coordinates_info()` → `(x, y, yaw_deg, confidence, ok)` — diagnostics.
-7. `lidar.is_coordinates_ready()` → `bool` — true once first confident pose exists.
-8. `lidar.scan_updates_enabled()` → `bool` — false while MCL is pausing LIDAR updates during fast rotation.
-9. `lidar.shutdown()` — stops localization, scan thread, and motor.
+3. `lidar.set_imu_yaw(yaw_deg)` — feed startup-relative IMU yaw as a soft MCL yaw prior (call each control loop).
+4. `lidar.predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s)` — propagate particles between scans (also drives the fast-rotation gate from `omega_deg_s`).
+5. `lidar.get_pose()` → `(x, y, yaw_deg, confidence)` — last estimate (None if not confident).
+6. `lidar.get_coordinates()` → `(x, y)` — backward-compatible confident position only.
+7. `lidar.get_coordinates_info()` → `(x, y, yaw_deg, confidence, ok)` — diagnostics.
+8. `lidar.is_coordinates_ready()` → `bool` — true once first confident pose exists.
+9. `lidar.scan_updates_enabled()` → `bool` — false while MCL is pausing LIDAR updates during fast rotation.
+10. `lidar.shutdown()` — stops localization, scan thread, and motor.
 
-**IMU gyro in MCL predict:** `imu.py` enables `BNO_REPORT_GYROSCOPE` and exposes `get_gyro_z_deg_s()` (clockwise positive in project frame). `main.py` passes this as `omega_deg_s` to `predict_odometry(0, 0, omega, dt)` each control loop. The IMU is upside down; positive `gyro_z` from the sensor matches clockwise rotation in the project heading frame. Absolute IMU yaw is not fused into MCL yet — only gyro in the predict step.
+**IMU in MCL:** `imu.py` enables `BNO_REPORT_GYROSCOPE` and `BNO_REPORT_ROTATION_VECTOR`. Gyro: `get_gyro_z_deg_s()` (clockwise positive in project frame) is passed as `omega_deg_s` to `predict_odometry` each control loop. Absolute yaw: convert with `imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)` and call `lidar.set_imu_yaw(...)` each loop (and before the first pose wait). MCL applies a soft Gaussian yaw prior (σ = 45°) on every scan update so LIDAR still owns fine, drift-free heading while the IMU breaks the 180° field symmetry. Init/recovery particles sample yaw around the IMU when a reading exists, otherwise over ±180°.
 
 **Rebuild after changing `lidar_module.cpp` or `localisation.cpp`:** `python setup.py build_ext --inplace`
 

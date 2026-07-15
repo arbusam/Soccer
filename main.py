@@ -16,6 +16,7 @@ from movement import (
     MotorCommunicationError,
     MovementController,
     compute_wheel_odometry_trust,
+    imu_yaw_to_relative_yaw,
 )
 from camera import Camera
 from communication import Peer
@@ -181,6 +182,31 @@ def enter_pressed():
     return True
 
 
+def capture_startup_yaw(imu_sensor, sample_count=25, sample_interval=0.02):
+    """Average a short burst of IMU samples so startup yaw is not just the first reading."""
+    print("Stabilizing IMU yaw reference...")
+    sin_sum = 0.0
+    cos_sum = 0.0
+    samples = 0
+    while samples < sample_count:
+        yaw_sample = imu_sensor.get_yaw()
+        if yaw_sample is not None:
+            yaw_rad = math.radians(yaw_sample)
+            sin_sum += math.sin(yaw_rad)
+            cos_sum += math.cos(yaw_rad)
+            samples += 1
+        time.sleep(sample_interval)
+    return math.degrees(math.atan2(sin_sum, cos_sum))
+
+
+def feed_imu_yaw_prior(imu_sensor, startup_yaw):
+    """Push startup-relative IMU yaw into MCL as a soft heading prior."""
+    imu_yaw = imu_sensor.get_yaw()
+    if imu_yaw is None:
+        return
+    lidar.set_imu_yaw(imu_yaw_to_relative_yaw(imu_yaw, startup_yaw))
+
+
 try:
     kicker = Kicker(board.D26, 0.1)
     tof = ToF(address=TOF_ADDRESS)
@@ -200,6 +226,12 @@ try:
             raise KeyboardInterrupt
         time.sleep(0.1)
 
+    print("Initializing IMU...")
+    imu = IMU()
+    startup_yaw = capture_startup_yaw(imu)
+    print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
+    feed_imu_yaw_prior(imu, startup_yaw)
+
     lidar.start_coordinates(2430, 1820)
 
     print("Waiting for first pose estimate...")
@@ -207,10 +239,8 @@ try:
         if enter_pressed():
             print("Shutdown requested, exiting.")
             raise KeyboardInterrupt
+        feed_imu_yaw_prior(imu, startup_yaw)
         time.sleep(0.1)
-
-    print("Initializing IMU...")
-    imu = IMU()
 
     camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
     camera.start_stream()
@@ -262,6 +292,7 @@ try:
                 gyro_z = imu.get_gyro_z_deg_s()
                 if gyro_z is not None:
                     omega = gyro_z
+                feed_imu_yaw_prior(imu, startup_yaw)
             vx, vy = 0.0, 0.0
             if movement_controller is not None:
                 yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0

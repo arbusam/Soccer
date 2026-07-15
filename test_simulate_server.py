@@ -61,15 +61,6 @@ def main():
                 return
             time.sleep(0.1)
 
-        lidar.start_coordinates(PITCH_WIDTH, PITCH_HEIGHT)
-
-        print("Waiting for first coordinate estimate...")
-        while not lidar.is_coordinates_ready():
-            if _enter_pressed():
-                print("Shutdown requested, exiting.")
-                return
-            time.sleep(0.1)
-
         camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
         camera.start()
         imu = IMU()
@@ -77,6 +68,22 @@ def main():
 
         startup_yaw = capture_startup_yaw(imu)
         print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
+        yaw_world = imu.get_yaw()
+        if yaw_world is not None:
+            lidar.set_imu_yaw(imu_yaw_to_relative_yaw(yaw_world, startup_yaw))
+
+        lidar.start_coordinates(PITCH_WIDTH, PITCH_HEIGHT)
+
+        print("Waiting for first coordinate estimate...")
+        while not lidar.is_coordinates_ready():
+            if _enter_pressed():
+                print("Shutdown requested, exiting.")
+                return
+            yaw_world = imu.get_yaw()
+            if yaw_world is not None:
+                lidar.set_imu_yaw(imu_yaw_to_relative_yaw(yaw_world, startup_yaw))
+            time.sleep(0.1)
+
         print("Streaming measured positions. Press Enter to shut down.")
 
         ball_dx = 0.0
@@ -97,6 +104,7 @@ def main():
                 continue
 
             yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
+            lidar.set_imu_yaw(yaw_relative)
             lidar.predict_odometry(0.0, 0.0, 0.0, 0.01)
 
             x_pos, y_pos, mcl_yaw, _confidence = lidar.get_pose()

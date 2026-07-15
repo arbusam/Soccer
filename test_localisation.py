@@ -120,10 +120,19 @@ def print_localisation_status(lidar_module):
         )
 
 
+def feed_imu_yaw_prior(lidar_module, imu, startup_yaw):
+    """Push startup-relative IMU yaw into MCL as a soft heading prior."""
+    imu_yaw = imu.get_yaw()
+    if imu_yaw is None:
+        return
+    lidar_module.set_imu_yaw(imu_yaw_to_relative_yaw(imu_yaw, startup_yaw))
+
+
 def predict_odometry(
     lidar_module,
     movement_controller,
     imu,
+    startup_yaw,
     lidar_velocity,
     yaw_deg,
     last_pose_time,
@@ -135,6 +144,7 @@ def predict_odometry(
     gyro_z = imu.get_gyro_z_deg_s()
     if gyro_z is not None:
         omega = gyro_z
+    feed_imu_yaw_prior(lidar_module, imu, startup_yaw)
 
     vx, vy = 0.0, 0.0
     if movement_controller is not None and yaw_deg is not None:
@@ -176,6 +186,7 @@ def drive_to_target(
             lidar_module,
             movement_controller,
             imu,
+            startup_yaw,
             lidar_velocity,
             yaw_for_odom,
             last_pose_time,
@@ -237,16 +248,18 @@ def main():
         while not lidar.is_scan_ready():
             time.sleep(0.1)
 
-        lidar.start_coordinates(PITCH_X, PITCH_Y)
-
-        print("Waiting for first pose estimate...")
-        while not lidar.is_coordinates_ready():
-            time.sleep(0.1)
-
         print("Initializing IMU...")
         imu = IMU()
         startup_yaw = capture_startup_yaw(imu)
         print(f"Startup yaw reference set to {startup_yaw:.1f} deg")
+        feed_imu_yaw_prior(lidar, imu, startup_yaw)
+
+        lidar.start_coordinates(PITCH_X, PITCH_Y)
+
+        print("Waiting for first pose estimate...")
+        while not lidar.is_coordinates_ready():
+            feed_imu_yaw_prior(lidar, imu, startup_yaw)
+            time.sleep(0.1)
 
         print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
         movement_controller = MovementController.from_i2c_addresses(

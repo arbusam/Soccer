@@ -20,6 +20,7 @@ void loc_start();
 void loc_stop();
 void loc_reset();
 
+void loc_set_imu_yaw(float yaw_deg);
 void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s);
 
 void loc_update_scan(const LocScanPoint* points, int count,
