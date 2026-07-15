@@ -440,6 +440,9 @@ void loc_update_scan(const LocScanPoint* points, int count,
         return;
     }
 
+    // Store log-weights first, then log-sum-exp so relative weights stay
+    // usable even when absolute log-likelihoods underflow float exp().
+    float max_log = -1e30f;
     for (auto& particle : g_particles) {
         float log_lik = score_pose(particle.x, particle.y, particle.yaw_deg,
                                    angle_deg.data(), r_meas.data(), weights.data(),
@@ -449,11 +452,15 @@ void loc_update_scan(const LocScanPoint* points, int count,
             float e = yaw_err / YAW_PRIOR_SIGMA_DEG;
             log_lik += -0.5f * e * e;
         }
-        particle.weight = std::exp(log_lik);
+        particle.weight = log_lik;
+        if (log_lik > max_log) {
+            max_log = log_lik;
+        }
     }
 
     float weight_sum = 0.0f;
-    for (const auto& particle : g_particles) {
+    for (auto& particle : g_particles) {
+        particle.weight = std::exp(particle.weight - max_log);
         weight_sum += particle.weight;
     }
 

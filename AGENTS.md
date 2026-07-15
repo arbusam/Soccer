@@ -55,6 +55,8 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **IMU in MCL:** `imu.py` enables `BNO_REPORT_GYROSCOPE` and `BNO_REPORT_ROTATION_VECTOR`. Gyro: `get_gyro_z_deg_s()` (clockwise positive in project frame) is passed as `omega_deg_s` to `predict_odometry` each control loop. Absolute yaw: convert with `imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)` and call `lidar.set_imu_yaw(...)` each loop (and before the first pose wait). MCL applies a soft Gaussian yaw prior (σ = 45°) on every scan update so LIDAR still owns fine, drift-free heading while the IMU breaks the 180° field symmetry. Init/recovery particles sample yaw around the IMU when a reading exists, otherwise over ±180°.
 
+**Stuck on "Waiting for first pose estimate...":** While waiting for `is_coordinates_ready()`, still call `predict_odometry(0, 0, omega, dt)` each loop (even when stationary). Predict applies translation/yaw process noise; without it, particles collapse after the first resample and often never reach the confidence threshold. Also print `get_coordinates_info()` / `get_scan_count()` during the wait so low confidence vs empty scans is visible.
+
 **Rebuild after changing `lidar_module.cpp` or `localisation.cpp`:** `python setup.py build_ext --inplace`
 
 **Build error `cannot find -lsl_lidar_sdk` / g++ exit code 1:** The Python extension links against the RPLidar SDK static library. If `rplidar_sdk/output/Linux/Release/` does not exist or has no `libsl_lidar_sdk.a`, build the SDK first: `make -C rplidar_sdk/sdk`. Then run `python setup.py build_ext --inplace` again.

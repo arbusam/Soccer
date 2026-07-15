@@ -7,6 +7,7 @@ websockets
 smbus2
 picamera2
 adafruit-blinka
+lgpio
 adafruit-circuitpython-bno08x
 matplotlib
 pandas-stubs

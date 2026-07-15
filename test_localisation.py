@@ -4,6 +4,9 @@
 Interactive test: enter a target (x, y) in mm and the robot drives there while
 printing its localized position. Requires LIDAR, IMU, and motors.
 
+With ``--no-move``, motors are skipped and the script only prints / streams the
+localized pose (still needs LIDAR and IMU).
+
 With ``-s`` / ``--stream``, poses are pushed to the websocket log server for live
 viewing with ``python simulate.py --connect 127.0.0.1:8765``.
 """
@@ -51,6 +54,11 @@ def parse_args():
         "--stream",
         action="store_true",
         help="Enable websocket live pose streaming for simulate.py --connect.",
+    )
+    parser.add_argument(
+        "--no-move",
+        action="store_true",
+        help="Disable motors; only print/stream localized pose.",
     )
     return parser.parse_args()
 
@@ -226,6 +234,52 @@ def drive_to_target(
     return last_pose_time, last_mcl_yaw
 
 
+def monitor_pose(
+    lidar_module,
+    imu,
+    startup_yaw,
+    lidar_velocity,
+    last_pose_time,
+    last_mcl_yaw,
+    stream_enabled=False,
+    send_log_module=None,
+):
+    """Print and optionally stream localized pose without commanding motors."""
+    last_status_print = 0.0
+    while True:
+        now = time.monotonic()
+        yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
+        last_pose_time = predict_odometry(
+            lidar_module,
+            None,
+            imu,
+            startup_yaw,
+            lidar_velocity,
+            yaw_for_odom,
+            last_pose_time,
+        )
+
+        if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
+            print_localisation_status(lidar_module)
+            last_status_print = now
+
+        pose = get_position(lidar_module)
+        if pose is None:
+            time.sleep(LOOP_DELAY_SECONDS)
+            continue
+
+        current_x, current_y, mcl_yaw = pose
+        yaw = get_yaw(imu, startup_yaw, mcl_yaw)
+        if yaw is None:
+            time.sleep(LOOP_DELAY_SECONDS)
+            continue
+
+        last_mcl_yaw = mcl_yaw
+        lidar_velocity.update(current_x, current_y, yaw, now)
+        stream_pose(stream_enabled, send_log_module, current_x, current_y, yaw)
+        time.sleep(LOOP_DELAY_SECONDS)
+
+
 def main():
     args = parse_args()
     send_log_module = None
@@ -257,38 +311,32 @@ def main():
         lidar.start_coordinates(PITCH_X, PITCH_Y)
 
         print("Waiting for first pose estimate...")
+        last_pose_time = time.monotonic()
+        last_status_print = 0.0
         while not lidar.is_coordinates_ready():
+            now = time.monotonic()
+            omega = 0.0
+            gyro_z = imu.get_gyro_z_deg_s()
+            if gyro_z is not None:
+                omega = gyro_z
             feed_imu_yaw_prior(lidar, imu, startup_yaw)
+            # Zero translation still applies process noise so particles can explore
+            # after resampling; without this the filter often never reaches confidence.
+            lidar.predict_odometry(0.0, 0.0, omega, now - last_pose_time)
+            last_pose_time = now
+            if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
+                print_localisation_status(lidar)
+                print(f"  scan_points={lidar.get_scan_count()}")
+                last_status_print = now
             time.sleep(0.1)
 
-        print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
-        movement_controller = MovementController.from_i2c_addresses(
-            I2C_ADDRESSES,
-            WHEEL_DIAMETER,
-            MAX_YAW_RPM,
-            MAX_MOTOR_RPM,
-            YAW_CORRECT_THRESHOLD,
-        )
-
         lidar_velocity = LidarVelocityEstimator()
-        last_pose_time = time.monotonic()
         last_mcl_yaw = None
-        print("Enter target coordinates in mm. Press Ctrl+C to quit.")
 
-        while True:
-            target_x = float(input("What x position to move to? "))
-            target_y = float(input("What y position to move to? "))
-
-            print_localisation_status(lidar)
-            pose = get_position(lidar)
-            if pose is not None:
-                stream_pose(args.stream, send_log_module, pose[0], pose[1], pose[2])
-
-            last_pose_time, last_mcl_yaw = drive_to_target(
-                target_x,
-                target_y,
+        if args.no_move:
+            print("Movement disabled (--no-move). Monitoring pose. Press Ctrl+C to quit.")
+            monitor_pose(
                 lidar,
-                movement_controller,
                 imu,
                 startup_yaw,
                 lidar_velocity,
@@ -297,7 +345,40 @@ def main():
                 stream_enabled=args.stream,
                 send_log_module=send_log_module,
             )
-            print(f"Reached target ({target_x:.1f}, {target_y:.1f})")
+        else:
+            print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
+            movement_controller = MovementController.from_i2c_addresses(
+                I2C_ADDRESSES,
+                WHEEL_DIAMETER,
+                MAX_YAW_RPM,
+                MAX_MOTOR_RPM,
+                YAW_CORRECT_THRESHOLD,
+            )
+
+            print("Enter target coordinates in mm. Press Ctrl+C to quit.")
+            while True:
+                target_x = float(input("What x position to move to? "))
+                target_y = float(input("What y position to move to? "))
+
+                print_localisation_status(lidar)
+                pose = get_position(lidar)
+                if pose is not None:
+                    stream_pose(args.stream, send_log_module, pose[0], pose[1], pose[2])
+
+                last_pose_time, last_mcl_yaw = drive_to_target(
+                    target_x,
+                    target_y,
+                    lidar,
+                    movement_controller,
+                    imu,
+                    startup_yaw,
+                    lidar_velocity,
+                    last_pose_time,
+                    last_mcl_yaw,
+                    stream_enabled=args.stream,
+                    send_log_module=send_log_module,
+                )
+                print(f"Reached target ({target_x:.1f}, {target_y:.1f})")
     except KeyboardInterrupt:
         print("\nStopping test.")
     except MotorCommunicationError as exc:
