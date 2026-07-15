@@ -1,6 +1,7 @@
+import time
+
 import cv2
 from picamera2 import Picamera2
-
 from ultralytics import YOLO
 
 # Initialize the Picamera2
@@ -11,22 +12,25 @@ picam2.preview_configuration.align()
 picam2.configure("preview")
 picam2.start()
 
-# Load the YOLO26 model
-model = YOLO("yolo26n.pt")
+# Load the trained YOLO26-OBB NCNN export (same directory as this script)
+model = YOLO("open-soccer-obb-n_ncnn_model")
+
+prev_time = time.perf_counter()
 
 while True:
     # Capture frame-by-frame
     frame = picam2.capture_array()
 
-    # Run YOLO26 inference on the frame
+    # Run NCNN inference on the frame
     results = model(frame)
-    print(results)
 
-    # Visualize the results on the frame
-    annotated_frame = results[0].plot()
+    now = time.perf_counter()
+    fps = 1.0 / (now - prev_time)
+    prev_time = now
+    print(f"{fps:.1f} FPS")
 
-    # Display the resulting frame
-    cv2.imshow("Camera", annotated_frame)
+    # Display the raw frame
+    cv2.imshow("Camera", frame)
 
     # Break the loop if 'q' is pressed
     if cv2.waitKey(1) == ord("q"):

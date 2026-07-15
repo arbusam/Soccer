@@ -105,6 +105,11 @@ parser.add_argument(
     help="Enable websocket live log streaming for simulate.py --connect.",
 )
 parser.add_argument(
+    "--camera-stream",
+    action="store_true",
+    help="Enable the camera MJPEG HTTP preview (adds JPEG encode + overlay draw cost).",
+)
+parser.add_argument(
     "-l",
     "--save-log",
     metavar="PATH",
@@ -243,7 +248,11 @@ try:
         time.sleep(0.1)
 
     camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
-    camera.start_stream()
+    if args.camera_stream:
+        camera.start_stream()
+    else:
+        camera.start()
+        print("Camera preview disabled (pass --camera-stream to enable MJPEG stream)")
 
     print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
     movement_controller = MovementController.from_i2c_addresses(

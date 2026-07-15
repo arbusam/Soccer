@@ -1,15 +1,18 @@
 import io
 import logging
+import math
 import socketserver
-from http import server
-from threading import Condition
-import cv2
-import threading
 import asyncio
+import threading
+from http import server
+from pathlib import Path
+from threading import Condition
+
+import cv2
+import numpy as np
 from ball_distance_calibration import (
     DEFAULT_DISTANCE_CALIBRATION_FILE,
     calculate_ball_bearing_deg,
-    detect_orange_ball,
     get_distance_calibration_resolution,
     load_distance_calibration,
     predict_distance_from_calibration,
@@ -19,6 +22,29 @@ from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
 from picamera2.outputs import FileOutput
 from picamera2.request import MappedArray
+from ultralytics import YOLO
+
+
+BALL_CLASS_ID = 0
+BALL_CLASS_NAME = "ball"
+DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-obb-n_ncnn_model"
+
+
+def _to_numpy(value):
+    if value is None:
+        return None
+    if hasattr(value, "cpu"):
+        value = value.cpu()
+    if hasattr(value, "numpy"):
+        return value.numpy()
+    return np.asarray(value)
+
+
+def _resolve_model_path(model_path):
+    model_path = Path(model_path)
+    if model_path.is_absolute():
+        return model_path
+    return Path(__file__).resolve().parent / model_path
 
 class Camera:
     def __init__(
@@ -27,6 +53,8 @@ class Camera:
         resolution=None,
         frame_rate=30,
         distance_calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE,
+        ball_model_path=DEFAULT_BALL_MODEL_PATH,
+        ball_confidence=0.25,
     ):
         if resolution is None:
             resolution = get_distance_calibration_resolution(distance_calibration_file) or (
@@ -50,8 +78,12 @@ class Camera:
         self._frame_id = 0
         self._measurement_lock = threading.Lock()
         self._capture_started = False
+        self._recording = False
         self._server_started = False
         self._is_shutting_down = False
+        self.ball_model_path = _resolve_model_path(ball_model_path)
+        self.ball_confidence = ball_confidence
+        self.ball_model = YOLO(str(self.ball_model_path))
         self.calibrated = True
         self.upperbound = 0
         self.lowerbound = 0
@@ -67,7 +99,7 @@ class Camera:
                 distance_calibration_file,
             )
 
-        # Enable color detection callback by default
+        # Enable detection callback by default
         self.picam2.pre_callback = self._proxy_callback
 
         # # print camera modes
@@ -75,6 +107,10 @@ class Camera:
             
         # Define async tasks
         self.async_tasks = [self.run_server]
+
+    @property
+    def stream_enabled(self):
+        return self._server_started
 
     class StreamingOutput(io.BufferedIOBase):
         def __init__(self):
@@ -167,11 +203,128 @@ class Camera:
         self.user_callback = callback_function
         self.picam2.pre_callback = self._proxy_callback
 
-    def _start_capture(self):
+    def _is_ball_class(self, class_id):
+        class_id = int(class_id)
+        model_names = getattr(self.ball_model, "names", None)
+        class_name = None
+        if isinstance(model_names, dict):
+            class_name = model_names.get(class_id)
+        elif isinstance(model_names, (list, tuple)) and 0 <= class_id < len(model_names):
+            class_name = model_names[class_id]
+
+        if class_name is not None:
+            return str(class_name).strip().lower() == BALL_CLASS_NAME
+        return class_id == BALL_CLASS_ID
+
+    def _add_detection_candidate(
+        self,
+        candidates,
+        class_id,
+        confidence,
+        xyxy=None,
+        polygon=None,
+    ):
+        if not self._is_ball_class(class_id):
+            return
+
+        if polygon is not None:
+            polygon = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
+            min_x, min_y = polygon.min(axis=0)
+            max_x, max_y = polygon.max(axis=0)
+        elif xyxy is not None:
+            min_x, min_y, max_x, max_y = map(float, xyxy)
+        else:
+            return
+
+        width = max_x - min_x
+        height = max_y - min_y
+        if width <= 0 or height <= 0:
+            return
+
+        centre_x = min_x + (width / 2.0)
+        centre_y = min_y + (height / 2.0)
+        candidates.append(
+            {
+                "bbox": (
+                    int(round(min_x)),
+                    int(round(min_y)),
+                    int(round(width)),
+                    int(round(height)),
+                ),
+                "centre": (centre_x, centre_y),
+                "radial_pixels": math.hypot(
+                    centre_x - (self.resolution[0] / 2.0),
+                    centre_y - (self.resolution[1] / 2.0),
+                ),
+                "bounding_box_area": width * height,
+                "confidence": float(confidence),
+                "polygon": polygon,
+            }
+        )
+
+    def _detect_ball(self, frame):
+        results = self.ball_model.predict(
+            frame,
+            conf=self.ball_confidence,
+            verbose=False,
+        )
+        if not results:
+            return None
+
+        result = results[0]
+        candidates = []
+
+        obb = getattr(result, "obb", None)
+        if obb is not None and getattr(obb, "cls", None) is not None:
+            classes = _to_numpy(obb.cls)
+            confidences = _to_numpy(getattr(obb, "conf", None))
+            polygons = _to_numpy(getattr(obb, "xyxyxyxy", None))
+            boxes = _to_numpy(getattr(obb, "xyxy", None))
+
+            for index, class_id in enumerate(classes):
+                confidence = confidences[index] if confidences is not None else 0.0
+                polygon = polygons[index] if polygons is not None else None
+                box = boxes[index] if boxes is not None else None
+                self._add_detection_candidate(
+                    candidates,
+                    class_id,
+                    confidence,
+                    xyxy=box,
+                    polygon=polygon,
+                )
+
+        boxes = getattr(result, "boxes", None)
+        if boxes is not None and getattr(boxes, "cls", None) is not None:
+            classes = _to_numpy(boxes.cls)
+            confidences = _to_numpy(getattr(boxes, "conf", None))
+            xyxy_boxes = _to_numpy(getattr(boxes, "xyxy", None))
+
+            for index, class_id in enumerate(classes):
+                confidence = confidences[index] if confidences is not None else 0.0
+                box = xyxy_boxes[index] if xyxy_boxes is not None else None
+                self._add_detection_candidate(
+                    candidates,
+                    class_id,
+                    confidence,
+                    xyxy=box,
+                )
+
+        if not candidates:
+            return None
+        return max(candidates, key=lambda detection: detection["confidence"])
+
+    def _start_capture(self, enable_stream=False):
         if self._capture_started:
             return
 
-        self.picam2.start_recording(JpegEncoder(), FileOutput(self.output))
+        if enable_stream:
+            # JPEG encode frames into the MJPEG buffer used by the HTTP preview.
+            self.picam2.start_recording(JpegEncoder(), FileOutput(self.output))
+            self._recording = True
+        else:
+            # Capture-only path: run the detection callback without JPEG encoding.
+            self.picam2.start()
+            self._recording = False
         self._capture_started = True
 
     def _start_http_server(self):
@@ -187,12 +340,12 @@ class Camera:
         print(f"Raw MJPEG stream available at http://localhost:{self.PORT}/stream.mjpg")
 
     def start(self):
-        """Start camera capture so bearing updates in callback."""
-        self._start_capture()
+        """Start camera capture so bearing updates in callback (no MJPEG preview)."""
+        self._start_capture(enable_stream=False)
 
     def start_stream(self):
         """Start camera capture and the MJPEG HTTP stream."""
-        self._start_capture()
+        self._start_capture(enable_stream=True)
         self._start_http_server()
 
     def _proxy_callback(self, request):
@@ -202,26 +355,29 @@ class Camera:
             with MappedArray(request, "main") as m:
                 if self._is_shutting_down:
                     return
-                
-                # Convert the image to HSV
-                hsv = cv2.cvtColor(m.array, cv2.COLOR_BGR2HSV)
 
-                # Print HSV value at the center of the frame for tuning/debugging.
-                # center_y = m.array.shape[0] // 2
-                # center_x = m.array.shape[1] // 2
-                # print(f"Center HSV: {hsv[center_y, center_x]}")
-                #
-                # # Draw a small crosshair in the center of the image
-                # cv2.line(m.array, (m.array.shape[1] // 2, m.array.shape[0] // 2 - 10), (m.array.shape[1] // 2, m.array.shape[0] // 2 + 10), (0, 0, 255), 2)
-                # cv2.line(m.array, (m.array.shape[1] // 2 - 10, m.array.shape[0] // 2), (m.array.shape[1] // 2 + 10, m.array.shape[0] // 2), (0, 0, 255), 2)
+                preview_active = self._server_started
+                needs_hsv = (not self.calibrated) or self.user_callback is not None
+                hsv = cv2.cvtColor(m.array, cv2.COLOR_BGR2HSV) if needs_hsv else None
+
                 if self.calibrated:
-
-                    detection = detect_orange_ball(m.array)
+                    detection = self._detect_ball(m.array)
                     if detection is not None:
                         x, y, w, h = detection["bbox"]
                         centre_x, centre_y = detection["centre"]
-                        cv2.drawContours(m.array, [detection["contour"]], -1, (0, 165, 255), 2)
-                        cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 0, 255), 2)
+                        if preview_active:
+                            if detection["polygon"] is not None:
+                                points = detection["polygon"].astype(np.int32).reshape(-1, 1, 2)
+                                cv2.polylines(m.array, [points], True, (0, 165, 255), 2)
+                            else:
+                                cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 165, 255), 2)
+                            cv2.circle(
+                                m.array,
+                                (int(round(centre_x)), int(round(centre_y))),
+                                5,
+                                (255, 255, 255),
+                                -1,
+                            )
 
                         # Find the bearing of the ball centre from the centre of the image.
                         new_bearing = calculate_ball_bearing_deg(
@@ -231,19 +387,17 @@ class Camera:
                             m.array.shape[0],
                         )
                         new_bearing += 180
-                        # print(new_bearing)
                         new_distance = predict_distance_from_calibration(
                             self.distance_calibration,
                             detection["radial_pixels"],
                         )
-                        # print(new_distance)
                         if new_distance is None:
                             if (
                                 self.distance_calibration is None
                                 and not self._distance_calibration_warning_logged
                             ):
                                 logging.warning(
-                                    "Orange ball detected, but no valid distance calibration is loaded."
+                                    "Ball detected, but no valid distance calibration is loaded."
                                 )
                                 self._distance_calibration_warning_logged = True
                     else:
@@ -253,29 +407,38 @@ class Camera:
                         self._bearing = new_bearing
                         self._distance = new_distance
                         self._frame_id += 1
-                    # print(f"Bearing: {self._bearing}")
 
-                    # Call the user-specified callback with both the original and HSV arrays
                     if self.user_callback:
                         self.user_callback(m.array, hsv)
                 else:
                     # Only run for calibration, when self.calibrated is false
                     center_y = m.array.shape[0] - 250
                     center_x = m.array.shape[1] - 1200
-                    
-                    # Draw a small crosshair in the center of the image
-                    cv2.line(m.array, (center_x, center_y - 10), (center_x, center_y + 10), (0, 0, 255), 2)
-                    cv2.line(m.array, (center_x - 10, center_y), (center_x + 10, center_y), (0, 0, 255), 2)
+
+                    if preview_active:
+                        cv2.line(
+                            m.array,
+                            (center_x, center_y - 10),
+                            (center_x, center_y + 10),
+                            (0, 0, 255),
+                            2,
+                        )
+                        cv2.line(
+                            m.array,
+                            (center_x - 10, center_y),
+                            (center_x + 10, center_y),
+                            (0, 0, 255),
+                            2,
+                        )
 
                     # Check for colour values in certain range
                     pixel_colour = hsv[center_y, center_x]
-                    if 10<pixel_colour[0]<25 and 100<pixel_colour[1]<255 and 100<pixel_colour[2]<255:
+                    if 10 < pixel_colour[0] < 25 and 100 < pixel_colour[1] < 255 and 100 < pixel_colour[2] < 255:
                         if (pixel_colour[0], pixel_colour[1], pixel_colour[2]) not in self.colours:
                             self.colours.append((pixel_colour[0], pixel_colour[1], pixel_colour[2]))
 
                     # Add detected colour to text file
                     with open("calibrate_camera.txt", "w") as c:
-                        # c.write(str((pixel_colour[0], pixel_colour[1], pixel_colour[2])))
                         for i in self.colours:
                             c.write(str(i[0]) + " " + str(i[1]) + " " + str(i[2]))
                             c.write("\n")
@@ -323,10 +486,14 @@ class Camera:
         self._server_started = False
         if self._capture_started:
             try:
-                self.picam2.stop_recording()
+                if self._recording:
+                    self.picam2.stop_recording()
+                else:
+                    self.picam2.stop()
             except Exception as e:
-                logging.warning("Error stopping camera recording: %s", e)
+                logging.warning("Error stopping camera capture: %s", e)
             self._capture_started = False
+            self._recording = False
         print("Camera stopped")
 
 async def main():
