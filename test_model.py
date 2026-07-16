@@ -13,7 +13,7 @@ picam2.configure("preview")
 picam2.start()
 
 # Load the trained YOLO26-OBB NCNN export (same directory as this script)
-model = YOLO("open-soccer-obb-n_ncnn_model")
+model = YOLO("model")
 
 prev_time = time.perf_counter()
 

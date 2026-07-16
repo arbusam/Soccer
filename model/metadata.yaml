@@ -1,0 +1,23 @@
+description: Ultralytics YOLO26s-obb model trained on /home/arhan/Soccer/training/datasets/open-soccer-obb/data.yaml
+author: Ultralytics
+date: '2026-07-15T22:10:43.549553'
+version: 8.4.95
+license: AGPL-3.0 License (https://ultralytics.com/license)
+docs: https://docs.ultralytics.com
+stride: 32
+task: obb
+head: OBB26
+batch: 1
+imgsz:
+- 640
+- 640
+names:
+  0: Ball
+  1: Blue Goal
+  2: Yellow Goal
+  3: Bot
+args:
+  batch: 1
+  quantize: null
+channels: 3
+end2end: false
