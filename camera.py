@@ -27,7 +27,7 @@ from ultralytics import YOLO
 
 BALL_CLASS_ID = 0
 BALL_CLASS_NAME = "ball"
-DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-obb-n_ncnn_model"
+DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-obb-s_ncnn_model"
 
 
 def _to_numpy(value):

@@ -1,8 +1,11 @@
 import time
+from pathlib import Path
 
 import cv2
 from picamera2 import Picamera2
 from ultralytics import YOLO
+
+MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-obb-s_ncnn_model"
 
 # Initialize the Picamera2
 picam2 = Picamera2()
@@ -12,8 +15,8 @@ picam2.preview_configuration.align()
 picam2.configure("preview")
 picam2.start()
 
-# Load the trained YOLO26-OBB NCNN export (same directory as this script)
-model = YOLO("model")
+# Load the trained YOLO26-OBB NCNN export
+model = YOLO(str(MODEL_PATH), task="obb")
 
 prev_time = time.perf_counter()
 

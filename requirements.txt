@@ -1,13 +1,9 @@
 pygame
-opencv-python
 pybind11
 git+https://github.com/Aw3someAndrew/SteelBar_CircuitPython_powerful_bldc_driver
-numpy
 websockets
 smbus2
-picamera2
 adafruit-blinka
-lgpio
 adafruit-circuitpython-bno08x
 matplotlib
 pandas-stubs
