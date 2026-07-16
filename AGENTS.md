@@ -72,3 +72,17 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 **Problem:** Label Studio stores `rectanglelabels` as percent `x,y,width,height` plus clockwise `rotation`, while Ultralytics OBB wants `class x1 y1 x2 y2 x3 y3 x4 y4` (normalized corners).
 
 **Solution:** `training/export_label_studio.py` reads `label-studio-data/label_studio.sqlite3`, maps `/data/...` image URIs to `label-studio-data/media/...`, rotates box corners clockwise around the box center, and writes a YOLO-OBB dataset under `training/datasets/`. `training/train.py` trains `yolo26{n,s,m,l,x}-obb.pt` via `--size` (default `n`) on Intel XPU (`device=xpu`, same as `~/training`, via `training/xpu_patch.py`) and exports NCNN under `training/exports/open-soccer-obb-{size}_ncnn_model/`, with runs in `training/runs/open-soccer-obb-{size}/` so sizes coexist. Use `/home/arhan/training/.venv/bin/python training/train.py ...` (PyTorch XPU build); AMP stays off on XPU. Mosaic is on by default; if OBB+mosaic hits torch-xpu `scatter gather kernel index out of bounds`, rerun with `--no-mosaic` (or `--export-only` / `--resume` from saved weights).
+
+## Hailo-8 AI HAT+ ball inference
+
+**Problem:** Ultralytics NCNN on the Pi CPU (~5 FPS) never uses the AI HAT+ (Hailo-8, 26 TOPS). Hailo only runs compiled `.hef` models.
+
+**Solution:** Deploy axis-aligned YOLO26n detect (not OBB) on Hailo:
+
+1. On the Pi: `bash scripts/verify_hailo.sh` (needs `hailo-all` + `/dev/hailo*`).
+2. Export detect labels: `python training/export_label_studio.py --format detect`.
+3. Train + ONNX: `python training/train_detect.py --size n` → `training/exports/open-soccer-detect-n/model.onnx`.
+4. On x86 with Hailo DFC: `python training/compile_hailo.py --hw-arch hailo8` → `open-soccer-detect-n_hailo_model/model.hef`.
+5. Copy that folder to the Pi. `test_model.py` and `camera.py` use [`hailo_ball.py`](hailo_ball.py) (HailoRT) for inference.
+
+YOLO26 is NMS-free (`1×300×6` outputs); the HEF uses input normalization only and host-side decode. OBB on Hailo remains unsupported/research.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export Label Studio Open Soccer annotations to a YOLO-OBB dataset."""
+"""Export Label Studio Open Soccer annotations to YOLO-OBB or YOLO-detect datasets."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ CLASS_TO_ID = {name: i for i, name in enumerate(CLASS_NAMES)}
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = REPO_ROOT / "label-studio-data"
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "datasets" / "open-soccer-obb"
+DEFAULT_DETECT_OUT_DIR = Path(__file__).resolve().parent / "datasets" / "open-soccer-detect"
 
 
 def _ls_image_path(data_dir: Path, image_uri: str) -> Path:
@@ -91,6 +92,43 @@ def _result_to_yolo_obb_lines(result_json: str) -> list[str]:
     return lines
 
 
+def _result_to_yolo_detect_lines(result_json: str) -> list[str]:
+    """Axis-aligned YOLO detect labels from Label Studio rotated rectangles.
+
+    Uses the AABB of the rotated corner polygon (normalized cx cy w h).
+    """
+    lines: list[str] = []
+    for item in json.loads(result_json):
+        if item.get("type") != "rectanglelabels":
+            continue
+        value = item.get("value") or {}
+        labels = value.get("rectanglelabels") or []
+        if not labels:
+            continue
+        class_id = CLASS_TO_ID.get(labels[0])
+        if class_id is None:
+            continue
+        corners = _rotated_corners(
+            float(value["x"]),
+            float(value["y"]),
+            float(value["width"]),
+            float(value["height"]),
+            float(value.get("rotation") or 0.0),
+        )
+        xs = [c[0] for c in corners]
+        ys = [c[1] for c in corners]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        width = max_x - min_x
+        height = max_y - min_y
+        if width <= 0.0 or height <= 0.0:
+            continue
+        cx = min_x + width / 2.0
+        cy = min_y + height / 2.0
+        lines.append(f"{class_id} {cx:.6f} {cy:.6f} {width:.6f} {height:.6f}")
+    return lines
+
+
 def _load_labeled_tasks(
     db_path: Path,
     project_id: int,
@@ -148,7 +186,11 @@ def export_dataset(
     project_id: int,
     val_fraction: float,
     seed: int,
+    label_format: str = "obb",
 ) -> Path:
+    if label_format not in {"obb", "detect"}:
+        raise ValueError(f"label_format must be 'obb' or 'detect', got {label_format!r}")
+
     db_path = data_dir / "label_studio.sqlite3"
     if not db_path.is_file():
         raise FileNotFoundError(f"Label Studio DB not found: {db_path}")
@@ -168,6 +210,9 @@ def export_dataset(
     rng.shuffle(indices)
     val_count = max(1, int(round(len(samples) * val_fraction))) if len(samples) > 1 else 0
     val_ids = set(indices[:val_count])
+    to_lines = (
+        _result_to_yolo_detect_lines if label_format == "detect" else _result_to_yolo_obb_lines
+    )
 
     exported = 0
     skipped = 0
@@ -178,7 +223,7 @@ def export_dataset(
             print(f"skip missing image: {src}")
             continue
 
-        lines = _result_to_yolo_obb_lines(result_json)
+        lines = to_lines(result_json)
         if not lines:
             skipped += 1
             continue
@@ -196,7 +241,7 @@ def export_dataset(
 
     yaml_path = _write_data_yaml(out_dir)
     print(
-        f"Exported {exported} images "
+        f"Exported {exported} images ({label_format}) "
         f"(skipped {skipped}) → {out_dir} "
         f"[train/val split, val≈{val_fraction:.0%}]"
     )
@@ -206,7 +251,7 @@ def export_dataset(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Export Label Studio annotations to YOLO-OBB format."
+        description="Export Label Studio annotations to YOLO-OBB or YOLO-detect format."
     )
     parser.add_argument(
         "--data-dir",
@@ -215,10 +260,17 @@ def main() -> None:
         help="Label Studio data directory (default: repo label-studio-data/)",
     )
     parser.add_argument(
+        "--format",
+        choices=("obb", "detect"),
+        default="obb",
+        dest="label_format",
+        help="Label format: obb (default) or axis-aligned detect",
+    )
+    parser.add_argument(
         "--out-dir",
         type=Path,
-        default=DEFAULT_OUT_DIR,
-        help="Output YOLO-OBB dataset directory",
+        default=None,
+        help="Output dataset directory (default depends on --format)",
     )
     parser.add_argument("--project-id", type=int, default=2, help="Label Studio project id")
     parser.add_argument(
@@ -233,12 +285,17 @@ def main() -> None:
     if not 0.0 <= args.val_fraction < 1.0:
         raise SystemExit("--val-fraction must be in [0, 1)")
 
+    out_dir = args.out_dir
+    if out_dir is None:
+        out_dir = DEFAULT_DETECT_OUT_DIR if args.label_format == "detect" else DEFAULT_OUT_DIR
+
     export_dataset(
         data_dir=args.data_dir.resolve(),
-        out_dir=args.out_dir.resolve(),
+        out_dir=out_dir.resolve(),
         project_id=args.project_id,
         val_fraction=args.val_fraction,
         seed=args.seed,
+        label_format=args.label_format,
     )
 
 

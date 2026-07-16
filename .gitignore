@@ -223,4 +223,9 @@ calibration_data.json
 ball_distance_calibration.json
 config.txt
 
+# Hailo compiled models (build with training/compile_hailo.py)
+*.hef
+*.har
+*.onnx
+
 .vscode/

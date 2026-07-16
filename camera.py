@@ -1,6 +1,5 @@
 import io
 import logging
-import math
 import socketserver
 import asyncio
 import threading
@@ -22,22 +21,10 @@ from picamera2 import Picamera2
 from picamera2.encoders import JpegEncoder
 from picamera2.outputs import FileOutput
 from picamera2.request import MappedArray
-from ultralytics import YOLO
+from hailo_ball import HailoBallDetector
 
 
-BALL_CLASS_ID = 0
-BALL_CLASS_NAME = "ball"
-DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-obb-s_ncnn_model"
-
-
-def _to_numpy(value):
-    if value is None:
-        return None
-    if hasattr(value, "cpu"):
-        value = value.cpu()
-    if hasattr(value, "numpy"):
-        return value.numpy()
-    return np.asarray(value)
+DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-detect-n_hailo_model"
 
 
 def _resolve_model_path(model_path):
@@ -83,7 +70,10 @@ class Camera:
         self._is_shutting_down = False
         self.ball_model_path = _resolve_model_path(ball_model_path)
         self.ball_confidence = ball_confidence
-        self.ball_model = YOLO(str(self.ball_model_path))
+        self.ball_model = HailoBallDetector(
+            self.ball_model_path,
+            conf=ball_confidence,
+        )
         self.calibrated = True
         self.upperbound = 0
         self.lowerbound = 0
@@ -203,115 +193,8 @@ class Camera:
         self.user_callback = callback_function
         self.picam2.pre_callback = self._proxy_callback
 
-    def _is_ball_class(self, class_id):
-        class_id = int(class_id)
-        model_names = getattr(self.ball_model, "names", None)
-        class_name = None
-        if isinstance(model_names, dict):
-            class_name = model_names.get(class_id)
-        elif isinstance(model_names, (list, tuple)) and 0 <= class_id < len(model_names):
-            class_name = model_names[class_id]
-
-        if class_name is not None:
-            return str(class_name).strip().lower() == BALL_CLASS_NAME
-        return class_id == BALL_CLASS_ID
-
-    def _add_detection_candidate(
-        self,
-        candidates,
-        class_id,
-        confidence,
-        xyxy=None,
-        polygon=None,
-    ):
-        if not self._is_ball_class(class_id):
-            return
-
-        if polygon is not None:
-            polygon = np.asarray(polygon, dtype=np.float32).reshape(-1, 2)
-            min_x, min_y = polygon.min(axis=0)
-            max_x, max_y = polygon.max(axis=0)
-        elif xyxy is not None:
-            min_x, min_y, max_x, max_y = map(float, xyxy)
-        else:
-            return
-
-        width = max_x - min_x
-        height = max_y - min_y
-        if width <= 0 or height <= 0:
-            return
-
-        centre_x = min_x + (width / 2.0)
-        centre_y = min_y + (height / 2.0)
-        candidates.append(
-            {
-                "bbox": (
-                    int(round(min_x)),
-                    int(round(min_y)),
-                    int(round(width)),
-                    int(round(height)),
-                ),
-                "centre": (centre_x, centre_y),
-                "radial_pixels": math.hypot(
-                    centre_x - (self.resolution[0] / 2.0),
-                    centre_y - (self.resolution[1] / 2.0),
-                ),
-                "bounding_box_area": width * height,
-                "confidence": float(confidence),
-                "polygon": polygon,
-            }
-        )
-
     def _detect_ball(self, frame):
-        results = self.ball_model.predict(
-            frame,
-            conf=self.ball_confidence,
-            verbose=False,
-        )
-        if not results:
-            return None
-
-        result = results[0]
-        candidates = []
-
-        obb = getattr(result, "obb", None)
-        if obb is not None and getattr(obb, "cls", None) is not None:
-            classes = _to_numpy(obb.cls)
-            confidences = _to_numpy(getattr(obb, "conf", None))
-            polygons = _to_numpy(getattr(obb, "xyxyxyxy", None))
-            boxes = _to_numpy(getattr(obb, "xyxy", None))
-
-            for index, class_id in enumerate(classes):
-                confidence = confidences[index] if confidences is not None else 0.0
-                polygon = polygons[index] if polygons is not None else None
-                box = boxes[index] if boxes is not None else None
-                self._add_detection_candidate(
-                    candidates,
-                    class_id,
-                    confidence,
-                    xyxy=box,
-                    polygon=polygon,
-                )
-
-        boxes = getattr(result, "boxes", None)
-        if boxes is not None and getattr(boxes, "cls", None) is not None:
-            classes = _to_numpy(boxes.cls)
-            confidences = _to_numpy(getattr(boxes, "conf", None))
-            xyxy_boxes = _to_numpy(getattr(boxes, "xyxy", None))
-
-            for index, class_id in enumerate(classes):
-                confidence = confidences[index] if confidences is not None else 0.0
-                box = xyxy_boxes[index] if xyxy_boxes is not None else None
-                self._add_detection_candidate(
-                    candidates,
-                    class_id,
-                    confidence,
-                    xyxy=box,
-                )
-
-        if not candidates:
-            return None
-        return max(candidates, key=lambda detection: detection["confidence"])
+        return self.ball_model.best_ball(frame)
 
     def _start_capture(self, enable_stream=False):
         if self._capture_started:
@@ -494,6 +377,10 @@ class Camera:
                 logging.warning("Error stopping camera capture: %s", e)
             self._capture_started = False
             self._recording = False
+        try:
+            self.ball_model.close()
+        except Exception as e:
+            logging.warning("Error closing Hailo detector: %s", e)
         print("Camera stopped")
 
 async def main():
