@@ -1,4 +1,5 @@
 import math
+import time
 from pathlib import Path
 
 import numpy as np
@@ -105,6 +106,7 @@ picam2.configure("preview")
 picam2.start()
 
 model = YOLO(str(MODEL_PATH), task="obb")
+prev_time = time.perf_counter()
 
 try:
     while True:
@@ -117,8 +119,12 @@ try:
             else None
         )
 
+        now = time.perf_counter()
+        fps = 1.0 / (now - prev_time)
+        prev_time = now
+
         if detection is None:
-            print("ball: not found")
+            print(f"{fps:.1f} FPS  ball: not found")
             continue
 
         centre_x, centre_y = detection["centre"]
@@ -131,8 +137,11 @@ try:
         )
 
         if distance_mm is None:
-            print(f"ball: angle={angle_deg:.1f} deg  distance=n/a")
+            print(f"{fps:.1f} FPS  ball: angle={angle_deg:.1f} deg  distance=n/a")
         else:
-            print(f"ball: angle={angle_deg:.1f} deg  distance={distance_mm:.0f} mm")
+            print(
+                f"{fps:.1f} FPS  ball: angle={angle_deg:.1f} deg  "
+                f"distance={distance_mm:.0f} mm"
+            )
 finally:
     picam2.stop()
