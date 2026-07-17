@@ -62,6 +62,38 @@ class LatestFrameCamera:
             return out, self._seq
 
 
+def _det_from_xyxy(det: dict, frame_width: int, frame_height: int) -> dict:
+    x1, y1, x2, y2 = det["xyxy"]
+    centre_x = (x1 + x2) / 2.0
+    centre_y = (y1 + y2) / 2.0
+    return {
+        "bbox": (
+            int(round(x1)),
+            int(round(y1)),
+            int(round(x2 - x1)),
+            int(round(y2 - y1)),
+        ),
+        "centre": (centre_x, centre_y),
+        "radial_pixels": float(
+            np.hypot(centre_x - frame_width / 2.0, centre_y - frame_height / 2.0)
+        ),
+        "confidence": float(det["confidence"]),
+        "class_id": int(det["class_id"]),
+        "polygon": None,
+    }
+
+
+def _best_named(dets: list[dict], names: dict, label: str) -> dict | None:
+    label_l = label.strip().lower()
+    class_ids = {
+        int(cid) for cid, name in names.items() if str(name).strip().lower() == label_l
+    }
+    matches = [d for d in dets if int(d["class_id"]) in class_ids]
+    if not matches:
+        return None
+    return max(matches, key=lambda d: d["confidence"])
+
+
 def _print_detection(detection, frame_width, frame_height, distance_calibration, prefix=""):
     if detection is None:
         print(f"{prefix}ball: not found")
@@ -78,7 +110,20 @@ def _print_detection(detection, frame_width, frame_height, distance_calibration,
     dist_txt = "n/a" if distance_mm is None else f"{distance_mm:.0f} mm"
     print(
         f"{prefix}ball: angle={angle_deg:.1f} deg  distance={dist_txt}  "
-        f"conf={detection['confidence']:.3f}  bbox={detection['bbox']}"
+        f"conf={detection['confidence']:.3f}  bbox={detection['bbox']}  "
+        f"centre=({centre_x:.1f}, {centre_y:.1f})"
+    )
+
+
+def _print_bot(detection, prefix=""):
+    if detection is None:
+        print(f"{prefix}bot: not found")
+        return
+    centre_x, centre_y = detection["centre"]
+    x, y, w, h = detection["bbox"]
+    print(
+        f"{prefix}bot: centre=({centre_x:.1f}, {centre_y:.1f})  "
+        f"bbox=({x}, {y}, {w}, {h})  conf={detection['confidence']:.3f}"
     )
 
 
@@ -97,22 +142,47 @@ def run_image(image_path: Path, conf: float) -> None:
 
     with HailoBallDetector(MODEL_DIR, conf=conf) as detector:
         t0 = time.perf_counter()
-        detection = detector.best_ball(frame)
+        dets = detector.predict(frame)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
+        names = detector.names_map
 
+    ball_xyxy = _best_named(dets, names, "Ball")
+    bot_xyxy = _best_named(dets, names, "Bot")
+    ball = (
+        _det_from_xyxy(ball_xyxy, frame_width, frame_height) if ball_xyxy is not None else None
+    )
+    bot = _det_from_xyxy(bot_xyxy, frame_width, frame_height) if bot_xyxy is not None else None
+
+    prefix = f"{elapsed_ms:.1f}ms  "
     _print_detection(
-        detection,
+        ball,
         frame_width,
         frame_height,
         distance_calibration,
-        prefix=f"{elapsed_ms:.1f}ms  ",
+        prefix=prefix,
     )
+    _print_bot(bot, prefix=prefix)
 
-    if detection is not None:
-        x, y, w, h = detection["bbox"]
+    if ball is not None:
+        x, y, w, h = ball["bbox"]
         cv2.rectangle(bgr, (x, y), (x + w, y + h), (0, 165, 255), 2)
-        cx, cy = detection["centre"]
+        cx, cy = ball["centre"]
         cv2.circle(bgr, (int(cx), int(cy)), 4, (0, 255, 0), -1)
+    if bot is not None:
+        x, y, w, h = bot["bbox"]
+        cv2.rectangle(bgr, (x, y), (x + w, y + h), (255, 0, 0), 2)
+        cx, cy = bot["centre"]
+        cv2.circle(bgr, (int(cx), int(cy)), 4, (255, 0, 0), -1)
+        cv2.putText(
+            bgr,
+            "bot",
+            (x, max(0, y - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 0, 0),
+            2,
+            cv2.LINE_AA,
+        )
     out_path = image_path.with_name(f"{image_path.stem}_hailo{image_path.suffix}")
     cv2.imwrite(str(out_path), bgr)
     print(f"wrote {out_path}")
