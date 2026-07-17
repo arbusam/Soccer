@@ -313,11 +313,12 @@ class HailoBallDetector:
             quantized=False,
             format_type=FormatType.UINT8,
         )
-        # UINT8 avoids host-side dequant of the full (4+nc)×8400 map in HailoRT.
+        # FLOAT32: HailoRT dequants on the host. UINT8 + manual qp was dropping all
+        # detections when quant_info was wrong/missing (scores never passed conf).
         self._output_vstreams_params = OutputVStreamParams.make_from_network_group(
             self._network_group,
             quantized=False,
-            format_type=FormatType.UINT8,
+            format_type=FormatType.FLOAT32,
         )
 
         self._infer = InferVStreams(
@@ -430,6 +431,32 @@ class HailoBallDetector:
                 }
             )
         return detections
+
+    def debug_scores(self, frame_rgb: np.ndarray) -> dict:
+        """Return raw output stats for diagnosing empty detections."""
+        output, scale, pad = self._infer_raw(frame_rgb)
+        cf = _as_channels_first(output)
+        if cf.dtype != np.float32:
+            cf = _dequant(cf, self._out_scale, self._out_zp)
+        num_classes = cf.shape[0] - 4
+        per_class = {}
+        for class_id in range(num_classes):
+            scores = cf[4 + class_id]
+            idx = int(np.argmax(scores))
+            per_class[class_id] = {
+                "name": self.names.get(class_id, str(class_id)),
+                "max": float(scores[idx]),
+                "mean": float(np.mean(scores)),
+                "box": [float(v) for v in cf[:4, idx]],
+            }
+        return {
+            "dtype": str(output.dtype),
+            "shape": list(output.shape),
+            "letterbox_scale": scale,
+            "pad": pad,
+            "out_qp": {"scale": self._out_scale, "zp": self._out_zp},
+            "classes": per_class,
+        }
 
     def best_ball(self, frame_rgb: np.ndarray) -> dict | None:
         """Highest-confidence ball detection with centre / radial_pixels."""

@@ -127,7 +127,7 @@ def _print_bot(detection, prefix=""):
     )
 
 
-def run_image(image_path: Path, conf: float) -> None:
+def run_image(image_path: Path, conf: float, debug: bool = False) -> None:
     bgr = cv2.imread(str(image_path))
     if bgr is None:
         raise SystemExit(f"Could not read image: {image_path}")
@@ -141,6 +141,20 @@ def run_image(image_path: Path, conf: float) -> None:
     )
 
     with HailoBallDetector(MODEL_DIR, conf=conf) as detector:
+        if debug:
+            stats = detector.debug_scores(frame)
+            print(
+                f"debug: dtype={stats['dtype']} shape={stats['shape']} "
+                f"qp={stats['out_qp']} pad={stats['pad']} "
+                f"lb_scale={stats['letterbox_scale']:.4f}"
+            )
+            for class_id, info in stats["classes"].items():
+                print(
+                    f"  class {class_id} {info['name']}: "
+                    f"max={info['max']:.4f} mean={info['mean']:.4f} "
+                    f"box@max={info['box']}"
+                )
+
         t0 = time.perf_counter()
         dets = detector.predict(frame)
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -308,10 +322,15 @@ def main() -> None:
         help="Run once on this image file (RGB via OpenCV) instead of the camera",
     )
     parser.add_argument("--conf", type=float, default=BALL_CONFIDENCE)
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="With --image, print per-class max scores / output shape",
+    )
     args = parser.parse_args()
 
     if args.image is not None:
-        run_image(args.image.resolve(), conf=args.conf)
+        run_image(args.image.resolve(), conf=args.conf, debug=args.debug)
     else:
         run_camera(conf=args.conf)
 
