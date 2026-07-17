@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export Label Studio Open Soccer annotations to YOLO-OBB or YOLO-detect datasets."""
+"""Export Label Studio annotations to a YOLO-detect dataset, or rewrite them in-place as axis-aligned boxes."""
 
 from __future__ import annotations
 
@@ -9,15 +9,15 @@ import math
 import random
 import shutil
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
-CLASS_NAMES = ("Ball", "Blue Goal", "Yellow Goal", "Bot")
+CLASS_NAMES = ("Ball", "Bot")
 CLASS_TO_ID = {name: i for i, name in enumerate(CLASS_NAMES)}
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = REPO_ROOT / "label-studio-data"
-DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "datasets" / "open-soccer-obb"
-DEFAULT_DETECT_OUT_DIR = Path(__file__).resolve().parent / "datasets" / "open-soccer-detect"
+DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "datasets" / "open-soccer-detect"
 
 
 def _ls_image_path(data_dir: Path, image_uri: str) -> Path:
@@ -38,10 +38,7 @@ def _rotated_corners(
     h_pct: float,
     rotation_deg: float,
 ) -> list[tuple[float, float]]:
-    """Label Studio percent box + clockwise rotation → normalized OBB corners.
-
-    Returns four (x, y) corners in [0, 1], order TL→TR→BR→BL before rotation.
-    """
+    """Label Studio percent box + clockwise rotation → normalized corners in [0, 1]."""
     x = x_pct / 100.0
     y = y_pct / 100.0
     w = w_pct / 100.0
@@ -68,35 +65,28 @@ def _rotated_corners(
     return corners
 
 
-def _result_to_yolo_obb_lines(result_json: str) -> list[str]:
-    lines: list[str] = []
-    for item in json.loads(result_json):
-        if item.get("type") != "rectanglelabels":
-            continue
-        value = item.get("value") or {}
-        labels = value.get("rectanglelabels") or []
-        if not labels:
-            continue
-        class_id = CLASS_TO_ID.get(labels[0])
-        if class_id is None:
-            continue
-        corners = _rotated_corners(
-            float(value["x"]),
-            float(value["y"]),
-            float(value["width"]),
-            float(value["height"]),
-            float(value.get("rotation") or 0.0),
-        )
-        coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in corners)
-        lines.append(f"{class_id} {coords}")
-    return lines
+def _aabb_percent(
+    x_pct: float,
+    y_pct: float,
+    w_pct: float,
+    h_pct: float,
+    rotation_deg: float,
+) -> tuple[float, float, float, float] | None:
+    """Axis-aligned percent box covering a rotated Label Studio rectangle."""
+    corners = _rotated_corners(x_pct, y_pct, w_pct, h_pct, rotation_deg)
+    xs = [c[0] for c in corners]
+    ys = [c[1] for c in corners]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    width = (max_x - min_x) * 100.0
+    height = (max_y - min_y) * 100.0
+    if width <= 0.0 or height <= 0.0:
+        return None
+    return min_x * 100.0, min_y * 100.0, width, height
 
 
 def _result_to_yolo_detect_lines(result_json: str) -> list[str]:
-    """Axis-aligned YOLO detect labels from Label Studio rotated rectangles.
-
-    Uses the AABB of the rotated corner polygon (normalized cx cy w h).
-    """
+    """Axis-aligned YOLO detect labels from Label Studio rectangles."""
     lines: list[str] = []
     for item in json.loads(result_json):
         if item.get("type") != "rectanglelabels":
@@ -108,25 +98,116 @@ def _result_to_yolo_detect_lines(result_json: str) -> list[str]:
         class_id = CLASS_TO_ID.get(labels[0])
         if class_id is None:
             continue
-        corners = _rotated_corners(
+        aabb = _aabb_percent(
             float(value["x"]),
             float(value["y"]),
             float(value["width"]),
             float(value["height"]),
             float(value.get("rotation") or 0.0),
         )
-        xs = [c[0] for c in corners]
-        ys = [c[1] for c in corners]
-        min_x, max_x = min(xs), max(xs)
-        min_y, max_y = min(ys), max(ys)
-        width = max_x - min_x
-        height = max_y - min_y
-        if width <= 0.0 or height <= 0.0:
+        if aabb is None:
             continue
-        cx = min_x + width / 2.0
-        cy = min_y + height / 2.0
-        lines.append(f"{class_id} {cx:.6f} {cy:.6f} {width:.6f} {height:.6f}")
+        x_pct, y_pct, w_pct, h_pct = aabb
+        cx = (x_pct + w_pct / 2.0) / 100.0
+        cy = (y_pct + h_pct / 2.0) / 100.0
+        lines.append(f"{class_id} {cx:.6f} {cy:.6f} {w_pct / 100.0:.6f} {h_pct / 100.0:.6f}")
     return lines
+
+
+def _axis_align_result(result_json: str) -> tuple[str, int]:
+    """Rewrite rotated rectanglelabels to AABB with rotation=0. Returns (json, changed_count)."""
+    items = json.loads(result_json)
+    changed = 0
+    for item in items:
+        if item.get("type") != "rectanglelabels":
+            continue
+        value = item.get("value") or {}
+        rotation = float(value.get("rotation") or 0.0)
+        if abs(rotation) < 1e-9:
+            continue
+        aabb = _aabb_percent(
+            float(value["x"]),
+            float(value["y"]),
+            float(value["width"]),
+            float(value["height"]),
+            rotation,
+        )
+        if aabb is None:
+            continue
+        x_pct, y_pct, w_pct, h_pct = aabb
+        value["x"] = x_pct
+        value["y"] = y_pct
+        value["width"] = w_pct
+        value["height"] = h_pct
+        value["rotation"] = 0.0
+        item["value"] = value
+        changed += 1
+    return json.dumps(items, ensure_ascii=False), changed
+
+
+def update_label_studio_to_detect(
+    data_dir: Path,
+    project_id: int,
+    *,
+    apply: bool,
+) -> None:
+    """Convert rotated boxes in Label Studio's sqlite DB to axis-aligned rectangles.
+
+    Stop Label Studio before --apply so it does not overwrite the DB on exit.
+    """
+    db_path = data_dir / "label_studio.sqlite3"
+    if not db_path.is_file():
+        raise FileNotFoundError(f"Label Studio DB not found: {db_path}")
+
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT tc.id, tc.result
+            FROM task_completion AS tc
+            JOIN task AS t ON t.id = tc.task_id
+            WHERE t.project_id = ?
+              AND tc.was_cancelled = 0
+            ORDER BY tc.id ASC
+            """,
+            (project_id,),
+        ).fetchall()
+
+        updates: list[tuple[str, int]] = []
+        boxes_changed = 0
+        for completion_id, result_json in rows:
+            new_result, changed = _axis_align_result(result_json)
+            if changed:
+                updates.append((new_result, completion_id))
+                boxes_changed += changed
+
+        print(
+            f"Found {boxes_changed} rotated box(es) across {len(updates)} annotation(s) "
+            f"(project_id={project_id})."
+        )
+        if not updates:
+            print("Nothing to update.")
+            return
+
+        if not apply:
+            print("Dry run only. Re-run with --apply to write changes into Label Studio.")
+            print("Stop Label Studio before applying so it does not overwrite the DB on exit.")
+            return
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup = db_path.with_name(f"{db_path.name}.bak-detect-{stamp}")
+        shutil.copy2(db_path, backup)
+        print(f"Backup: {backup}")
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f")
+        conn.executemany(
+            "UPDATE task_completion SET result = ?, updated_at = ? WHERE id = ?",
+            [(result, now, completion_id) for result, completion_id in updates],
+        )
+        conn.commit()
+        print(f"Updated {len(updates)} annotation(s). Reload Label Studio to review.")
+    finally:
+        conn.close()
 
 
 def _load_labeled_tasks(
@@ -186,11 +267,7 @@ def export_dataset(
     project_id: int,
     val_fraction: float,
     seed: int,
-    label_format: str = "obb",
 ) -> Path:
-    if label_format not in {"obb", "detect"}:
-        raise ValueError(f"label_format must be 'obb' or 'detect', got {label_format!r}")
-
     db_path = data_dir / "label_studio.sqlite3"
     if not db_path.is_file():
         raise FileNotFoundError(f"Label Studio DB not found: {db_path}")
@@ -210,9 +287,6 @@ def export_dataset(
     rng.shuffle(indices)
     val_count = max(1, int(round(len(samples) * val_fraction))) if len(samples) > 1 else 0
     val_ids = set(indices[:val_count])
-    to_lines = (
-        _result_to_yolo_detect_lines if label_format == "detect" else _result_to_yolo_obb_lines
-    )
 
     exported = 0
     skipped = 0
@@ -223,7 +297,7 @@ def export_dataset(
             print(f"skip missing image: {src}")
             continue
 
-        lines = to_lines(result_json)
+        lines = _result_to_yolo_detect_lines(result_json)
         if not lines:
             skipped += 1
             continue
@@ -241,7 +315,7 @@ def export_dataset(
 
     yaml_path = _write_data_yaml(out_dir)
     print(
-        f"Exported {exported} images ({label_format}) "
+        f"Exported {exported} images (detect) "
         f"(skipped {skipped}) → {out_dir} "
         f"[train/val split, val≈{val_fraction:.0%}]"
     )
@@ -251,7 +325,10 @@ def export_dataset(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Export Label Studio annotations to YOLO-OBB or YOLO-detect format."
+        description=(
+            "Export Label Studio annotations to YOLO-detect, or rewrite rotated "
+            "boxes in Label Studio as axis-aligned rectangles."
+        )
     )
     parser.add_argument(
         "--data-dir",
@@ -260,17 +337,10 @@ def main() -> None:
         help="Label Studio data directory (default: repo label-studio-data/)",
     )
     parser.add_argument(
-        "--format",
-        choices=("obb", "detect"),
-        default="obb",
-        dest="label_format",
-        help="Label format: obb (default) or axis-aligned detect",
-    )
-    parser.add_argument(
         "--out-dir",
         type=Path,
-        default=None,
-        help="Output dataset directory (default depends on --format)",
+        default=DEFAULT_OUT_DIR,
+        help="Output dataset directory (default: training/datasets/open-soccer-detect)",
     )
     parser.add_argument("--project-id", type=int, default=2, help="Label Studio project id")
     parser.add_argument(
@@ -280,22 +350,38 @@ def main() -> None:
         help="Fraction of images reserved for validation",
     )
     parser.add_argument("--seed", type=int, default=42, help="Train/val shuffle seed")
+    parser.add_argument(
+        "--update-label-studio",
+        action="store_true",
+        help=(
+            "Rewrite rotated rectangles in Label Studio's sqlite DB to axis-aligned "
+            "boxes (rotation=0) so you can review them in the UI. Dry-run unless --apply."
+        ),
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="With --update-label-studio, write changes (creates a .bak-detect-* backup first)",
+    )
     args = parser.parse_args()
+
+    if args.update_label_studio:
+        update_label_studio_to_detect(
+            data_dir=args.data_dir.resolve(),
+            project_id=args.project_id,
+            apply=args.apply,
+        )
+        return
 
     if not 0.0 <= args.val_fraction < 1.0:
         raise SystemExit("--val-fraction must be in [0, 1)")
 
-    out_dir = args.out_dir
-    if out_dir is None:
-        out_dir = DEFAULT_DETECT_OUT_DIR if args.label_format == "detect" else DEFAULT_OUT_DIR
-
     export_dataset(
         data_dir=args.data_dir.resolve(),
-        out_dir=out_dir.resolve(),
+        out_dir=args.out_dir.resolve(),
         project_id=args.project_id,
         val_fraction=args.val_fraction,
         seed=args.seed,
-        label_format=args.label_format,
     )
 
 

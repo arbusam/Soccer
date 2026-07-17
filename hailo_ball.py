@@ -12,9 +12,7 @@ BALL_CLASS_NAME = "ball"
 DEFAULT_HAIL_MODEL_DIR = Path(__file__).resolve().parent / "open-soccer-detect-n_hailo_model"
 DEFAULT_CLASS_NAMES = {
     0: "Ball",
-    1: "Blue Goal",
-    2: "Yellow Goal",
-    3: "Bot",
+    1: "Bot",
 }
 
 
@@ -54,6 +52,99 @@ def _load_metadata(model_dir: Path) -> dict:
     return meta
 
 
+def _nms_xyxy(
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    iou_thres: float = 0.45,
+    max_det: int = 300,
+) -> list[int]:
+    """Greedy NMS for xyxy boxes. Returns kept indices."""
+    if boxes.size == 0:
+        return []
+    x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+    order = scores.argsort()[::-1]
+    keep: list[int] = []
+    while order.size > 0 and len(keep) < max_det:
+        i = int(order[0])
+        keep.append(i)
+        if order.size == 1:
+            break
+        rest = order[1:]
+        xx1 = np.maximum(x1[i], x1[rest])
+        yy1 = np.maximum(y1[i], y1[rest])
+        xx2 = np.minimum(x2[i], x2[rest])
+        yy2 = np.minimum(y2[i], y2[rest])
+        inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
+        iou = inter / (areas[i] + areas[rest] - inter + 1e-9)
+        order = rest[iou <= iou_thres]
+    return keep
+
+
+def _decode_detections(
+    output: np.ndarray,
+    conf_thres: float,
+    iou_thres: float = 0.45,
+    max_det: int = 300,
+) -> list[tuple[float, float, float, float, float, int]]:
+    """Decode Hailo YOLO26 output to (x1,y1,x2,y2,conf,cls) in letterbox space.
+
+    Supports:
+    - end2end truncated raw: (N, 4+nc) xyxy + class scores (N typically 8400)
+    - legacy end2end topk: (300, 6) xyxy + conf + cls
+    """
+    output = np.asarray(output, dtype=np.float32)
+    if output.ndim == 3:
+        output = output[0]
+    if output.ndim == 2 and output.shape[0] in {4, 5, 6, 7, 8} and output.shape[1] > output.shape[0]:
+        # (4+nc, N) → (N, 4+nc)
+        output = output.T
+    if output.ndim != 2 or output.shape[-1] < 6:
+        raise RuntimeError(
+            f"Unexpected Hailo output shape {output.shape}; expected (N, 4+nc) "
+            "or (N, 6) YOLO26 detections in letterbox space."
+        )
+
+    num_rows, num_cols = output.shape
+    # Raw head: many anchors, channels = xyxy + class scores.
+    # End2end topk export: fixed 300 rows of [xyxy, conf, cls].
+    is_raw = num_cols > 6 or num_rows > 500
+    decoded: list[tuple[float, float, float, float, float, int]] = []
+
+    if is_raw:
+        boxes = output[:, :4]
+        class_scores = output[:, 4:]
+        class_ids = np.argmax(class_scores, axis=1)
+        confidences = class_scores[np.arange(num_rows), class_ids]
+        mask = confidences >= conf_thres
+        if not np.any(mask):
+            return []
+        boxes = boxes[mask]
+        confidences = confidences[mask]
+        class_ids = class_ids[mask]
+        keep = _nms_xyxy(boxes, confidences, iou_thres=iou_thres, max_det=max_det)
+        for idx in keep:
+            x1, y1, x2, y2 = (float(v) for v in boxes[idx])
+            decoded.append((x1, y1, x2, y2, float(confidences[idx]), int(class_ids[idx])))
+        return decoded
+
+    for row in output:
+        conf = float(row[4])
+        if conf < conf_thres:
+            continue
+        decoded.append(
+            (
+                float(row[0]),
+                float(row[1]),
+                float(row[2]),
+                float(row[3]),
+                conf,
+                int(row[5]),
+            )
+        )
+    return decoded
+
+
 class HailoBallDetector:
     """Run a compiled YOLO26 detect HEF on HailoRT and return ball candidates."""
 
@@ -61,13 +152,14 @@ class HailoBallDetector:
         self,
         model_dir: str | Path = DEFAULT_HAIL_MODEL_DIR,
         conf: float = 0.25,
+        iou: float = 0.45,
     ):
         self.model_dir = Path(model_dir)
         self.hef_path = self.model_dir / "model.hef"
         if not self.hef_path.is_file():
             raise FileNotFoundError(
                 f"Hailo HEF not found: {self.hef_path}\n"
-                "Train/export ONNX with training/train_detect.py, then compile with "
+                "Train/export ONNX with training/train.py, then compile with "
                 "training/compile_hailo.py on an x86 host with the Hailo DFC, and copy "
                 f"{self.model_dir.name}/ to this machine."
             )
@@ -90,6 +182,7 @@ class HailoBallDetector:
             ) from exc
 
         self.conf = float(conf)
+        self.iou = float(iou)
         self.meta = _load_metadata(self.model_dir)
         self.names = self.meta.get("names") or DEFAULT_CLASS_NAMES
         imgsz = self.meta.get("imgsz") or 640
@@ -194,7 +287,7 @@ class HailoBallDetector:
         input_data = {self._input_name: np.expand_dims(padded, axis=0)}
         raw = self._infer.infer(input_data)
 
-        # Prefer the first output tensor; YOLO26 end-to-end is (1, 300, 6).
+        # First output tensor: raw (1, 8400, 4+nc) after /model.23/Transpose cut.
         output = None
         for info in self._output_vstream_infos:
             tensor = np.asarray(raw[info.name])
@@ -204,26 +297,15 @@ class HailoBallDetector:
         if output is None:
             return []
 
-        output = np.asarray(output)
-        if output.ndim == 3:
-            output = output[0]
-        if output.ndim != 2 or output.shape[-1] < 6:
-            raise RuntimeError(
-                f"Unexpected Hailo output shape {output.shape}; expected (N, 6) "
-                "YOLO26 detections [x1,y1,x2,y2,conf,cls] in letterbox space."
-            )
-
         detections: list[dict] = []
         frame_h, frame_w = frame_rgb.shape[:2]
-        for row in output:
-            conf = float(row[4])
-            if conf < self.conf:
-                continue
-            class_id = int(row[5])
-            x1 = (float(row[0]) - pad_left) / scale
-            y1 = (float(row[1]) - pad_top) / scale
-            x2 = (float(row[2]) - pad_left) / scale
-            y2 = (float(row[3]) - pad_top) / scale
+        for x1, y1, x2, y2, conf, class_id in _decode_detections(
+            output, conf_thres=self.conf, iou_thres=self.iou
+        ):
+            x1 = (x1 - pad_left) / scale
+            y1 = (y1 - pad_top) / scale
+            x2 = (x2 - pad_left) / scale
+            y2 = (y2 - pad_top) / scale
             x1 = min(max(x1, 0.0), frame_w - 1.0)
             y1 = min(max(y1, 0.0), frame_h - 1.0)
             x2 = min(max(x2, 0.0), frame_w - 1.0)

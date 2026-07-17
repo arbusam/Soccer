@@ -1,7 +1,6 @@
-# Train on Intel Arc via PyTorch XPU (same stack as ~/training).
-# Prefer that venv:
-#   /home/arhan/training/.venv/bin/python training/train.py --export-dataset
-# Or install XPU torch into a Python 3.12 venv:
+# Train YOLO26 detect on Intel Arc (PyTorch XPU) via the project .venv:
+#   python training/train.py --size n
+# Install/refresh XPU torch if needed:
 #   pip install torch torchvision --index-url https://download.pytorch.org/whl/xpu
 ultralytics>=8.4.0
 torch
@@ -9,6 +8,3 @@ torchvision
 PyYAML
 numpy
 opencv-python
-# Pulled automatically by ultralytics on NCNN export; pin for known-good PNNX:
-# pnnx==20260526
-# ncnn

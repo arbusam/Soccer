@@ -152,7 +152,6 @@ training/datasets/
 training/runs/
 training/exports/
 training/*.pt
-**/yolo26*-obb.pt
 **/yolo26*.pt
 
 # Spyder project settings

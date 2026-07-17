@@ -67,22 +67,18 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **Solution:** Keep the strategy code in a single "yellow-side" frame inside `defence.py`, and let `simulate.py` rotate cyan bots into that frame before calling `defence()` or `goalie()`. The required transform is a 180° rotation of the full world state: `(x, y) -> (PITCH_WIDTH - x, PITCH_HEIGHT - y)` and `yaw/direction/rotation -> angle + 180° (mod 360)`. After the controller returns, rotate `direction` and `rotation` back into the real field frame.
 
-## YOLO26-OBB training (`training/`)
+## Hailo-8 AI HAT+ ball inference (`training/`)
 
-**Problem:** Label Studio stores `rectanglelabels` as percent `x,y,width,height` plus clockwise `rotation`, while Ultralytics OBB wants `class x1 y1 x2 y2 x3 y3 x4 y4` (normalized corners).
+**Problem:** Ultralytics NCNN on the Pi CPU (~5 FPS) never uses the AI HAT+ (Hailo-8, 26 TOPS). Hailo only runs compiled `.hef` models. Training is axis-aligned YOLO26 detect (not OBB).
 
-**Solution:** `training/export_label_studio.py` reads `label-studio-data/label_studio.sqlite3`, maps `/data/...` image URIs to `label-studio-data/media/...`, rotates box corners clockwise around the box center, and writes a YOLO-OBB dataset under `training/datasets/`. `training/train.py` trains `yolo26{n,s,m,l,x}-obb.pt` via `--size` (default `n`) on Intel XPU (`device=xpu`, same as `~/training`, via `training/xpu_patch.py`) and exports NCNN under `training/exports/open-soccer-obb-{size}_ncnn_model/`, with runs in `training/runs/open-soccer-obb-{size}/` so sizes coexist. Use `/home/arhan/training/.venv/bin/python training/train.py ...` (PyTorch XPU build); AMP stays off on XPU. Mosaic is on by default; if OBB+mosaic hits torch-xpu `scatter gather kernel index out of bounds`, rerun with `--no-mosaic` (or `--export-only` / `--resume` from saved weights).
-
-## Hailo-8 AI HAT+ ball inference
-
-**Problem:** Ultralytics NCNN on the Pi CPU (~5 FPS) never uses the AI HAT+ (Hailo-8, 26 TOPS). Hailo only runs compiled `.hef` models.
-
-**Solution:** Deploy axis-aligned YOLO26n detect (not OBB) on Hailo:
+**Solution:**
 
 1. On the Pi: `bash scripts/verify_hailo.sh` (needs `hailo-all` + `/dev/hailo*`).
-2. Export detect labels: `python training/export_label_studio.py --format detect`.
-3. Train + ONNX: `python training/train_detect.py --size n` → `training/exports/open-soccer-detect-n/model.onnx`.
-4. On x86 with Hailo DFC: `python training/compile_hailo.py --hw-arch hailo8` → `open-soccer-detect-n_hailo_model/model.hef`.
-5. Copy that folder to the Pi. `test_model.py` and `camera.py` use [`hailo_ball.py`](hailo_ball.py) (HailoRT) for inference.
+2. Optional — rewrite rotated Label Studio boxes to axis-aligned AABBs in the DB so you can review them in the UI (stop Label Studio first):  
+   `python training/export_label_studio.py --update-label-studio` (dry-run), then `--update-label-studio --apply`.
+3. Export YOLO-detect dataset: `python training/export_label_studio.py` → `training/datasets/open-soccer-detect/`.
+4. Train + ONNX (project `.venv`): `python training/train.py --size n` → `training/exports/open-soccer-detect-n/model.onnx` (XPU via `training/xpu_patch.py`; AMP off on XPU; use `--no-mosaic` if XPU scatter/gather errors).
+5. On x86 with Hailo DFC: `python training/compile_hailo.py --hw-arch hailo8` → `open-soccer-detect-n_hailo_model/model.hef`.
+6. Copy that folder to the Pi. `test_model.py` and `camera.py` use [`hailo_ball.py`](hailo_ball.py) (HailoRT) for inference.
 
-YOLO26 is NMS-free (`1×300×6` outputs); the HEF uses input normalization only and host-side decode. OBB on Hailo remains unsupported/research.
+YOLO26’s end2end TopK head is unsupported on Hailo, so `compile_hailo.py` stops parsing at `/model.23/Transpose` (raw `1×8400×(4+nc)` xyxy + class scores). The HEF uses input normalization only; `hailo_ball.py` does conf filter + NMS on the host.

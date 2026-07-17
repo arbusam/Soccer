@@ -3,8 +3,9 @@
 
 Requires the Hailo Dataflow Compiler (DFC) on an x86_64 Linux host — not the Pi.
 
-YOLO26 is NMS-free and exports as (1, 300, 6). This script compiles the full
-end-to-end graph with input normalization only (no Yolov8-style Hailo NMS).
+YOLO26's end-to-end head (TopK / GatherElements / ReduceMax) is unsupported on
+Hailo, so parsing stops at ``/model.23/Transpose`` — raw decoded boxes + class
+scores ``(1, 8400, 4+nc)``. ``hailo_ball.py`` runs conf filter + NMS on the host.
 
 Example:
   python training/compile_hailo.py \\
@@ -29,6 +30,8 @@ DEFAULT_OUT = REPO_ROOT / "open-soccer-detect-n_hailo_model"
 DEFAULT_HW_ARCH = "hailo8"
 DEFAULT_IMGSZ = 640
 DEFAULT_CALIB_IMAGES = 64
+# Cut before YOLO26 end2end TopK/GatherElements (unsupported on Hailo).
+DEFAULT_END_NODE_NAMES = ("/model.23/Transpose",)
 
 
 def _require_dfc():
@@ -71,6 +74,7 @@ def compile_hef(
     imgsz: int,
     calib_images: int,
     model_name: str,
+    end_node_names: list[str] | tuple[str, ...] = DEFAULT_END_NODE_NAMES,
 ) -> Path:
     _require_dfc()
     from hailo_sdk_client import ClientRunner
@@ -87,16 +91,21 @@ def compile_hef(
     if meta_src.is_file():
         shutil.copy2(meta_src, out_dir / "metadata.yaml")
 
-    # YOLO26 end-to-end: keep graph outputs (1, 300, 6); host-side decode.
+    # Input uint8 → float /255; post-Transpose TopK head stays on the host.
     model_script = (
         "normalization1 = normalization([0.0, 0.0, 0.0], [255.0, 255.0, 255.0])\n"
     )
     alls_path = out_dir / "model_script.alls"
     alls_path.write_text(model_script, encoding="utf-8")
 
-    print(f"Parsing ONNX with hw_arch={hw_arch} ...")
+    end_nodes = list(end_node_names)
+    print(f"Parsing ONNX with hw_arch={hw_arch}, end_node_names={end_nodes} ...")
     runner = ClientRunner(hw_arch=hw_arch)
-    runner.translate_onnx_model(str(work_onnx), model_name)
+    runner.translate_onnx_model(
+        str(work_onnx),
+        model_name,
+        end_node_names=end_nodes,
+    )
     runner.load_model_script(model_script)
 
     print(f"Building calibration set from {calib_dir} ({calib_images} images) ...")
@@ -142,6 +151,15 @@ def main() -> None:
     parser.add_argument("--imgsz", type=int, default=DEFAULT_IMGSZ)
     parser.add_argument("--calib-images", type=int, default=DEFAULT_CALIB_IMAGES)
     parser.add_argument("--model-name", default="open_soccer_detect_n")
+    parser.add_argument(
+        "--end-node-names",
+        nargs="+",
+        default=list(DEFAULT_END_NODE_NAMES),
+        help=(
+            "ONNX nodes to stop parsing at (default: /model.23/Transpose). "
+            "Cuts off YOLO26 end2end ops Hailo cannot compile."
+        ),
+    )
     args = parser.parse_args()
 
     calib_dir = args.calib_dir
@@ -159,6 +177,7 @@ def main() -> None:
             imgsz=args.imgsz,
             calib_images=args.calib_images,
             model_name=args.model_name,
+            end_node_names=args.end_node_names,
         )
     except Exception as exc:
         # Surface DFC missing as a clean exit; re-raise anything else.

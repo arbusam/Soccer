@@ -5,11 +5,14 @@ Place the compiled `model.hef` here (AI HAT+ 26 TOPS / `hw_arch=hailo8`).
 ## Build on an x86 host (not the Pi)
 
 ```bash
-# 1) Export detect dataset + train + ONNX
-python training/export_label_studio.py --format detect
-python training/train_detect.py --size n --device xpu   # or --device cpu
+# 1) Optional: rewrite rotated LS boxes to AABBs (stop Label Studio first)
+python training/export_label_studio.py --update-label-studio --apply
 
-# 2) Compile HEF with Hailo DFC installed
+# 2) Export detect dataset + train + ONNX
+python training/export_label_studio.py
+python training/train.py --size n   # project .venv; default device=xpu
+
+# 3) Compile HEF with Hailo DFC installed
 python training/compile_hailo.py \
   --onnx training/exports/open-soccer-detect-n/model.onnx \
   --calib-dir training/datasets/open-soccer-detect/images/train \
