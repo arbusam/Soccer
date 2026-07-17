@@ -81,4 +81,8 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 5. On x86 with Hailo DFC: `python training/compile_hailo.py --hw-arch hailo8` → `open-soccer-detect-n_hailo_model/model.hef`.
 6. Copy that folder to the Pi. `test_model.py` and `camera.py` use [`hailo_ball.py`](hailo_ball.py) (HailoRT) for inference.
 
-YOLO26’s end2end TopK head is unsupported on Hailo, so `compile_hailo.py` stops parsing at `/model.23/Transpose` (raw `1×8400×(4+nc)` xyxy + class scores). The HEF uses input normalization only; `hailo_ball.py` does conf filter + NMS on the host.
+YOLO26’s end2end TopK head is unsupported on Hailo. `compile_hailo.py` cuts at `/model.23/Mul_2` (decoded xyxy boxes) and `/model.23/Sigmoid` (class scores) as **two** HEF outputs so each gets its own INT8 range. The HEF uses input normalization only; `hailo_ball.py` merges the streams and runs conf filter + NMS on the host.
+
+**Empty detections / all class max=0.0 with float32 output:** Usually the HEF was compiled with a single end node (`/model.23/Transpose` or `Concat_3`) that concatenates pixel boxes (~0–640) with sigmoid scores (~0–1). One qp scale (~3+) cannot represent confidences, so dequantized scores collapse to ~0 even though ONNX float inference is fine. Fix: recompile with `python training/compile_hailo.py` (defaults are now `Mul_2` + `Sigmoid`), copy the new `model.hef` to the Pi. Diagnose with `python test_model.py --image model_test_image.png --debug` — you want two outputs and Ball max ≫ 0. Sanity-check the ONNX with onnxruntime if needed.
+
+**UINT8 vs FLOAT32:** Keep HailoRT output as `FormatType.FLOAT32` (`quantized=False`). Manual UINT8 + `quant_info` also drops detections when qp is wrong/missing.

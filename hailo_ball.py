@@ -73,13 +73,13 @@ def _quant_params(vstream_info) -> tuple[float, float]:
     return float(scale), float(zp)
 
 
-def _as_channels_first(output: np.ndarray) -> np.ndarray:
-    """Normalize Hailo/ONNX YOLO26 tensors to (4+nc, N).
+def _as_channels_first(output: np.ndarray, *, min_channels: int = 4) -> np.ndarray:
+    """Normalize Hailo/ONNX YOLO26 tensors to (C, N).
 
     Observed layouts:
-    - (1, 1, 8, 8400) Hailo NHWC-ish H=1
-    - (1, 8, 8400) / (8, 8400)
-    - (1, 8400, 8) / (8400, 8)
+    - (1, 1, C, N) Hailo NHWC-ish H=1
+    - (1, C, N) / (C, N)
+    - (1, N, C) / (N, C)
     """
     output = np.asarray(output)
     output = np.squeeze(output)
@@ -95,18 +95,55 @@ def _as_channels_first(output: np.ndarray) -> np.ndarray:
 
     if output.ndim != 2:
         raise RuntimeError(
-            f"Unexpected Hailo output shape {output.shape}; expected (4+nc, N) "
-            "or (N, 4+nc) YOLO26 detections."
+            f"Unexpected Hailo output shape {output.shape}; expected (C, N) "
+            "or (N, C) YOLO26 detections."
         )
 
-    # Prefer channels-first (C, N) with C = 4+nc (small) and N anchors (large).
+    # Prefer channels-first (C, N) with C small and N anchors large.
     if output.shape[0] > output.shape[1] and output.shape[1] <= 16:
         output = output.T
-    if output.shape[0] < 6:
+    if output.shape[0] < min_channels:
         raise RuntimeError(
-            f"Unexpected Hailo output shape {output.shape}; expected (4+nc, N)."
+            f"Unexpected Hailo output shape {output.shape}; "
+            f"expected at least {min_channels} channels."
         )
     return output
+
+
+def _merge_box_score_outputs(outputs: list[np.ndarray]) -> np.ndarray:
+    """Merge separate box (4,N) and score (nc,N) HEF outputs into (4+nc, N).
+
+    Score tensor is the one whose values mostly lie in [0, 1] after dequant
+    (sigmoid). Box tensor spans pixel coordinates.
+    """
+    if len(outputs) == 1:
+        return _as_channels_first(outputs[0], min_channels=6)
+    if len(outputs) != 2:
+        raise RuntimeError(
+            f"Expected 1 or 2 Hailo outputs (boxes+scores), got {len(outputs)}"
+        )
+
+    a = _as_channels_first(outputs[0], min_channels=4)
+    b = _as_channels_first(outputs[1], min_channels=4)
+    if a.shape[1] != b.shape[1]:
+        raise RuntimeError(
+            f"Box/score anchor mismatch: {a.shape} vs {b.shape}"
+        )
+
+    def _scoreish(t: np.ndarray) -> float:
+        # Fraction of values in the sigmoid range; higher => more likely scores.
+        sample = t.reshape(-1)
+        if sample.size > 4096:
+            sample = sample[:: max(1, sample.size // 4096)]
+        return float(np.mean((sample >= -0.05) & (sample <= 1.05)))
+
+    if _scoreish(a) >= _scoreish(b):
+        scores, boxes = a, b
+    else:
+        scores, boxes = b, a
+    if boxes.shape[0] != 4:
+        raise RuntimeError(f"Expected 4 box channels, got {boxes.shape}")
+    return np.concatenate([boxes, scores], axis=0)
 
 
 def _nms_xyxy(
@@ -303,23 +340,34 @@ class HailoBallDetector:
         self._network_group_params = self._network_group.create_params()
 
         self._input_vstream_info = self._hef.get_input_vstream_infos()[0]
-        self._output_vstream_infos = self._hef.get_output_vstream_infos()
+        self._output_vstream_infos = list(self._hef.get_output_vstream_infos())
         self._input_name = self._input_vstream_info.name
-        self._output_name = self._output_vstream_infos[0].name
-        self._out_scale, self._out_zp = _quant_params(self._output_vstream_infos[0])
+        self._output_names = [info.name for info in self._output_vstream_infos]
+        self._out_qps = [_quant_params(info) for info in self._output_vstream_infos]
+        # Legacy single-output HEFs: keep first stream qp for UINT8 fallback.
+        self._out_scale, self._out_zp = self._out_qps[0]
 
         self._input_vstreams_params = InputVStreamParams.make_from_network_group(
             self._network_group,
             quantized=False,
             format_type=FormatType.UINT8,
         )
-        # FLOAT32: HailoRT dequants on the host. UINT8 + manual qp was dropping all
-        # detections when quant_info was wrong/missing (scores never passed conf).
+        # FLOAT32: HailoRT dequants on the host. UINT8 + manual qp drops all
+        # detections when quant_info is wrong/missing (scores never pass conf).
         self._output_vstreams_params = OutputVStreamParams.make_from_network_group(
             self._network_group,
             quantized=False,
             format_type=FormatType.FLOAT32,
         )
+        if len(self._output_names) == 1:
+            import warnings
+
+            warnings.warn(
+                "HEF has a single detection output (boxes+scores concatenated). "
+                "INT8 quantization usually crushes sigmoid scores to ~0 — recompile "
+                "with training/compile_hailo.py (end nodes Mul_2 + Sigmoid).",
+                stacklevel=2,
+            )
 
         self._infer = InferVStreams(
             self._network_group,
@@ -399,7 +447,9 @@ class HailoBallDetector:
             raise RuntimeError("HailoBallDetector is closed")
         input_batch, scale, pad = self._preprocess(frame_rgb)
         raw = self._infer.infer({self._input_name: input_batch})
-        return np.asarray(raw[self._output_name]), scale, pad
+        outputs = [np.asarray(raw[name]) for name in self._output_names]
+        merged = _merge_box_score_outputs(outputs)
+        return merged, scale, pad
 
     def predict(self, frame_rgb: np.ndarray) -> list[dict]:
         """Return detections as dicts with xyxy (original frame), conf, cls."""
@@ -434,8 +484,12 @@ class HailoBallDetector:
 
     def debug_scores(self, frame_rgb: np.ndarray) -> dict:
         """Return raw output stats for diagnosing empty detections."""
-        output, scale, pad = self._infer_raw(frame_rgb)
-        cf = _as_channels_first(output)
+        if self._closed:
+            raise RuntimeError("HailoBallDetector is closed")
+        input_batch, scale, pad = self._preprocess(frame_rgb)
+        raw = self._infer.infer({self._input_name: input_batch})
+        outputs = [np.asarray(raw[name]) for name in self._output_names]
+        cf = _merge_box_score_outputs(outputs)
         if cf.dtype != np.float32:
             cf = _dequant(cf, self._out_scale, self._out_zp)
         num_classes = cf.shape[0] - 4
@@ -450,11 +504,16 @@ class HailoBallDetector:
                 "box": [float(v) for v in cf[:4, idx]],
             }
         return {
-            "dtype": str(output.dtype),
-            "shape": list(output.shape),
+            "dtype": str(cf.dtype),
+            "shape": [list(o.shape) for o in outputs],
+            "merged_shape": list(cf.shape),
+            "output_names": list(self._output_names),
             "letterbox_scale": scale,
             "pad": pad,
-            "out_qp": {"scale": self._out_scale, "zp": self._out_zp},
+            "out_qp": [
+                {"name": name, "scale": qp[0], "zp": qp[1]}
+                for name, qp in zip(self._output_names, self._out_qps)
+            ],
             "classes": per_class,
         }
 

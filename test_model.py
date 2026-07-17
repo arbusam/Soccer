@@ -144,7 +144,9 @@ def run_image(image_path: Path, conf: float, debug: bool = False) -> None:
         if debug:
             stats = detector.debug_scores(frame)
             print(
-                f"debug: dtype={stats['dtype']} shape={stats['shape']} "
+                f"debug: dtype={stats['dtype']} shapes={stats['shape']} "
+                f"merged={stats.get('merged_shape')} "
+                f"outputs={stats.get('output_names')} "
                 f"qp={stats['out_qp']} pad={stats['pad']} "
                 f"lb_scale={stats['letterbox_scale']:.4f}"
             )

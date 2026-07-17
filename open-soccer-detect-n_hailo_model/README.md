@@ -13,6 +13,8 @@ python training/export_label_studio.py
 python training/train.py --size n   # project .venv; default device=xpu
 
 # 3) Compile HEF with Hailo DFC installed
+# Cuts at Mul_2 + Sigmoid (separate box/score outputs). Do NOT use
+# /model.23/Transpose — concatenating boxes+scores breaks INT8 scores.
 python training/compile_hailo.py \
   --onnx training/exports/open-soccer-detect-n/model.onnx \
   --calib-dir training/datasets/open-soccer-detect/images/train \
