@@ -430,7 +430,7 @@ def _format_polynomial(coefficients):
 
 def run_interactive_calibration(
     resolution=(640, 640),
-    frame_rate=120,
+    frame_rate=90,
     calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE,
     stream_port=8000,
 ):
@@ -587,7 +587,7 @@ def main():
     )
     parser.add_argument("--width", type=int, default=640, help="Camera frame width in pixels.")
     parser.add_argument("--height", type=int, default=640, help="Camera frame height in pixels.")
-    parser.add_argument("--frame-rate", type=int, default=120, help="Camera frame rate.")
+    parser.add_argument("--frame-rate", type=int, default=90, help="Camera frame rate.")
     parser.add_argument(
         "--output",
         default=DEFAULT_DISTANCE_CALIBRATION_FILE,

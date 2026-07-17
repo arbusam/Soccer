@@ -247,7 +247,7 @@ try:
         feed_imu_yaw_prior(imu, startup_yaw)
         time.sleep(0.1)
 
-    camera = Camera(CAMERA_PORT, resolution=(640, 640), frame_rate=120)
+    camera = Camera(CAMERA_PORT, resolution=(640, 640), frame_rate=90)
     if args.camera_stream:
         camera.start_stream()
     else:

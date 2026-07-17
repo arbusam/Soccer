@@ -262,7 +262,7 @@ if __name__ == "__main__":
                 raise KeyboardInterrupt
             time.sleep(0.1)
 
-        camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
+        camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=90)
         camera.start_stream()
 
         imu = IMU()

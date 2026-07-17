@@ -40,7 +40,7 @@ class Camera:
         self,
         PORT,
         resolution=None,
-        frame_rate=60,
+        frame_rate=90,
         distance_calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE,
         ball_model_path=DEFAULT_BALL_MODEL_PATH,
         ball_confidence=0.25,
@@ -449,7 +449,7 @@ class Camera:
         print("Camera stopped")
 
 async def main():
-    camera = Camera(PORT=8000, frame_rate=60)
+    camera = Camera(PORT=8000, frame_rate=90)
     await camera.run_server()
 
 if __name__ == "__main__":

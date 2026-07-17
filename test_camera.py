@@ -28,8 +28,8 @@ def parse_args():
     parser.add_argument(
         "--frame-rate",
         type=int,
-        default=60,
-        help="Camera frame rate (default: 60).",
+        default=90,
+        help="Camera frame rate (default: 90).",
     )
     parser.add_argument(
         "--interval",

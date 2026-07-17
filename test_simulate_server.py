@@ -61,7 +61,7 @@ def main():
                 return
             time.sleep(0.1)
 
-        camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=60)
+        camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=90)
         camera.start()
         imu = IMU()
         tof = ToF(address=TOF_ADDRESS)
