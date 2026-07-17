@@ -81,6 +81,51 @@ def _nms_xyxy(
     return keep
 
 
+def _normalize_yolo_output(output: np.ndarray) -> np.ndarray:
+    """Reshape Hailo/ONNX YOLO26 tensors to (N, 4+nc) or (N, 6).
+
+    Observed layouts:
+    - (1, 8400, 8) / (8400, 8)
+    - (1, 8, 8400) / (8, 8400)
+    - (1, 1, 8, 8400)  # Hailo NHWC with H=1
+    - (1, 300, 6) end2end topk
+    """
+    output = np.asarray(output, dtype=np.float32)
+    output = np.squeeze(output)
+    if output.ndim == 3:
+        # (1, C, N) or (1, N, C) after incomplete squeeze, or (C, 1, N) / (1, C, N)
+        if output.shape[0] == 1:
+            output = output[0]
+        elif output.shape[1] == 1:
+            output = output[:, 0, :]
+        elif output.shape[2] == 1:
+            output = output[:, :, 0]
+        else:
+            # Prefer channels-last when one side looks like 4+nc
+            if output.shape[-1] <= 16 and output.shape[-2] > output.shape[-1]:
+                output = output.reshape(-1, output.shape[-1])
+            elif output.shape[0] <= 16 and output.shape[-1] > output.shape[0]:
+                output = output.reshape(output.shape[0], -1).T
+            else:
+                output = output.reshape(output.shape[0], -1).T
+
+    if output.ndim != 2:
+        raise RuntimeError(
+            f"Unexpected Hailo output shape {output.shape}; expected (N, 4+nc) "
+            "or (N, 6) YOLO26 detections in letterbox space."
+        )
+
+    # Channels-first (4+nc, N) → (N, 4+nc)
+    if output.shape[0] <= 16 and output.shape[1] > output.shape[0]:
+        output = output.T
+    if output.shape[-1] < 6:
+        raise RuntimeError(
+            f"Unexpected Hailo output shape {output.shape}; expected (N, 4+nc) "
+            "or (N, 6) YOLO26 detections in letterbox space."
+        )
+    return output
+
+
 def _decode_detections(
     output: np.ndarray,
     conf_thres: float,
@@ -93,17 +138,7 @@ def _decode_detections(
     - end2end truncated raw: (N, 4+nc) xyxy + class scores (N typically 8400)
     - legacy end2end topk: (300, 6) xyxy + conf + cls
     """
-    output = np.asarray(output, dtype=np.float32)
-    if output.ndim == 3:
-        output = output[0]
-    if output.ndim == 2 and output.shape[0] in {4, 5, 6, 7, 8} and output.shape[1] > output.shape[0]:
-        # (4+nc, N) → (N, 4+nc)
-        output = output.T
-    if output.ndim != 2 or output.shape[-1] < 6:
-        raise RuntimeError(
-            f"Unexpected Hailo output shape {output.shape}; expected (N, 4+nc) "
-            "or (N, 6) YOLO26 detections in letterbox space."
-        )
+    output = _normalize_yolo_output(output)
 
     num_rows, num_cols = output.shape
     # Raw head: many anchors, channels = xyxy + class scores.
