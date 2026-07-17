@@ -59,14 +59,27 @@ def _load_metadata(model_dir: Path) -> dict:
     return meta
 
 
+def _quant_params(vstream_info) -> tuple[float, float]:
+    """Return (scale, zero_point) from a Hailo vstream info object."""
+    qi = getattr(vstream_info, "quant_info", None)
+    if qi is None:
+        return 1.0, 0.0
+    scale = getattr(qi, "qp_scale", None)
+    if scale is None:
+        scale = getattr(qi, "scale", 1.0)
+    zp = getattr(qi, "qp_zp", None)
+    if zp is None:
+        zp = getattr(qi, "zero_point", 0.0)
+    return float(scale), float(zp)
+
+
 def _as_channels_first(output: np.ndarray) -> np.ndarray:
-    """Normalize Hailo/ONNX YOLO26 tensors to (4+nc, N) float32 view when possible.
+    """Normalize Hailo/ONNX YOLO26 tensors to (4+nc, N).
 
     Observed layouts:
-    - (1, 1, 8, 8400) Hailo NHWC H=1
+    - (1, 1, 8, 8400) Hailo NHWC-ish H=1
     - (1, 8, 8400) / (8, 8400)
     - (1, 8400, 8) / (8400, 8)
-    - (1, 300, 6) / (300, 6) end2end topk
     """
     output = np.asarray(output)
     output = np.squeeze(output)
@@ -93,8 +106,6 @@ def _as_channels_first(output: np.ndarray) -> np.ndarray:
         raise RuntimeError(
             f"Unexpected Hailo output shape {output.shape}; expected (4+nc, N)."
         )
-    if output.dtype != np.float32:
-        output = output.astype(np.float32, copy=False)
     return output
 
 
@@ -143,16 +154,25 @@ def _nms_xyxy(
     return keep
 
 
+def _dequant(values: np.ndarray, scale: float, zp: float) -> np.ndarray:
+    return (values.astype(np.float32, copy=False) - zp) * scale
+
+
 def _decode_detections(
     output: np.ndarray,
     conf_thres: float,
     iou_thres: float = 0.45,
     max_det: int = 300,
     class_id_filter: int | None = None,
+    scale: float = 1.0,
+    zp: float = 0.0,
 ) -> list[tuple[float, float, float, float, float, int]]:
     """Decode to (x1,y1,x2,y2,conf,cls) in letterbox space."""
     output = _as_channels_first(output)
     _channels, num_anchors = output.shape
+    if output.dtype != np.float32:
+        # Dequant whole map only for full multi-class predict path.
+        output = _dequant(output, scale, zp)
     boxes = output[:4]
     class_scores = output[4:]
 
@@ -187,17 +207,34 @@ def _best_class_detection(
     output: np.ndarray,
     class_id: int,
     conf_thres: float,
+    scale: float = 1.0,
+    zp: float = 0.0,
 ) -> tuple[float, float, float, float, float, int] | None:
-    """Top-1 detection for one class — no NMS (enough for best_ball)."""
+    """Top-1 detection for one class — no NMS.
+
+    For UINT8 outputs, argmax on the quantized ball row (monotonic if scale>0),
+    then dequant only the winning box + score.
+    """
     output = _as_channels_first(output)
     if output.shape[0] < 4 + class_id + 1:
         return None
-    scores = output[4 + class_id]
-    idx = int(np.argmax(scores))
-    conf = float(scores[idx])
+
+    scores_q = output[4 + class_id]
+    if scale < 0:
+        idx = int(np.argmin(scores_q))
+    else:
+        idx = int(np.argmax(scores_q))
+
+    if output.dtype == np.float32:
+        conf = float(scores_q[idx])
+        x1, y1, x2, y2 = (float(v) for v in output[:4, idx])
+    else:
+        conf = (float(scores_q[idx]) - zp) * scale
+        box = _dequant(output[:4, idx], scale, zp)
+        x1, y1, x2, y2 = (float(v) for v in box)
+
     if conf < conf_thres:
         return None
-    x1, y1, x2, y2 = (float(v) for v in output[:4, idx])
     return x1, y1, x2, y2, conf, class_id
 
 
@@ -269,16 +306,18 @@ class HailoBallDetector:
         self._output_vstream_infos = self._hef.get_output_vstream_infos()
         self._input_name = self._input_vstream_info.name
         self._output_name = self._output_vstream_infos[0].name
+        self._out_scale, self._out_zp = _quant_params(self._output_vstream_infos[0])
 
         self._input_vstreams_params = InputVStreamParams.make_from_network_group(
             self._network_group,
             quantized=False,
             format_type=FormatType.UINT8,
         )
+        # UINT8 avoids host-side dequant of the full (4+nc)×8400 map in HailoRT.
         self._output_vstreams_params = OutputVStreamParams.make_from_network_group(
             self._network_group,
             quantized=False,
-            format_type=FormatType.FLOAT32,
+            format_type=FormatType.UINT8,
         )
 
         self._infer = InferVStreams(
@@ -332,6 +371,17 @@ class HailoBallDetector:
         return int(class_id) == self._ball_class_id
 
     def _preprocess(self, frame_rgb: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int]]:
+        height, width = frame_rgb.shape[:2]
+        if height == self.imgsz and width == self.imgsz:
+            # Already model-sized: skip letterbox resize/pad.
+            if (
+                self._input_batch is None
+                or self._input_batch.shape != (1, height, width, 3)
+            ):
+                self._input_batch = np.empty((1, height, width, 3), dtype=np.uint8)
+            np.copyto(self._input_batch[0], frame_rgb)
+            return self._input_batch, 1.0, (0, 0)
+
         padded, scale, pad = letterbox(
             frame_rgb,
             self.imgsz,
@@ -340,7 +390,7 @@ class HailoBallDetector:
         self._letterbox_canvas = padded
         if self._input_batch is None or self._input_batch.shape[1:] != padded.shape:
             self._input_batch = np.empty((1, *padded.shape), dtype=np.uint8)
-        self._input_batch[0] = padded
+        np.copyto(self._input_batch[0], padded)
         return self._input_batch, scale, pad
 
     def _infer_raw(self, frame_rgb: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int]]:
@@ -356,7 +406,11 @@ class HailoBallDetector:
         detections: list[dict] = []
         frame_h, frame_w = frame_rgb.shape[:2]
         for x1, y1, x2, y2, conf, class_id in _decode_detections(
-            output, conf_thres=self.conf, iou_thres=self.iou
+            output,
+            conf_thres=self.conf,
+            iou_thres=self.iou,
+            scale=self._out_scale,
+            zp=self._out_zp,
         ):
             x1 = (x1 - pad_left) / scale
             y1 = (y1 - pad_top) / scale
@@ -380,7 +434,13 @@ class HailoBallDetector:
     def best_ball(self, frame_rgb: np.ndarray) -> dict | None:
         """Highest-confidence ball detection with centre / radial_pixels."""
         output, scale, (pad_left, pad_top) = self._infer_raw(frame_rgb)
-        det = _best_class_detection(output, self._ball_class_id, self.conf)
+        det = _best_class_detection(
+            output,
+            self._ball_class_id,
+            self.conf,
+            scale=self._out_scale,
+            zp=self._out_zp,
+        )
         if det is None:
             return None
 

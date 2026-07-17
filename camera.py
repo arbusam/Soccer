@@ -3,6 +3,7 @@ import logging
 import socketserver
 import asyncio
 import threading
+import time
 from http import server
 from pathlib import Path
 from threading import Condition
@@ -25,6 +26,7 @@ from hailo_ball import HailoBallDetector
 
 
 DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-detect-n_hailo_model"
+DEFAULT_RESOLUTION = (640, 640)
 
 
 def _resolve_model_path(model_path):
@@ -38,20 +40,28 @@ class Camera:
         self,
         PORT,
         resolution=None,
-        frame_rate=30,
+        frame_rate=60,
         distance_calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE,
         ball_model_path=DEFAULT_BALL_MODEL_PATH,
         ball_confidence=0.25,
     ):
+        self.ball_model_path = _resolve_model_path(ball_model_path)
+        self.ball_confidence = ball_confidence
+        self.ball_model = HailoBallDetector(
+            self.ball_model_path,
+            conf=ball_confidence,
+        )
+        calib_res = get_distance_calibration_resolution(distance_calibration_file)
         if resolution is None:
-            resolution = get_distance_calibration_resolution(distance_calibration_file) or (
-                2000,
-                2000,
-            )
+            resolution = calib_res or (self.ball_model.imgsz, self.ball_model.imgsz)
         self.PORT = PORT
         self.resolution = resolution
         self.picam2 = Picamera2()
-        self.picam2.configure(self.picam2.create_video_configuration(main={"size": resolution, "format": 'RGB888'}))
+        video_config = self.picam2.create_video_configuration(
+            main={"size": resolution, "format": "RGB888"},
+            buffer_count=4,
+        )
+        self.picam2.configure(video_config)
         self.picam2.controls.FrameRate = frame_rate
         self.forward_angle = 0  # Add forward angle property
         # self.picam2.controls.ExposureTime = 30000
@@ -68,12 +78,13 @@ class Camera:
         self._recording = False
         self._server_started = False
         self._is_shutting_down = False
-        self.ball_model_path = _resolve_model_path(ball_model_path)
-        self.ball_confidence = ball_confidence
-        self.ball_model = HailoBallDetector(
-            self.ball_model_path,
-            conf=ball_confidence,
-        )
+        # Latest-frame slot: callback only publishes; infer thread drops stale frames.
+        self._latest_lock = threading.Lock()
+        self._latest_buf = None
+        self._latest_seq = 0
+        self._last_detection = None
+        self._infer_stop = threading.Event()
+        self._infer_thread = None
         self.calibrated = True
         self.upperbound = 0
         self.lowerbound = 0
@@ -196,6 +207,76 @@ class Camera:
     def _detect_ball(self, frame):
         return self.ball_model.best_ball(frame)
 
+    def _start_infer_thread(self):
+        if self._infer_thread is not None:
+            return
+        self._infer_stop.clear()
+        self._infer_thread = threading.Thread(
+            target=self._infer_loop,
+            name="hailo-latest-infer",
+            daemon=True,
+        )
+        self._infer_thread.start()
+
+    def _stop_infer_thread(self):
+        self._infer_stop.set()
+        thread = self._infer_thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+        self._infer_thread = None
+
+    def _infer_loop(self):
+        """Always infer the newest published frame; skip anything older."""
+        last_seq = -1
+        infer_buf = None
+        while not self._infer_stop.is_set() and not self._is_shutting_down:
+            with self._latest_lock:
+                seq = self._latest_seq
+                if seq == last_seq or self._latest_buf is None:
+                    frame = None
+                else:
+                    if infer_buf is None or infer_buf.shape != self._latest_buf.shape:
+                        infer_buf = np.empty_like(self._latest_buf)
+                    np.copyto(infer_buf, self._latest_buf)
+                    frame = infer_buf
+                    last_seq = seq
+            if frame is None:
+                time.sleep(0.0005)
+                continue
+
+            detection = self._detect_ball(frame)
+            if detection is not None:
+                centre_x, centre_y = detection["centre"]
+                new_bearing = calculate_ball_bearing_deg(
+                    centre_x,
+                    centre_y,
+                    frame.shape[1],
+                    frame.shape[0],
+                )
+                new_bearing += 180
+                new_distance = predict_distance_from_calibration(
+                    self.distance_calibration,
+                    detection["radial_pixels"],
+                )
+                if new_distance is None:
+                    if (
+                        self.distance_calibration is None
+                        and not self._distance_calibration_warning_logged
+                    ):
+                        logging.warning(
+                            "Ball detected, but no valid distance calibration is loaded."
+                        )
+                        self._distance_calibration_warning_logged = True
+            else:
+                new_bearing = None
+                new_distance = None
+
+            with self._measurement_lock:
+                self._last_detection = detection
+                self._bearing = new_bearing
+                self._distance = new_distance
+                self._frame_id += 1
+
     def _start_capture(self, enable_stream=False):
         if self._capture_started:
             return
@@ -209,6 +290,7 @@ class Camera:
             self.picam2.start()
             self._recording = False
         self._capture_started = True
+        self._start_infer_thread()
 
     def _start_http_server(self):
         if self._server_started:
@@ -244,52 +326,34 @@ class Camera:
                 hsv = cv2.cvtColor(m.array, cv2.COLOR_BGR2HSV) if needs_hsv else None
 
                 if self.calibrated:
-                    detection = self._detect_ball(m.array)
-                    if detection is not None:
+                    # Publish latest frame only (infer thread drops anything older).
+                    with self._latest_lock:
+                        if (
+                            self._latest_buf is None
+                            or self._latest_buf.shape != m.array.shape
+                        ):
+                            self._latest_buf = np.empty_like(m.array)
+                        np.copyto(self._latest_buf, m.array)
+                        self._latest_seq += 1
+
+                    with self._measurement_lock:
+                        detection = self._last_detection
+
+                    if detection is not None and preview_active:
                         x, y, w, h = detection["bbox"]
                         centre_x, centre_y = detection["centre"]
-                        if preview_active:
-                            if detection["polygon"] is not None:
-                                points = detection["polygon"].astype(np.int32).reshape(-1, 1, 2)
-                                cv2.polylines(m.array, [points], True, (0, 165, 255), 2)
-                            else:
-                                cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 165, 255), 2)
-                            cv2.circle(
-                                m.array,
-                                (int(round(centre_x)), int(round(centre_y))),
-                                5,
-                                (255, 255, 255),
-                                -1,
-                            )
-
-                        # Find the bearing of the ball centre from the centre of the image.
-                        new_bearing = calculate_ball_bearing_deg(
-                            centre_x,
-                            centre_y,
-                            m.array.shape[1],
-                            m.array.shape[0],
+                        if detection["polygon"] is not None:
+                            points = detection["polygon"].astype(np.int32).reshape(-1, 1, 2)
+                            cv2.polylines(m.array, [points], True, (0, 165, 255), 2)
+                        else:
+                            cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 165, 255), 2)
+                        cv2.circle(
+                            m.array,
+                            (int(round(centre_x)), int(round(centre_y))),
+                            5,
+                            (255, 255, 255),
+                            -1,
                         )
-                        new_bearing += 180
-                        new_distance = predict_distance_from_calibration(
-                            self.distance_calibration,
-                            detection["radial_pixels"],
-                        )
-                        if new_distance is None:
-                            if (
-                                self.distance_calibration is None
-                                and not self._distance_calibration_warning_logged
-                            ):
-                                logging.warning(
-                                    "Ball detected, but no valid distance calibration is loaded."
-                                )
-                                self._distance_calibration_warning_logged = True
-                    else:
-                        new_bearing = None
-                        new_distance = None
-                    with self._measurement_lock:
-                        self._bearing = new_bearing
-                        self._distance = new_distance
-                        self._frame_id += 1
 
                     if self.user_callback:
                         self.user_callback(m.array, hsv)
@@ -348,6 +412,7 @@ class Camera:
         if self._is_shutting_down:
             return
         self._is_shutting_down = True
+        self._stop_infer_thread()
 
         if not self._capture_started and not self._server_started:
             print("Camera stopped")
@@ -384,7 +449,7 @@ class Camera:
         print("Camera stopped")
 
 async def main():
-    camera = Camera(PORT=8000, resolution=(2000, 2000), frame_rate=60)
+    camera = Camera(PORT=8000, frame_rate=60)
     await camera.run_server()
 
 if __name__ == "__main__":

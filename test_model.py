@@ -1,8 +1,10 @@
 import argparse
+import threading
 import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from ball_distance_calibration import (
     DEFAULT_DISTANCE_CALIBRATION_FILE,
@@ -16,7 +18,48 @@ from hailo_ball import HailoBallDetector
 
 MODEL_DIR = Path(__file__).resolve().parent / "open-soccer-detect-n_hailo_model"
 BALL_CONFIDENCE = 0.25
-PRINT_EVERY = 10
+PRINT_EVERY = 30
+DEFAULT_RESOLUTION = (640, 640)
+
+
+class LatestFrameCamera:
+    """Background capture that always keeps only the newest frame (drops backlog)."""
+
+    def __init__(self, picam2):
+        self._picam2 = picam2
+        self._lock = threading.Lock()
+        self._buf: np.ndarray | None = None
+        self._seq = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="latest-frame", daemon=True)
+        self.captures = 0
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            frame = self._picam2.capture_array()
+            with self._lock:
+                if self._buf is None or self._buf.shape != frame.shape:
+                    self._buf = np.empty(frame.shape, dtype=frame.dtype)
+                np.copyto(self._buf, frame)
+                self._seq += 1
+                self.captures += 1
+
+    def get_latest(self, out: np.ndarray | None = None) -> tuple[np.ndarray | None, int]:
+        """Copy the newest frame into ``out`` (or a new array). Returns (frame, seq)."""
+        with self._lock:
+            if self._buf is None or self._seq == 0:
+                return None, -1
+            if out is None or out.shape != self._buf.shape or out.dtype != self._buf.dtype:
+                out = np.empty_like(self._buf)
+            np.copyto(out, self._buf)
+            return out, self._seq
 
 
 def _print_detection(detection, frame_width, frame_height, distance_calibration, prefix=""):
@@ -65,7 +108,6 @@ def run_image(image_path: Path, conf: float) -> None:
         prefix=f"{elapsed_ms:.1f}ms  ",
     )
 
-    # Draw and write a preview next to the input.
     if detection is not None:
         x, y, w, h = detection["bbox"]
         cv2.rectangle(bgr, (x, y), (x + w, y + h), (0, 165, 255), 2)
@@ -79,58 +121,100 @@ def run_image(image_path: Path, conf: float) -> None:
 def run_camera(conf: float) -> None:
     from picamera2 import Picamera2
 
-    resolution = get_distance_calibration_resolution(DEFAULT_DISTANCE_CALIBRATION_FILE) or (
-        1280,
-        720,
-    )
+    calib_res = get_distance_calibration_resolution(DEFAULT_DISTANCE_CALIBRATION_FILE)
+    resolution = calib_res or DEFAULT_RESOLUTION
     distance_calibration = load_distance_calibration(
         resolution,
         DEFAULT_DISTANCE_CALIBRATION_FILE,
     )
 
+    detector = HailoBallDetector(MODEL_DIR, conf=conf)
+    if calib_res is None:
+        resolution = (detector.imgsz, detector.imgsz)
+
     picam2 = Picamera2()
     picam2.preview_configuration.main.size = resolution
     picam2.preview_configuration.main.format = "RGB888"
     picam2.preview_configuration.controls = {"FrameRate": 60}
+    picam2.preview_configuration.buffer_count = 4
     picam2.preview_configuration.align()
     picam2.configure("preview")
     picam2.start()
 
-    detector = HailoBallDetector(MODEL_DIR, conf=conf)
+    latest = LatestFrameCamera(picam2)
+    latest.start()
+
+    # Wait for first frame.
+    infer_frame: np.ndarray | None = None
+    for _ in range(200):
+        infer_frame, seq = latest.get_latest(infer_frame)
+        if seq >= 0:
+            break
+        time.sleep(0.005)
+    if infer_frame is None:
+        latest.stop()
+        detector.close()
+        picam2.stop()
+        raise SystemExit("No camera frames received")
+
+    print(
+        f"Camera {resolution[0]}x{resolution[1]}, model imgsz={detector.imgsz}, "
+        f"latest-only capture (drop backlog)"
+    )
+
     prev_time = time.perf_counter()
     frame_i = 0
-    sum_capture_ms = 0.0
+    last_seq = -1
+    sum_grab_ms = 0.0
     sum_infer_ms = 0.0
+    sum_skipped = 0
+    processed = 0
 
     try:
         while True:
             t0 = time.perf_counter()
-            frame = picam2.capture_array()
+            # Spin until a newer frame than last processed is available.
+            while True:
+                infer_frame, seq = latest.get_latest(infer_frame)
+                if seq < 0:
+                    time.sleep(0.0005)
+                    continue
+                if seq != last_seq:
+                    break
+                time.sleep(0.0002)
+            # Frames between last_seq and seq were never inferred (dropped as stale).
+            skipped = max(0, seq - last_seq - 1) if last_seq >= 0 else 0
+            last_seq = seq
             t1 = time.perf_counter()
-            frame_height, frame_width = frame.shape[:2]
-            detection = detector.best_ball(frame)
+
+            frame_height, frame_width = infer_frame.shape[:2]
+            detection = detector.best_ball(infer_frame)
             t2 = time.perf_counter()
 
-            capture_ms = (t1 - t0) * 1000.0
-            infer_ms = (t2 - t1) * 1000.0
-            sum_capture_ms += capture_ms
-            sum_infer_ms += infer_ms
+            sum_grab_ms += (t1 - t0) * 1000.0
+            sum_infer_ms += (t2 - t1) * 1000.0
+            sum_skipped += skipped
             frame_i += 1
+            processed += 1
 
             now = time.perf_counter()
-            fps = 1.0 / (now - prev_time)
+            fps = 1.0 / max(now - prev_time, 1e-9)
             prev_time = now
 
             if frame_i % PRINT_EVERY != 0:
                 continue
 
-            avg_capture = sum_capture_ms / PRINT_EVERY
+            avg_grab = sum_grab_ms / PRINT_EVERY
             avg_infer = sum_infer_ms / PRINT_EVERY
-            sum_capture_ms = 0.0
+            avg_skip = sum_skipped / PRINT_EVERY
+            sum_grab_ms = 0.0
             sum_infer_ms = 0.0
+            sum_skipped = 0
             prefix = (
-                f"{fps:.1f} FPS  capture={avg_capture:.1f}ms  "
+                f"{fps:.1f} FPS  grab={avg_grab:.1f}ms  "
                 f"infer+post={avg_infer:.1f}ms  "
+                f"skip={avg_skip:.1f}/loop  "
+                f"cap={latest.captures} proc={processed}  "
             )
             _print_detection(
                 detection,
@@ -140,6 +224,7 @@ def run_camera(conf: float) -> None:
                 prefix=prefix,
             )
     finally:
+        latest.stop()
         detector.close()
         picam2.stop()
 
