@@ -20,17 +20,24 @@ def letterbox(
     image: np.ndarray,
     imgsz: int = 640,
     pad_value: int = 114,
+    canvas: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float, tuple[int, int]]:
     """Resize with aspect ratio preserved and gray pad to imgsz×imgsz (NHWC RGB)."""
+    import cv2
+
     height, width = image.shape[:2]
     scale = min(imgsz / height, imgsz / width)
     new_w = int(round(width * scale))
     new_h = int(round(height * scale))
-    # Local import keeps module importable without cv2 when unused.
-    import cv2
-
     resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-    canvas = np.full((imgsz, imgsz, 3), pad_value, dtype=np.uint8)
+    if (
+        canvas is None
+        or canvas.shape != (imgsz, imgsz, 3)
+        or canvas.dtype != np.uint8
+    ):
+        canvas = np.full((imgsz, imgsz, 3), pad_value, dtype=np.uint8)
+    else:
+        canvas.fill(pad_value)
     top = (imgsz - new_h) // 2
     left = (imgsz - new_w) // 2
     canvas[top : top + new_h, left : left + new_w] = resized
@@ -52,15 +59,70 @@ def _load_metadata(model_dir: Path) -> dict:
     return meta
 
 
+def _as_channels_first(output: np.ndarray) -> np.ndarray:
+    """Normalize Hailo/ONNX YOLO26 tensors to (4+nc, N) float32 view when possible.
+
+    Observed layouts:
+    - (1, 1, 8, 8400) Hailo NHWC H=1
+    - (1, 8, 8400) / (8, 8400)
+    - (1, 8400, 8) / (8400, 8)
+    - (1, 300, 6) / (300, 6) end2end topk
+    """
+    output = np.asarray(output)
+    output = np.squeeze(output)
+    if output.ndim == 3:
+        if output.shape[0] == 1:
+            output = output[0]
+        elif output.shape[1] == 1:
+            output = output[:, 0, :]
+        elif output.shape[2] == 1:
+            output = output[:, :, 0]
+        else:
+            raise RuntimeError(f"Unexpected Hailo output shape {output.shape}")
+
+    if output.ndim != 2:
+        raise RuntimeError(
+            f"Unexpected Hailo output shape {output.shape}; expected (4+nc, N) "
+            "or (N, 4+nc) YOLO26 detections."
+        )
+
+    # Prefer channels-first (C, N) with C = 4+nc (small) and N anchors (large).
+    if output.shape[0] > output.shape[1] and output.shape[1] <= 16:
+        output = output.T
+    if output.shape[0] < 6:
+        raise RuntimeError(
+            f"Unexpected Hailo output shape {output.shape}; expected (4+nc, N)."
+        )
+    if output.dtype != np.float32:
+        output = output.astype(np.float32, copy=False)
+    return output
+
+
 def _nms_xyxy(
     boxes: np.ndarray,
     scores: np.ndarray,
     iou_thres: float = 0.45,
     max_det: int = 300,
 ) -> list[int]:
-    """Greedy NMS for xyxy boxes. Returns kept indices."""
+    """NMS for xyxy boxes; prefers OpenCV C++ impl when available."""
     if boxes.size == 0:
         return []
+    try:
+        import cv2
+
+        idxs = cv2.dnn.NMSBoxes(
+            bboxes=boxes.tolist(),
+            scores=scores.tolist(),
+            score_threshold=0.0,
+            nms_threshold=float(iou_thres),
+            top_k=int(max_det),
+        )
+        if idxs is None or len(idxs) == 0:
+            return []
+        return [int(i) for i in np.asarray(idxs).reshape(-1)]
+    except Exception:
+        pass
+
     x1, y1, x2, y2 = boxes[:, 0], boxes[:, 1], boxes[:, 2], boxes[:, 3]
     areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
     order = scores.argsort()[::-1]
@@ -81,103 +143,62 @@ def _nms_xyxy(
     return keep
 
 
-def _normalize_yolo_output(output: np.ndarray) -> np.ndarray:
-    """Reshape Hailo/ONNX YOLO26 tensors to (N, 4+nc) or (N, 6).
-
-    Observed layouts:
-    - (1, 8400, 8) / (8400, 8)
-    - (1, 8, 8400) / (8, 8400)
-    - (1, 1, 8, 8400)  # Hailo NHWC with H=1
-    - (1, 300, 6) end2end topk
-    """
-    output = np.asarray(output, dtype=np.float32)
-    output = np.squeeze(output)
-    if output.ndim == 3:
-        # (1, C, N) or (1, N, C) after incomplete squeeze, or (C, 1, N) / (1, C, N)
-        if output.shape[0] == 1:
-            output = output[0]
-        elif output.shape[1] == 1:
-            output = output[:, 0, :]
-        elif output.shape[2] == 1:
-            output = output[:, :, 0]
-        else:
-            # Prefer channels-last when one side looks like 4+nc
-            if output.shape[-1] <= 16 and output.shape[-2] > output.shape[-1]:
-                output = output.reshape(-1, output.shape[-1])
-            elif output.shape[0] <= 16 and output.shape[-1] > output.shape[0]:
-                output = output.reshape(output.shape[0], -1).T
-            else:
-                output = output.reshape(output.shape[0], -1).T
-
-    if output.ndim != 2:
-        raise RuntimeError(
-            f"Unexpected Hailo output shape {output.shape}; expected (N, 4+nc) "
-            "or (N, 6) YOLO26 detections in letterbox space."
-        )
-
-    # Channels-first (4+nc, N) → (N, 4+nc)
-    if output.shape[0] <= 16 and output.shape[1] > output.shape[0]:
-        output = output.T
-    if output.shape[-1] < 6:
-        raise RuntimeError(
-            f"Unexpected Hailo output shape {output.shape}; expected (N, 4+nc) "
-            "or (N, 6) YOLO26 detections in letterbox space."
-        )
-    return output
-
-
 def _decode_detections(
     output: np.ndarray,
     conf_thres: float,
     iou_thres: float = 0.45,
     max_det: int = 300,
+    class_id_filter: int | None = None,
 ) -> list[tuple[float, float, float, float, float, int]]:
-    """Decode Hailo YOLO26 output to (x1,y1,x2,y2,conf,cls) in letterbox space.
+    """Decode to (x1,y1,x2,y2,conf,cls) in letterbox space."""
+    output = _as_channels_first(output)
+    _channels, num_anchors = output.shape
+    boxes = output[:4]
+    class_scores = output[4:]
 
-    Supports:
-    - end2end truncated raw: (N, 4+nc) xyxy + class scores (N typically 8400)
-    - legacy end2end topk: (300, 6) xyxy + conf + cls
-    """
-    output = _normalize_yolo_output(output)
+    if class_id_filter is not None:
+        confidences = class_scores[class_id_filter]
+        class_ids = np.full(num_anchors, class_id_filter, dtype=np.int32)
+    else:
+        class_ids = np.argmax(class_scores, axis=0)
+        confidences = class_scores[class_ids, np.arange(num_anchors)]
 
-    num_rows, num_cols = output.shape
-    # Raw head: many anchors, channels = xyxy + class scores.
-    # End2end topk export: fixed 300 rows of [xyxy, conf, cls].
-    is_raw = num_cols > 6 or num_rows > 500
-    decoded: list[tuple[float, float, float, float, float, int]] = []
-
-    if is_raw:
-        boxes = output[:, :4]
-        class_scores = output[:, 4:]
-        class_ids = np.argmax(class_scores, axis=1)
-        confidences = class_scores[np.arange(num_rows), class_ids]
-        mask = confidences >= conf_thres
-        if not np.any(mask):
-            return []
-        boxes = boxes[mask]
-        confidences = confidences[mask]
-        class_ids = class_ids[mask]
-        keep = _nms_xyxy(boxes, confidences, iou_thres=iou_thres, max_det=max_det)
-        for idx in keep:
-            x1, y1, x2, y2 = (float(v) for v in boxes[idx])
-            decoded.append((x1, y1, x2, y2, float(confidences[idx]), int(class_ids[idx])))
-        return decoded
-
-    for row in output:
-        conf = float(row[4])
-        if conf < conf_thres:
-            continue
-        decoded.append(
-            (
-                float(row[0]),
-                float(row[1]),
-                float(row[2]),
-                float(row[3]),
-                conf,
-                int(row[5]),
-            )
+    mask = confidences >= conf_thres
+    if not np.any(mask):
+        return []
+    boxes_t = boxes[:, mask].T
+    confidences = confidences[mask]
+    class_ids = class_ids[mask]
+    keep = _nms_xyxy(boxes_t, confidences, iou_thres=iou_thres, max_det=max_det)
+    return [
+        (
+            float(boxes_t[i, 0]),
+            float(boxes_t[i, 1]),
+            float(boxes_t[i, 2]),
+            float(boxes_t[i, 3]),
+            float(confidences[i]),
+            int(class_ids[i]),
         )
-    return decoded
+        for i in keep
+    ]
+
+
+def _best_class_detection(
+    output: np.ndarray,
+    class_id: int,
+    conf_thres: float,
+) -> tuple[float, float, float, float, float, int] | None:
+    """Top-1 detection for one class — no NMS (enough for best_ball)."""
+    output = _as_channels_first(output)
+    if output.shape[0] < 4 + class_id + 1:
+        return None
+    scores = output[4 + class_id]
+    idx = int(np.argmax(scores))
+    conf = float(scores[idx])
+    if conf < conf_thres:
+        return None
+    x1, y1, x2, y2 = (float(v) for v in output[:4, idx])
+    return x1, y1, x2, y2, conf, class_id
 
 
 class HailoBallDetector:
@@ -226,14 +247,14 @@ class HailoBallDetector:
         else:
             self.imgsz = int(imgsz)
 
-        self._HEF = HEF
-        self._VDevice = VDevice
-        self._ConfigureParams = ConfigureParams
-        self._InferVStreams = InferVStreams
-        self._InputVStreamParams = InputVStreamParams
-        self._OutputVStreamParams = OutputVStreamParams
-        self._FormatType = FormatType
-        self._HailoStreamInterface = HailoStreamInterface
+        self._ball_class_id = 0
+        for class_id, name in self.names.items():
+            if str(name).strip().lower() == BALL_CLASS_NAME:
+                self._ball_class_id = int(class_id)
+                break
+
+        self._letterbox_canvas: np.ndarray | None = None
+        self._input_batch: np.ndarray | None = None
 
         self._hef = HEF(str(self.hef_path))
         self._target = VDevice()
@@ -247,6 +268,7 @@ class HailoBallDetector:
         self._input_vstream_info = self._hef.get_input_vstream_infos()[0]
         self._output_vstream_infos = self._hef.get_output_vstream_infos()
         self._input_name = self._input_vstream_info.name
+        self._output_name = self._output_vstream_infos[0].name
 
         self._input_vstreams_params = InputVStreamParams.make_from_network_group(
             self._network_group,
@@ -307,31 +329,30 @@ class HailoBallDetector:
         return False
 
     def _is_ball_class(self, class_id: int) -> bool:
-        class_id = int(class_id)
-        class_name = self.names.get(class_id)
-        if class_name is not None:
-            return str(class_name).strip().lower() == BALL_CLASS_NAME
-        return class_id == 0
+        return int(class_id) == self._ball_class_id
+
+    def _preprocess(self, frame_rgb: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int]]:
+        padded, scale, pad = letterbox(
+            frame_rgb,
+            self.imgsz,
+            canvas=self._letterbox_canvas,
+        )
+        self._letterbox_canvas = padded
+        if self._input_batch is None or self._input_batch.shape[1:] != padded.shape:
+            self._input_batch = np.empty((1, *padded.shape), dtype=np.uint8)
+        self._input_batch[0] = padded
+        return self._input_batch, scale, pad
+
+    def _infer_raw(self, frame_rgb: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int]]:
+        if self._closed:
+            raise RuntimeError("HailoBallDetector is closed")
+        input_batch, scale, pad = self._preprocess(frame_rgb)
+        raw = self._infer.infer({self._input_name: input_batch})
+        return np.asarray(raw[self._output_name]), scale, pad
 
     def predict(self, frame_rgb: np.ndarray) -> list[dict]:
         """Return detections as dicts with xyxy (original frame), conf, cls."""
-        if self._closed:
-            raise RuntimeError("HailoBallDetector is closed")
-
-        padded, scale, (pad_left, pad_top) = letterbox(frame_rgb, self.imgsz)
-        input_data = {self._input_name: np.expand_dims(padded, axis=0)}
-        raw = self._infer.infer(input_data)
-
-        # First output tensor: raw (1, 8400, 4+nc) after /model.23/Transpose cut.
-        output = None
-        for info in self._output_vstream_infos:
-            tensor = np.asarray(raw[info.name])
-            if tensor.ndim >= 2:
-                output = tensor
-                break
-        if output is None:
-            return []
-
+        output, scale, (pad_left, pad_top) = self._infer_raw(frame_rgb)
         detections: list[dict] = []
         frame_h, frame_w = frame_rgb.shape[:2]
         for x1, y1, x2, y2, conf, class_id in _decode_detections(
@@ -358,31 +379,38 @@ class HailoBallDetector:
 
     def best_ball(self, frame_rgb: np.ndarray) -> dict | None:
         """Highest-confidence ball detection with centre / radial_pixels."""
-        frame_h, frame_w = frame_rgb.shape[:2]
-        candidates = []
-        for det in self.predict(frame_rgb):
-            if not self._is_ball_class(det["class_id"]):
-                continue
-            x1, y1, x2, y2 = det["xyxy"]
-            centre_x = (x1 + x2) / 2.0
-            centre_y = (y1 + y2) / 2.0
-            candidates.append(
-                {
-                    "bbox": (
-                        int(round(x1)),
-                        int(round(y1)),
-                        int(round(x2 - x1)),
-                        int(round(y2 - y1)),
-                    ),
-                    "centre": (centre_x, centre_y),
-                    "radial_pixels": math.hypot(
-                        centre_x - (frame_w / 2.0),
-                        centre_y - (frame_h / 2.0),
-                    ),
-                    "confidence": det["confidence"],
-                    "polygon": None,
-                }
-            )
-        if not candidates:
+        output, scale, (pad_left, pad_top) = self._infer_raw(frame_rgb)
+        det = _best_class_detection(output, self._ball_class_id, self.conf)
+        if det is None:
             return None
-        return max(candidates, key=lambda item: item["confidence"])
+
+        x1, y1, x2, y2, conf, _class_id = det
+        frame_h, frame_w = frame_rgb.shape[:2]
+        x1 = (x1 - pad_left) / scale
+        y1 = (y1 - pad_top) / scale
+        x2 = (x2 - pad_left) / scale
+        y2 = (y2 - pad_top) / scale
+        x1 = min(max(x1, 0.0), frame_w - 1.0)
+        y1 = min(max(y1, 0.0), frame_h - 1.0)
+        x2 = min(max(x2, 0.0), frame_w - 1.0)
+        y2 = min(max(y2, 0.0), frame_h - 1.0)
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        centre_x = (x1 + x2) / 2.0
+        centre_y = (y1 + y2) / 2.0
+        return {
+            "bbox": (
+                int(round(x1)),
+                int(round(y1)),
+                int(round(x2 - x1)),
+                int(round(y2 - y1)),
+            ),
+            "centre": (centre_x, centre_y),
+            "radial_pixels": math.hypot(
+                centre_x - (frame_w / 2.0),
+                centre_y - (frame_h / 2.0),
+            ),
+            "confidence": conf,
+            "polygon": None,
+        }
