@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <cmath>
+#include <cstdint>
 #include <atomic>
 #include <mutex>
 #include <thread>
@@ -40,6 +41,7 @@ struct ScanPoint {
 
 static std::vector<ScanPoint> g_latest_scan;
 static std::atomic<bool> g_scan_ready{false};
+static std::atomic<std::uint64_t> g_scan_generation{0};
 
 static std::atomic<bool> g_loc_running{false};
 static std::thread g_loc_thread;
@@ -90,6 +92,7 @@ static void scan_thread_func() {
                 std::lock_guard<std::mutex> lock(g_data_mutex);
                 g_latest_scan = std::move(new_scan);
                 g_scan_ready.store(true);
+                g_scan_generation.fetch_add(1);
             }
         }
 
@@ -98,8 +101,15 @@ static void scan_thread_func() {
 }
 
 static void localization_thread_func() {
+    std::uint64_t last_processed_generation = 0;
     while (g_loc_running.load()) {
         if (!g_scan_ready.load() || !loc_scan_updates_allowed()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            continue;
+        }
+
+        std::uint64_t generation = g_scan_generation.load();
+        if (generation == last_processed_generation) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
@@ -108,9 +118,11 @@ static void localization_thread_func() {
         {
             std::lock_guard<std::mutex> lock(g_data_mutex);
             scan_copy = g_latest_scan;
+            generation = g_scan_generation.load();
         }
 
         if (scan_copy.empty()) {
+            last_processed_generation = generation;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
         }
@@ -124,6 +136,7 @@ static void localization_thread_func() {
 
         loc_update_scan(loc_scan.data(), (int)loc_scan.size(),
                         MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY);
+        last_processed_generation = generation;
 
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
@@ -370,6 +383,24 @@ static bool scan_updates_enabled() {
     return loc_scan_updates_allowed();
 }
 
+static py::tuple get_last_scan_correction_py() {
+    LocScanCorrection corr = loc_get_last_scan_correction();
+    if (!corr.valid) {
+        return py::make_tuple(
+            corr.sequence,
+            py::none(), py::none(), py::none(),
+            py::none(), py::none(), py::none(),
+            py::none(), py::none(),
+            false);
+    }
+    return py::make_tuple(
+        corr.sequence,
+        corr.predicted_x, corr.predicted_y, corr.predicted_yaw_deg,
+        corr.corrected_x, corr.corrected_y, corr.corrected_yaw_deg,
+        corr.error_mm, corr.yaw_error_deg,
+        true);
+}
+
 PYBIND11_MODULE(lidar, m) {
     m.doc() = "RPLidar C1 Python module — scan data and MCL localization";
 
@@ -431,4 +462,10 @@ PYBIND11_MODULE(lidar, m) {
 
     m.def("scan_updates_enabled", &scan_updates_enabled,
           "True when MCL is accepting LIDAR scans (false during fast rotation).");
+
+    m.def("get_last_scan_correction", &get_last_scan_correction_py,
+          "Get (seq, pred_x, pred_y, pred_yaw, corr_x, corr_y, corr_yaw, "
+          "error_mm, yaw_error_deg, valid) for the last LIDAR scan update. "
+          "error_mm is how far the odometry-interpolated pose was from the "
+          "LIDAR-corrected pose.");
 }

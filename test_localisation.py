@@ -128,6 +128,35 @@ def print_localisation_status(lidar_module):
         )
 
 
+def print_scan_correction_if_new(lidar_module, last_sequence):
+    """If a new LIDAR scan update landed, print odometry vs LIDAR correction error.
+
+    Returns the latest correction sequence number.
+    """
+    (
+        sequence,
+        pred_x,
+        pred_y,
+        pred_yaw,
+        corr_x,
+        corr_y,
+        corr_yaw,
+        error_mm,
+        yaw_error_deg,
+        valid,
+    ) = lidar_module.get_last_scan_correction()
+    if not valid or sequence == last_sequence:
+        return last_sequence
+
+    print(
+        f"scan#{sequence} odom_error={error_mm:.1f} mm "
+        f"yaw_error={yaw_error_deg:+.1f} deg | "
+        f"odom=({pred_x:.1f}, {pred_y:.1f}, {pred_yaw:.1f}) -> "
+        f"lidar=({corr_x:.1f}, {corr_y:.1f}, {corr_yaw:.1f})"
+    )
+    return sequence
+
+
 def feed_imu_yaw_prior(lidar_module, imu, startup_yaw):
     """Push startup-relative IMU yaw into MCL as a soft heading prior."""
     imu_yaw = imu.get_yaw()
@@ -182,6 +211,7 @@ def drive_to_target(
     lidar_velocity,
     last_pose_time,
     last_mcl_yaw,
+    last_scan_sequence=0,
     stream_enabled=False,
     send_log_module=None,
 ):
@@ -198,6 +228,9 @@ def drive_to_target(
             lidar_velocity,
             yaw_for_odom,
             last_pose_time,
+        )
+        last_scan_sequence = print_scan_correction_if_new(
+            lidar_module, last_scan_sequence
         )
 
         if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
@@ -231,7 +264,7 @@ def drive_to_target(
         time.sleep(LOOP_DELAY_SECONDS)
 
     movement_controller.stop()
-    return last_pose_time, last_mcl_yaw
+    return last_pose_time, last_mcl_yaw, last_scan_sequence
 
 
 def monitor_pose(
@@ -241,6 +274,7 @@ def monitor_pose(
     lidar_velocity,
     last_pose_time,
     last_mcl_yaw,
+    last_scan_sequence=0,
     stream_enabled=False,
     send_log_module=None,
 ):
@@ -257,6 +291,9 @@ def monitor_pose(
             lidar_velocity,
             yaw_for_odom,
             last_pose_time,
+        )
+        last_scan_sequence = print_scan_correction_if_new(
+            lidar_module, last_scan_sequence
         )
 
         if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
@@ -332,6 +369,7 @@ def main():
 
         lidar_velocity = LidarVelocityEstimator()
         last_mcl_yaw = None
+        last_scan_sequence = 0
 
         if args.no_move:
             print("Movement disabled (--no-move). Monitoring pose. Press Ctrl+C to quit.")
@@ -342,6 +380,7 @@ def main():
                 lidar_velocity,
                 last_pose_time,
                 last_mcl_yaw,
+                last_scan_sequence,
                 stream_enabled=args.stream,
                 send_log_module=send_log_module,
             )
@@ -365,7 +404,7 @@ def main():
                 if pose is not None:
                     stream_pose(args.stream, send_log_module, pose[0], pose[1], pose[2])
 
-                last_pose_time, last_mcl_yaw = drive_to_target(
+                last_pose_time, last_mcl_yaw, last_scan_sequence = drive_to_target(
                     target_x,
                     target_y,
                     lidar,
@@ -375,6 +414,7 @@ def main():
                     lidar_velocity,
                     last_pose_time,
                     last_mcl_yaw,
+                    last_scan_sequence,
                     stream_enabled=args.stream,
                     send_log_module=send_log_module,
                 )

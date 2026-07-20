@@ -1,6 +1,8 @@
 #ifndef LOCALISATION_H
 #define LOCALISATION_H
 
+#include <cstdint>
+
 struct LocScanPoint {
     float angle_deg;
     float distance_mm;
@@ -13,6 +15,20 @@ struct LocPose {
     float yaw_deg;
     float confidence;
     bool ok;
+};
+
+// Odometry-interpolated pose vs LIDAR-corrected pose for the last scan update.
+struct LocScanCorrection {
+    std::uint64_t sequence;  // increments on each recorded correction
+    float predicted_x;
+    float predicted_y;
+    float predicted_yaw_deg;
+    float corrected_x;
+    float corrected_y;
+    float corrected_yaw_deg;
+    float error_mm;
+    float yaw_error_deg;
+    bool valid;
 };
 
 void loc_init_map(float pitch_x, float pitch_y);
@@ -29,5 +45,6 @@ void loc_update_scan(const LocScanPoint* points, int count,
 bool loc_scan_updates_allowed();
 bool loc_is_ready();
 LocPose loc_get_pose();
+LocScanCorrection loc_get_last_scan_correction();
 
 #endif

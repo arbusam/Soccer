@@ -28,6 +28,7 @@ static std::mt19937 g_rng(42);
 static float g_pitch_x = 2430.0f;
 static float g_pitch_y = 1820.0f;
 static LocPose g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
+static LocScanCorrection g_last_scan_correction = {};
 static bool g_started = false;
 static bool g_ready = false;
 static bool g_scan_updates_paused = false;
@@ -338,6 +339,7 @@ void loc_start() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     init_particles_uniform();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
+    g_last_scan_correction = {};
     g_ready = false;
     g_started = true;
     reset_rotation_gate();
@@ -350,6 +352,7 @@ void loc_stop() {
     g_imu_yaw_valid = false;
     g_particles.clear();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
+    g_last_scan_correction = {};
     reset_rotation_gate();
 }
 
@@ -360,6 +363,7 @@ void loc_reset() {
     }
     init_particles_uniform();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
+    g_last_scan_correction = {};
     g_ready = false;
     reset_rotation_gate();
 }
@@ -440,6 +444,10 @@ void loc_update_scan(const LocScanPoint* points, int count,
         return;
     }
 
+    // Snapshot the odometry-interpolated pose just before LIDAR reweights particles.
+    const LocPose predicted_pose = g_pose;
+    const bool had_prior_pose = g_ready && g_pose.ok;
+
     // Store log-weights first, then log-sum-exp so relative weights stay
     // usable even when absolute log-likelihoods underflow float exp().
     float max_log = -1e30f;
@@ -482,6 +490,21 @@ void loc_update_scan(const LocScanPoint* points, int count,
     g_pose = estimate_pose_from_particles(angle_deg.data(), r_meas.data(), n);
     if (g_pose.ok) {
         g_ready = true;
+        if (had_prior_pose) {
+            float dx = g_pose.x - predicted_pose.x;
+            float dy = g_pose.y - predicted_pose.y;
+            g_last_scan_correction.sequence += 1;
+            g_last_scan_correction.predicted_x = predicted_pose.x;
+            g_last_scan_correction.predicted_y = predicted_pose.y;
+            g_last_scan_correction.predicted_yaw_deg = predicted_pose.yaw_deg;
+            g_last_scan_correction.corrected_x = g_pose.x;
+            g_last_scan_correction.corrected_y = g_pose.y;
+            g_last_scan_correction.corrected_yaw_deg = g_pose.yaw_deg;
+            g_last_scan_correction.error_mm = std::sqrt(dx * dx + dy * dy);
+            g_last_scan_correction.yaw_error_deg =
+                wrap_angle_deg(g_pose.yaw_deg - predicted_pose.yaw_deg);
+            g_last_scan_correction.valid = true;
+        }
     }
 
     resample_particles();
@@ -500,4 +523,9 @@ bool loc_is_ready() {
 LocPose loc_get_pose() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     return g_pose;
+}
+
+LocScanCorrection loc_get_last_scan_correction() {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    return g_last_scan_correction;
 }
