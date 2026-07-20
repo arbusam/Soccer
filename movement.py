@@ -2,6 +2,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 from steelbar_powerful_bldc_driver import PowerfulBLDCDriver
 import board
@@ -14,6 +15,11 @@ i2c = busio.I2C(board.SCL, board.SDA)
 # Formula: rpm * 7 (pole pairs) * 36 (36:1 gear ratio) / 60 (seconds per minute) / 2^-16 (electrical revolutions per second)
 RPM_TO_MOTOR_SPEED = 275251.2
 MAX_VELOCITY_CHANGE_PER_SEC = 8000.0 # Max change in movement vector per second (mm/s/s)
+# Fixed-rate drive loop so control-loop stalls do not inflate accel dt or pause yaw correction.
+DRIVE_LOOP_HZ = 50.0
+DRIVE_LOOP_INTERVAL_S = 1.0 / DRIVE_LOOP_HZ
+# Cap one-step accel so a late wake never applies more than ~2 control periods of ramp.
+MAX_DRIVE_DT_S = DRIVE_LOOP_INTERVAL_S * 2.0
 
 DRIBBLER_RPM = 1000
 DRIBBLER_MOTOR_SPEED = int(DRIBBLER_RPM * RPM_TO_MOTOR_SPEED)
@@ -136,10 +142,12 @@ def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
 
 
 class MovementController:
-    """Own the drive motor state and convert movement commands into motor speeds."""
+    """Own the drive motor state and convert movement commands into motor speeds.
 
-    current_direction = 0.0
-    current_speed = 0.0
+    Accel ramping and yaw correction run on a fixed-rate background thread so a
+    stalled caller (slow LIDAR/camera/strategy) cannot inflate accel dt or pause
+    heading correction. ``move()`` only updates the latest command targets.
+    """
 
     def __init__(
         self,
@@ -150,13 +158,62 @@ class MovementController:
         max_rpm,
         yaw_correct_threshold,
     ):
+        drive_motors = motors[:4]
+        if any(motor is None for motor in drive_motors):
+            raise ValueError(
+                "MovementController requires 4 initialized drive motors in motors[0:4]."
+            )
+
         self.motors = motors
         self.motor_modes = motor_modes
         self.diameter = diameter
         self.max_yaw_rpm = max_yaw_rpm
         self.max_rpm = max_rpm
         self.yaw_correct_threshold = yaw_correct_threshold
-        self.last_update_time = time.monotonic()
+
+        self._command_lock = threading.Lock()
+        self._i2c_lock = threading.Lock()
+        self._current_lock = threading.Lock()
+        self._error_lock = threading.Lock()
+
+        self._target_direction = 0.0
+        self._target_speed = 0.0
+        self._target_rotation = 0.0
+        self._target_rotation_speed = 0.0
+        self._target_yaw = 0.0
+        self._target_dribbler = False
+
+        self._current_direction = 0.0
+        self._current_speed = 0.0
+        self._last_error = None
+
+        self._running = True
+        self._thread = threading.Thread(
+            target=self._drive_loop,
+            name="movement-drive",
+            daemon=True,
+        )
+        self._thread.start()
+
+    @property
+    def current_direction(self):
+        with self._current_lock:
+            return self._current_direction
+
+    @current_direction.setter
+    def current_direction(self, value):
+        with self._current_lock:
+            self._current_direction = float(value)
+
+    @property
+    def current_speed(self):
+        with self._current_lock:
+            return self._current_speed
+
+    @current_speed.setter
+    def current_speed(self, value):
+        with self._current_lock:
+            self._current_speed = float(value)
 
     @classmethod
     def from_i2c_addresses(
@@ -180,76 +237,152 @@ class MovementController:
         )
 
     def move(self, direction, speed, rotation, rotation_speed, yaw, dribbler=False):
-        """Move using the controller's configured motors and drive limits."""
-        drive_motors = self.motors[:4]
-        if any(motor is None for motor in drive_motors):
-            raise ValueError("MovementController.move() requires 4 initialized drive motors in motors[0:4].")
-
-        dx = math.cos(math.radians(self.current_direction)) * self.current_speed
-        dy = math.sin(math.radians(self.current_direction)) * self.current_speed
-
-        target_dx = math.cos(math.radians(direction)) * speed
-        target_dy = math.sin(math.radians(direction)) * speed
-
-        now = time.monotonic()
-        dt = now - self.last_update_time
-        self.last_update_time = now
-
-        delta_dx = target_dx - dx
-        delta_dy = target_dy - dy
-        delta_magnitude = math.hypot(delta_dx, delta_dy)
-
-        max_step = MAX_VELOCITY_CHANGE_PER_SEC * dt
-        if delta_magnitude > max_step and delta_magnitude > 0.0:
-            scale = max_step / delta_magnitude
-            delta_dx *= scale
-            delta_dy *= scale
-
-        new_dx = dx + delta_dx
-        new_dy = dy + delta_dy
-
-        self.current_direction = math.degrees(math.atan2(new_dy, new_dx))
-        self.current_speed = math.hypot(new_dx, new_dy)
-
-        a_speed, b_speed, c_speed, d_speed = _calculate_drive_rpms(
-            self.current_direction,
-            self.current_speed,
-            rotation,
-            rotation_speed,
-            yaw,
-            self.diameter,
-            self.max_yaw_rpm,
-            self.max_rpm,
-            self.yaw_correct_threshold,
-        )
-
-        a_val = int(a_speed * RPM_TO_MOTOR_SPEED)
-        b_val = int(b_speed * RPM_TO_MOTOR_SPEED)
-        c_val = int(c_speed * RPM_TO_MOTOR_SPEED)
-        d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
-
-        _set_motor_speed(drive_motors[0], a_val, 0)
-        _set_motor_speed(drive_motors[1], b_val, 1)
-        _set_motor_speed(drive_motors[2], c_val, 2)
-        _set_motor_speed(drive_motors[3], d_val, 3)
-
-        if len(self.motors) > 4 and self.motors[4] is not None:
-            dribbler_speed = DRIBBLER_MOTOR_SPEED if dribbler else 0
-            _set_motor_speed(self.motors[4], dribbler_speed, 4, ignore_errors=True)
+        """Update drive targets; accel and yaw correction continue on the drive thread."""
+        self._raise_pending_error()
+        with self._command_lock:
+            self._target_direction = float(direction)
+            self._target_speed = float(speed)
+            self._target_rotation = float(rotation)
+            self._target_rotation_speed = float(rotation_speed)
+            self._target_yaw = float(yaw)
+            self._target_dribbler = bool(dribbler)
 
     def get_measured_body_velocity_mm_s(self, yaw_deg):
         """Estimate robot-body translation speed (mm/s) from measured wheel RPMs."""
+        self._raise_pending_error()
         drive_motors = self.motors[:4]
-        rpms = read_wheel_rpms(drive_motors)
+        with self._i2c_lock:
+            rpms = read_wheel_rpms(drive_motors)
         wheel_mm_s = wheel_rpms_to_linear_mm_s(rpms, self.diameter)
         return measured_wheel_speeds_to_body_velocity_mm_s(wheel_mm_s, yaw_deg)
 
     def stop(self):
-        """Set speed to 0 on all owned motors."""
-        self.current_speed = 0.0
-        for index, motor in enumerate(self.motors):
-            if motor is not None:
-                _set_motor_speed(motor, 0, index, ignore_errors=True)
+        """Stop the drive thread and set speed to 0 on all owned motors."""
+        self._running = False
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(timeout=1.0)
+
+        with self._command_lock:
+            self._target_speed = 0.0
+            self._target_rotation_speed = 0.0
+            self._target_dribbler = False
+        with self._current_lock:
+            self._current_speed = 0.0
+
+        with self._i2c_lock:
+            for index, motor in enumerate(self.motors):
+                if motor is not None:
+                    _set_motor_speed(motor, 0, index, ignore_errors=True)
+
+    def _raise_pending_error(self):
+        with self._error_lock:
+            error = self._last_error
+            self._last_error = None
+        if error is not None:
+            raise error
+
+    def _set_pending_error(self, error):
+        with self._error_lock:
+            self._last_error = error
+
+    def _snapshot_command(self):
+        with self._command_lock:
+            return (
+                self._target_direction,
+                self._target_speed,
+                self._target_rotation,
+                self._target_rotation_speed,
+                self._target_yaw,
+                self._target_dribbler,
+            )
+
+    def _drive_loop(self):
+        next_tick = time.monotonic()
+        last_update_time = next_tick
+        while self._running:
+            now = time.monotonic()
+            if now < next_tick:
+                time.sleep(min(next_tick - now, 0.005))
+                continue
+
+            next_tick += DRIVE_LOOP_INTERVAL_S
+            if next_tick < now:
+                # Avoid catch-up bursts after the scheduler or I2C stalls.
+                next_tick = now + DRIVE_LOOP_INTERVAL_S
+
+            dt = min(now - last_update_time, MAX_DRIVE_DT_S)
+            last_update_time = now
+            if dt <= 0.0:
+                continue
+
+            (
+                direction,
+                speed,
+                rotation,
+                rotation_speed,
+                yaw,
+                dribbler,
+            ) = self._snapshot_command()
+
+            with self._current_lock:
+                current_direction = self._current_direction
+                current_speed = self._current_speed
+
+            dx = math.cos(math.radians(current_direction)) * current_speed
+            dy = math.sin(math.radians(current_direction)) * current_speed
+            target_dx = math.cos(math.radians(direction)) * speed
+            target_dy = math.sin(math.radians(direction)) * speed
+
+            delta_dx = target_dx - dx
+            delta_dy = target_dy - dy
+            delta_magnitude = math.hypot(delta_dx, delta_dy)
+
+            max_step = MAX_VELOCITY_CHANGE_PER_SEC * dt
+            if delta_magnitude > max_step and delta_magnitude > 0.0:
+                scale = max_step / delta_magnitude
+                delta_dx *= scale
+                delta_dy *= scale
+
+            new_dx = dx + delta_dx
+            new_dy = dy + delta_dy
+            new_direction = math.degrees(math.atan2(new_dy, new_dx))
+            new_speed = math.hypot(new_dx, new_dy)
+
+            with self._current_lock:
+                self._current_direction = new_direction
+                self._current_speed = new_speed
+
+            a_speed, b_speed, c_speed, d_speed = _calculate_drive_rpms(
+                new_direction,
+                new_speed,
+                rotation,
+                rotation_speed,
+                yaw,
+                self.diameter,
+                self.max_yaw_rpm,
+                self.max_rpm,
+                self.yaw_correct_threshold,
+            )
+
+            a_val = int(a_speed * RPM_TO_MOTOR_SPEED)
+            b_val = int(b_speed * RPM_TO_MOTOR_SPEED)
+            c_val = int(c_speed * RPM_TO_MOTOR_SPEED)
+            d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
+            drive_motors = self.motors[:4]
+
+            try:
+                with self._i2c_lock:
+                    _set_motor_speed(drive_motors[0], a_val, 0)
+                    _set_motor_speed(drive_motors[1], b_val, 1)
+                    _set_motor_speed(drive_motors[2], c_val, 2)
+                    _set_motor_speed(drive_motors[3], d_val, 3)
+                    if len(self.motors) > 4 and self.motors[4] is not None:
+                        dribbler_speed = DRIBBLER_MOTOR_SPEED if dribbler else 0
+                        _set_motor_speed(
+                            self.motors[4], dribbler_speed, 4, ignore_errors=True
+                        )
+            except MotorCommunicationError as exc:
+                self._set_pending_error(exc)
 
 
 # Used by calibrate.py to calibrate the motors and save the results to the calibration file to be re used.
