@@ -838,6 +838,16 @@ def is_ball_touching_capture_zone(ball_x, ball_y, geometry):
     return False
 
 
+def get_dribbled_ball_position(bot):
+    """Ball center when held against the capture-zone back line."""
+    angle = math.radians(bot.yaw)
+    offset = CAPTURE_OFFSET + BALL_RADIUS + CAPTURE_LINE_HALF_WIDTH
+    return (
+        bot.x + offset * math.cos(angle),
+        bot.y + offset * math.sin(angle),
+    )
+
+
 def is_point_in_polygon(point, polygon):
     x, y = point
     inside = False
@@ -1559,10 +1569,11 @@ else:
         for bot in bots:
             prev_x = bot.x
             prev_y = bot.y
-            ball_captured = False
             ball_captured = is_ball_touching_capture_zone(
                 ball_x, ball_y, get_capture_geometry(bot.x, bot.y, bot.yaw)
             )
+            kick_state = False
+            dribbler_state = False
 
             if bot.manual:
                 if manual_keys is None:
@@ -1603,7 +1614,7 @@ else:
                     ]
 
                 if bot.controller is defence:
-                    direction, speed, rotation, steering_state, kick_state = bot.controller(
+                    direction, speed, rotation, steering_state, kick_state, dribbler_state = bot.controller(
                         controller_x,
                         controller_y,
                         controller_yaw,
@@ -1619,7 +1630,7 @@ else:
                         rotation = invert_angle_deg(rotation)
                     bot.steering = steering_state
                 elif bot.controller is striker:
-                    direction, speed, rotation, steering_state, kick_state = bot.controller(
+                    direction, speed, rotation, steering_state, kick_state, dribbler_state = bot.controller(
                         controller_x,
                         controller_y,
                         controller_yaw,
@@ -1635,7 +1646,7 @@ else:
                         rotation = invert_angle_deg(rotation)
                     bot.steering = steering_state
                 elif bot.controller is test_bot:
-                    direction, speed, rotation, steering_state, kick_state = bot.controller(
+                    direction, speed, rotation, steering_state, kick_state, dribbler_state = bot.controller(
                         controller_x,
                         controller_y,
                         controller_yaw,
@@ -1651,7 +1662,7 @@ else:
                         rotation = invert_angle_deg(rotation)
                     bot.steering = steering_state
                 else:
-                    direction, speed, rotation, kick_state = bot.controller(
+                    direction, speed, rotation, kick_state, dribbler_state = bot.controller(
                         controller_x,
                         controller_y,
                         controller_yaw,
@@ -1667,9 +1678,11 @@ else:
             else:
                 direction, speed, rotation = 0, 0, bot.yaw
 
+            # Kick releases the ball; skip dribbler hold this frame so the impulse sticks.
             if kick_state and ball_captured:
                 ball_vx += KICK_SPEED * math.cos(math.radians(bot.yaw))
                 ball_vy += KICK_SPEED * math.sin(math.radians(bot.yaw))
+                dribbler_state = False
 
             # Determine desired velocity vector in mm/s relative to world axes.
             if direction is not None:
@@ -1747,7 +1760,13 @@ else:
             bot.was_out_of_bounds = is_out_of_bounds
 
             bot_states.append(
-                {"bot": bot, "prev": (prev_x, prev_y), "delta": (bot_actual_dx, bot_actual_dy)}
+                {
+                    "bot": bot,
+                    "prev": (prev_x, prev_y),
+                    "delta": (bot_actual_dx, bot_actual_dy),
+                    "dribbler": dribbler_state,
+                    "ball_captured": ball_captured,
+                }
             )
 
         resolve_bot_collisions(bot_states)
@@ -1881,6 +1900,16 @@ else:
                 ball_vx = 0.0
                 ball_vy = 0.0
                 break
+
+        # While the dribbler is on and the ball was in the capture zone, keep it fixed there.
+        for state in bot_states:
+            if not state["dribbler"] or not state["ball_captured"]:
+                continue
+            bot = state["bot"]
+            ball_x, ball_y = get_dribbled_ball_position(bot)
+            ball_vx = bot.velocity_x
+            ball_vy = bot.velocity_y
+            break
 
         frame_pitch = build_frame(ball_x, ball_y, bots)
         blit_frame(frame_pitch)

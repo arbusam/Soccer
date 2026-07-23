@@ -1,4 +1,3 @@
-import time
 import board
 import digitalio
 from kicker import Kicker
