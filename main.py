@@ -417,6 +417,7 @@ try:
                     ball_x,
                     ball_y,
                     ball_captured,
+                    steering_state=steering_state,
                 )
             elif bot_mode == BotMode.GOALIE:
                 direction, speed, rotation, kick, dribbler = defence.goalie(

@@ -12,6 +12,11 @@ YELLOW_GOAL_BACK_X = 226
 GOAL_BACK_Y_MIN = 700
 GOAL_BACK_Y_MAX = 1125
 CYAN_GOAL_BACK_X = 2204
+# Enemy (cyan) goal mouth: side walls run from here back to CYAN_GOAL_BACK_X.
+CYAN_GOAL_MOUTH_X = 2130
+GOAL_SIDE_WALL_Y_MIN = 685
+GOAL_SIDE_WALL_Y_MAX = 1135
+GOAL_LINE_WIDTH = 10
 MAX_MOTOR_RPM = 400 # Maximum rpm that the wheels can spin at
 LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
@@ -28,8 +33,15 @@ WHITE_MAX_Y = 1570
 PITCH_WIDTH = 1820
 # How close to the white sideline before switching from wall-drive to upfield.
 BALL_HIDING_LINE_THRESHOLD = 150
+# Distance to goal (mm) at which ball hiding starts / ends.
+BALL_HIDING_START_DIST = 1000
+BALL_HIDING_END_DIST = 600
 
 BALL_RADIUS = 21 # mm, radius of the ball
+# Minimum angular clearance (deg) from the near goal side wall when banking off the far wall.
+SIDE_WALL_CLEARANCE_DEG = 2
+# When no shot/rebound is possible, pull this far toward own goal while drifting to mid Y.
+SHOT_REPOSITION_PULL_X = 400
 
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 OWN_GOAL_PREVENTION_OFFSET = 10 # deg, how much to offset the direction to the ball when preventing own goals.
@@ -44,6 +56,126 @@ def wrap_angle_deg(angle):
     return ((angle + 180) % 360) - 180
 
 
+def _angle_to(x0, y0, x1, y1):
+    return math.degrees(math.atan2(y1 - y0, x1 - x0))
+
+
+def _mouth_sector(ball_x, ball_y, mouth_x):
+    """Near/far mouth angles and opposite inside-wall Y for a shot from (ball_x, ball_y)."""
+    mouth_y_min = GOAL_SIDE_WALL_Y_MIN + BALL_RADIUS
+    mouth_y_max = GOAL_SIDE_WALL_Y_MAX - BALL_RADIUS
+    if ball_y >= (GOAL_SIDE_WALL_Y_MIN + GOAL_SIDE_WALL_Y_MAX) / 2:
+        near_y, far_y = mouth_y_max, mouth_y_min
+        opposite_y = GOAL_SIDE_WALL_Y_MIN + BALL_RADIUS
+    else:
+        near_y, far_y = mouth_y_min, mouth_y_max
+        opposite_y = GOAL_SIDE_WALL_Y_MAX - BALL_RADIUS
+    near_angle = _angle_to(ball_x, ball_y, mouth_x, near_y)
+    far_angle = _angle_to(ball_x, ball_y, mouth_x, far_y)
+    return near_angle, far_angle, opposite_y
+
+
+def _ray_hit(ball_x, ball_y, angle_deg, *, wall_x=None, wall_y=None):
+    """Intersection of a forward ray with x=wall_x or y=wall_y. Returns (x, y) or None."""
+    rad = math.radians(angle_deg)
+    cos_a, sin_a = math.cos(rad), math.sin(rad)
+    if wall_x is not None:
+        if abs(cos_a) < 1e-9:
+            return None
+        t = (wall_x - ball_x) / cos_a
+        if t <= 0:
+            return None
+        return wall_x, ball_y + t * sin_a
+    if abs(sin_a) < 1e-9:
+        return None
+    t = (wall_y - ball_y) / sin_a
+    if t <= 0:
+        return None
+    return ball_x + t * cos_a, wall_y
+
+
+def _clears_posts(ball_x, ball_y, angle_deg, mouth_x):
+    """Ball body must stay clear of both mouth posts along the kick ray."""
+    min_dist = BALL_RADIUS + GOAL_LINE_WIDTH / 2.0
+    rad = math.radians(angle_deg)
+    ux, uy = math.cos(rad), math.sin(rad)
+    for post_y in (GOAL_SIDE_WALL_Y_MIN, GOAL_SIDE_WALL_Y_MAX):
+        wx, wy = mouth_x - ball_x, post_y - ball_y
+        proj = wx * ux + wy * uy
+        dist = math.hypot(wx, wy) if proj < 0 else abs(wx * uy - wy * ux)
+        if dist + 1e-9 < min_dist:
+            return False
+    return True
+
+
+def kick_direction_scores(ball_x, ball_y, angle_deg, target_x, mouth_x):
+    """True if kicking along angle_deg clears the mouth/posts and hits back or opposite wall."""
+    near_angle, far_angle, opposite_y = _mouth_sector(ball_x, ball_y, mouth_x)
+    span = wrap_angle_deg(far_angle - near_angle)
+    from_near = wrap_angle_deg(angle_deg - near_angle)
+    if abs(span) + 1e-9 < SIDE_WALL_CLEARANCE_DEG:
+        return False
+    if from_near * span <= 0:
+        return False
+    if abs(from_near) + 1e-9 < SIDE_WALL_CLEARANCE_DEG:
+        return False
+    if abs(from_near) > abs(span) + 1e-9:
+        return False
+    if not _clears_posts(ball_x, ball_y, angle_deg, mouth_x):
+        return False
+
+    back_hit = _ray_hit(ball_x, ball_y, angle_deg, wall_x=target_x)
+    if back_hit is not None and GOAL_BACK_Y_MIN <= back_hit[1] <= GOAL_BACK_Y_MAX:
+        return True
+    side_hit = _ray_hit(ball_x, ball_y, angle_deg, wall_y=opposite_y)
+    if side_hit is None:
+        return False
+    return min(mouth_x, target_x) <= side_hit[0] <= max(mouth_x, target_x)
+
+
+def goal_shot_aim(ball_x, ball_y, target_x, mouth_x):
+    """Return (aim_angle_deg, True) for a back-wall or rebound shot, or (None, False)."""
+    dx_back = target_x - ball_x
+    if abs(dx_back) < 1e-6:
+        return None, False
+
+    mouth_y_min = GOAL_SIDE_WALL_Y_MIN + BALL_RADIUS
+    mouth_y_max = GOAL_SIDE_WALL_Y_MAX - BALL_RADIUS
+    aim_y_min, aim_y_max = GOAL_BACK_Y_MIN, GOAL_BACK_Y_MAX
+    # Outside the mouth: clip the back-wall window to rays that pass through it.
+    before_mouth = (dx_back > 0 and ball_x < mouth_x) or (dx_back < 0 and ball_x > mouth_x)
+    if before_mouth and abs(mouth_x - ball_x) > 1e-6:
+        scale = dx_back / (mouth_x - ball_x)
+        y_lo = ball_y + (mouth_y_min - ball_y) * scale
+        y_hi = ball_y + (mouth_y_max - ball_y) * scale
+        visible_lo, visible_hi = min(y_lo, y_hi), max(y_lo, y_hi)
+        aim_y_min = max(GOAL_BACK_Y_MIN, visible_lo)
+        aim_y_max = min(GOAL_BACK_Y_MAX, visible_hi)
+
+    candidates = []
+    if aim_y_min <= aim_y_max:
+        a0 = _angle_to(ball_x, ball_y, target_x, aim_y_min)
+        a1 = _angle_to(ball_x, ball_y, target_x, aim_y_max)
+        candidates.append(wrap_angle_deg(a0 + wrap_angle_deg(a1 - a0) / 2))
+
+    # Rebound: opposite inside wall, as close to the back as possible, with near-wall clearance.
+    near_angle, far_angle, opposite_y = _mouth_sector(ball_x, ball_y, mouth_x)
+    span = wrap_angle_deg(far_angle - near_angle)
+    if abs(span) + 1e-9 >= SIDE_WALL_CLEARANCE_DEG:
+        ideal = _angle_to(ball_x, ball_y, target_x, opposite_y)
+        clear = wrap_angle_deg(near_angle + math.copysign(SIDE_WALL_CLEARANCE_DEG, span))
+        from_near = wrap_angle_deg(ideal - near_angle)
+        if from_near * span > 0 and abs(from_near) + 1e-9 >= SIDE_WALL_CLEARANCE_DEG:
+            candidates.append(ideal if abs(from_near) <= abs(span) + 1e-9 else far_angle)
+        else:
+            candidates.append(clear)
+
+    for aim in candidates:
+        if kick_direction_scores(ball_x, ball_y, aim, target_x, mouth_x):
+            return aim, True
+    return None, False
+
+
 def striker(
     x_pos,
     y_pos,
@@ -55,14 +187,11 @@ def striker(
     friendly_bot_positions=None,
     enemy_bot_positions=None,
 ):
-    """Placeholder striker strategy; fill in later."""
+    """Striker strategy: approach ball, hide along sideline when far, then aim and kick."""
     if friendly_bot_positions is None:
         friendly_bot_positions = []
     if enemy_bot_positions is None:
         enemy_bot_positions = []
-    # Keep steering state stable until real striker logic is implemented.
-    # Ensure the steering input is a boolean.
-    steering = bool(steering_state)
     # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
     vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.
@@ -86,40 +215,68 @@ def striker(
     kick = False
     dribbler = True # Whether the dribbler should be on.
 
+    # steering_state persists ball-hiding across calls (hysteresis between START/END).
+    ball_hiding = bool(steering_state) if ball_captured else False
+
     # Only kick if the ball is captured and lined up with the goal.
     # Kicks ball into goal when it's close to the goal
     if ball_captured:
         target_x = CYAN_GOAL_BACK_X
 
-        dist_to_goal = math.sqrt((target_x - ball_x) ** 2 + (GOAL_CENTRE_Y - ball_y) ** 2)
-        degrees_to_goal = math.degrees(math.atan2(GOAL_CENTRE_Y - ball_y, target_x - ball_x))
-        for enemy_bot in enemy_bot_positions:
-            degrees_to_enemy = math.degrees(
-                math.atan2(enemy_bot[1] - ball_y, enemy_bot[0] - ball_x)
-            )
-            if abs(wrap_angle_deg(degrees_to_enemy - degrees_to_goal)) < 50:
-                if 0 < degrees_to_goal < 90:
-                    offset = 80
-                elif -90 < degrees_to_goal < 0:
-                    offset = -80
-        if offset == 0 and dist_to_goal < 850:
-            # Stop and turn in place toward the goal, then shoot when lined up.
-            speed = 0
-            rotation = degrees_to_goal
-            if abs(wrap_angle_deg(yaw - degrees_to_goal)) < 10:
-                kick = True
-        elif dist_to_goal >= 850:
+        dist_to_goal = abs(target_x - ball_x)
+        # Back-wall shot, or rebound off the opposite side wall; None if neither is possible.
+        degrees_to_goal, shot_possible = goal_shot_aim(
+            ball_x, ball_y, target_x, CYAN_GOAL_MOUTH_X
+        )
+        if shot_possible:
+            for enemy_bot in enemy_bot_positions:
+                degrees_to_enemy = math.degrees(
+                    math.atan2(enemy_bot[1] - ball_y, enemy_bot[0] - ball_x)
+                )
+                if abs(wrap_angle_deg(degrees_to_enemy - degrees_to_goal)) < 50:
+                    if 0 < degrees_to_goal < 90:
+                        offset = 80
+                    elif -90 < degrees_to_goal < 0:
+                        offset = -80
+
+        # Enter hide when far; stay hidden until closer than END (no dead-zone flutter).
+        if not ball_hiding and dist_to_goal >= BALL_HIDING_START_DIST:
+            ball_hiding = True
+        elif ball_hiding and offset == 0 and dist_to_goal < BALL_HIDING_END_DIST:
+            ball_hiding = False
+
+        if ball_hiding:
             # Drive perpendicular to the goals toward a sideline until close enough to
             # aim. Keep dribbler on so losing the ball does not drop rotation to 0.
             offset = 0
             speed = 400
             if y_pos > PITCH_WIDTH / 2:
-                rotation = 90
+                rotation = 120
                 near_line = y_pos >= WHITE_MAX_Y - BALL_HIDING_LINE_THRESHOLD
             else:
-                rotation = 270
+                rotation = 240
                 near_line = y_pos <= WHITE_MIN_Y + BALL_HIDING_LINE_THRESHOLD
             # Once tucked against the sideline, advance upfield while still facing the wall.
             direction = 0 if near_line else rotation
+        elif not shot_possible:
+            # No back-wall or rebound shot: dribble toward own goal and pitch centre.
+            offset = 0
+            speed = 400
+            reposition_x = x_pos - SHOT_REPOSITION_PULL_X
+            direction = _angle_to(x_pos, y_pos, reposition_x, GOAL_CENTRE_Y)
+            rotation = direction
+        elif offset == 0 and dist_to_goal < BALL_HIDING_END_DIST:
+            # Stop and turn in place toward the goal, then shoot when lined up.
+            # Kick along yaw, so require the actual facing direction to score — not just
+            # proximity to the aim angle (a 10° early kick can hit the outside near wall).
+            speed = 0
+            rotation = degrees_to_goal
+            if (
+                abs(wrap_angle_deg(yaw - degrees_to_goal)) <= YAW_CORRECT_THRESHOLD
+                and kick_direction_scores(
+                    ball_x, ball_y, yaw, target_x, CYAN_GOAL_MOUTH_X
+                )
+            ):
+                kick = True
 
-    return direction + offset, speed, rotation, steering, kick, dribbler
+    return direction + offset, speed, rotation, ball_hiding, kick, dribbler
