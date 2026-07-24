@@ -1,0 +1,33 @@
+# User unit (no sudo): installed to ~/.config/systemd/user/
+#   cp systemd/label-studio-ml.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now label-studio-ml.service
+#
+# Then in Label Studio → Open Soccer → Settings → Model:
+#   URL: http://127.0.0.1:9090
+#   (Interactive preannotations: off)
+#
+# Optional env overrides:
+#   LS_ML_WEIGHTS=/path/to/best.pt
+#   LS_ML_CONF=0.25
+#   LS_ML_PORT=9090
+
+[Unit]
+Description=Label Studio YOLO ML backend (Open Soccer detect)
+After=network-online.target label-studio.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/arhan/Soccer
+Environment=LABEL_STUDIO_DATA_DIR=/home/arhan/Soccer/label-studio-data
+Environment=LS_ML_WEIGHTS=/home/arhan/Soccer/training/runs/open-soccer-detect-m/weights/best.pt
+Environment=LS_ML_CONF=0.25
+Environment=LS_ML_HOST=127.0.0.1
+Environment=LS_ML_PORT=9090
+ExecStart=/home/arhan/Soccer/.venv/bin/python /home/arhan/Soccer/training/ls_yolo_backend.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

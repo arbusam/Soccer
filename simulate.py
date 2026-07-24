@@ -62,6 +62,12 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--vision",
+    action="store_true",
+    help="Hide the ball from bots whose centre-to-ball ray hits another bot's black wall.",
+)
+
+parser.add_argument(
     "--team1",
     nargs="+",
     metavar="ROLE",
@@ -648,30 +654,84 @@ def point_to_line_segment_distance(px, py, x1, y1, x2, y2):
     # Vector from line start to end
     dx = x2 - x1
     dy = y2 - y1
-    
+
     # If line segment has zero length, return distance to endpoint
     line_length_sq = dx * dx + dy * dy
     if line_length_sq == 0:
         dist = math.sqrt((px - x1) ** 2 + (py - y1) ** 2)
         return dist, (x1, y1)
-    
+
     # Vector from line start to point
     to_point_x = px - x1
     to_point_y = py - y1
-    
+
     # Project point onto line (t is parameter along line segment)
     t = max(0, min(1, (to_point_x * dx + to_point_y * dy) / line_length_sq))
-    
+
     # Closest point on line segment
     closest_x = x1 + t * dx
     closest_y = y1 + t * dy
-    
+
     # Distance from point to closest point on segment
     dist_x = px - closest_x
     dist_y = py - closest_y
     distance = math.sqrt(dist_x * dist_x + dist_y * dist_y)
-    
+
     return distance, (closest_x, closest_y)
+
+
+def segment_segment_distance(a0, a1, b0, b1):
+    """Closest distance between two finite line segments."""
+    ax0, ay0 = a0
+    ax1, ay1 = a1
+    bx0, by0 = b0
+    bx1, by1 = b1
+
+    abx = ax1 - ax0
+    aby = ay1 - ay0
+    cdx = bx1 - bx0
+    cdy = by1 - by0
+    acx = ax0 - bx0
+    acy = ay0 - by0
+
+    ab_len_sq = abx * abx + aby * aby
+    cd_len_sq = cdx * cdx + cdy * cdy
+    ab_dot_cd = abx * cdx + aby * cdy
+    ab_dot_ac = abx * acx + aby * acy
+    cd_dot_ac = cdx * acx + cdy * acy
+
+    denom = ab_len_sq * cd_len_sq - ab_dot_cd * ab_dot_cd
+    if abs(denom) > EPSILON:
+        s = (ab_dot_cd * cd_dot_ac - cd_len_sq * ab_dot_ac) / denom
+        t = (ab_len_sq * cd_dot_ac - ab_dot_cd * ab_dot_ac) / denom
+        if 0.0 <= s <= 1.0 and 0.0 <= t <= 1.0:
+            px = ax0 + s * abx
+            py = ay0 + s * aby
+            qx = bx0 + t * cdx
+            qy = by0 + t * cdy
+            return math.hypot(px - qx, py - qy)
+
+    dist_a0, _ = point_to_line_segment_distance(ax0, ay0, bx0, by0, bx1, by1)
+    dist_a1, _ = point_to_line_segment_distance(ax1, ay1, bx0, by0, bx1, by1)
+    dist_b0, _ = point_to_line_segment_distance(bx0, by0, ax0, ay0, ax1, ay1)
+    dist_b1, _ = point_to_line_segment_distance(bx1, by1, ax0, ay0, ax1, ay1)
+    return min(dist_a0, dist_a1, dist_b0, dist_b1)
+
+
+def ball_visible_from(observer, ball_x, ball_y, bots):
+    """True if the centre-to-ball ray does not hit another bot's black wall."""
+    ray_start = (observer.x, observer.y)
+    ray_end = (ball_x, ball_y)
+    for other in bots:
+        if other is observer:
+            continue
+        geometry = get_capture_geometry(other.x, other.y, other.yaw)
+        for start, end in geometry["segments"]:
+            if segment_segment_distance(ray_start, ray_end, start, end) <= (
+                CAPTURE_LINE_HALF_WIDTH + EPSILON
+            ):
+                return False
+    return True
 
 
 def check_collision_with_goal_lines(x_pos, y_pos, bot_radius, goal_lines):
@@ -1585,6 +1645,9 @@ else:
                 controller_yaw = bot.yaw
                 controller_ball_x = ball_x
                 controller_ball_y = ball_y
+                if args.vision and not ball_visible_from(bot, ball_x, ball_y, bots):
+                    controller_ball_x = None
+                    controller_ball_y = None
                 controller_friendly_bot_positions = [
                     (other_bot.x, other_bot.y)
                     for other_bot in bots
@@ -1602,7 +1665,7 @@ else:
                     controller_x, controller_y = invert_pitch_point(bot.x, bot.y)
                     controller_yaw = invert_angle_deg(bot.yaw)
                     controller_ball_x, controller_ball_y = invert_optional_pitch_point(
-                        ball_x, ball_y
+                        controller_ball_x, controller_ball_y
                     )
                     controller_friendly_bot_positions = [
                         invert_pitch_point(other_x, other_y)

@@ -113,8 +113,8 @@ def _as_channels_first(output: np.ndarray, *, min_channels: int = 4) -> np.ndarr
 def _merge_box_score_outputs(outputs: list[np.ndarray]) -> np.ndarray:
     """Merge separate box (4,N) and score (nc,N) HEF outputs into (4+nc, N).
 
-    Score tensor is the one whose values mostly lie in [0, 1] after dequant
-    (sigmoid). Box tensor spans pixel coordinates.
+    Prefer channel-count identity (boxes always have 4 channels; scores have
+    nc, which may be < 4). Fall back to value-range heuristics when nc == 4.
     """
     if len(outputs) == 1:
         return _as_channels_first(outputs[0], min_channels=6)
@@ -123,26 +123,34 @@ def _merge_box_score_outputs(outputs: list[np.ndarray]) -> np.ndarray:
             f"Expected 1 or 2 Hailo outputs (boxes+scores), got {len(outputs)}"
         )
 
-    a = _as_channels_first(outputs[0], min_channels=4)
-    b = _as_channels_first(outputs[1], min_channels=4)
+    # nc can be 2 (Ball/Bot); do not require 4 channels on both streams.
+    a = _as_channels_first(outputs[0], min_channels=1)
+    b = _as_channels_first(outputs[1], min_channels=1)
     if a.shape[1] != b.shape[1]:
         raise RuntimeError(
             f"Box/score anchor mismatch: {a.shape} vs {b.shape}"
         )
 
-    def _scoreish(t: np.ndarray) -> float:
-        # Fraction of values in the sigmoid range; higher => more likely scores.
-        sample = t.reshape(-1)
-        if sample.size > 4096:
-            sample = sample[:: max(1, sample.size // 4096)]
-        return float(np.mean((sample >= -0.05) & (sample <= 1.05)))
-
-    if _scoreish(a) >= _scoreish(b):
-        scores, boxes = a, b
+    a_is_boxes = a.shape[0] == 4
+    b_is_boxes = b.shape[0] == 4
+    if a_is_boxes and not b_is_boxes:
+        boxes, scores = a, b
+    elif b_is_boxes and not a_is_boxes:
+        boxes, scores = b, a
     else:
-        scores, boxes = b, a
-    if boxes.shape[0] != 4:
-        raise RuntimeError(f"Expected 4 box channels, got {boxes.shape}")
+        # Ambiguous (e.g. nc == 4): score tensor is mostly in [0, 1].
+        def _scoreish(t: np.ndarray) -> float:
+            sample = t.reshape(-1)
+            if sample.size > 4096:
+                sample = sample[:: max(1, sample.size // 4096)]
+            return float(np.mean((sample >= -0.05) & (sample <= 1.05)))
+
+        if _scoreish(a) >= _scoreish(b):
+            scores, boxes = a, b
+        else:
+            scores, boxes = b, a
+        if boxes.shape[0] != 4:
+            raise RuntimeError(f"Expected 4 box channels, got {boxes.shape}")
     return np.concatenate([boxes, scores], axis=0)
 
 

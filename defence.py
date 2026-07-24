@@ -175,7 +175,7 @@ def goalie(
     if enemy_bot_positions is None:
         enemy_bot_positions = []
     if ball_x is None or ball_y is None:
-        target_x = YELLOW_GOAL_CENTRE_X
+        target_x = 400
         target_y = GOAL_CENTRE_Y
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))

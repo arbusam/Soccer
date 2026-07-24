@@ -192,6 +192,17 @@ def striker(
         friendly_bot_positions = []
     if enemy_bot_positions is None:
         enemy_bot_positions = []
+    # If the ball is not detected, the bot should move to the centre of the pitch.
+    if ball_x is None or ball_y is None:
+        target_x = 1515
+        target_y = 910
+        vector = (target_x - x_pos), (target_y - y_pos)
+        direction = math.degrees(math.atan2(vector[1], vector[0]))
+        speed = 0
+        rotation = 0
+        kick = False
+        dribbler = True
+        return direction, speed, rotation, steering_state, kick, dribbler
     # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
     vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.

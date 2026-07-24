@@ -71,6 +71,17 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **Solution:** Keep the strategy code in a single "yellow-side" frame inside `defence.py`, and let `simulate.py` rotate cyan bots into that frame before calling `defence()` or `goalie()`. The required transform is a 180° rotation of the full world state: `(x, y) -> (PITCH_WIDTH - x, PITCH_HEIGHT - y)` and `yaw/direction/rotation -> angle + 180° (mod 360)`. After the controller returns, rotate `direction` and `rotation` back into the real field frame.
 
+## Label Studio YOLO pre-annotation (`training/ls_yolo_backend.py`)
+
+**Problem:** Manually drawing Ball/Bot boxes on every frame is slow once a detect model already exists.
+
+**Solution:** Run a small Label Studio ML backend that loads `training/runs/open-soccer-detect-m/weights/best.pt` (override with `LS_ML_WEIGHTS`) and returns axis-aligned `RectangleLabels` predictions. Same-host media is resolved from `LABEL_STUDIO_DATA_DIR` (`/data/...` → `label-studio-data/media/...`), so no API token is required.
+
+1. Start: `systemctl --user enable --now label-studio-ml` (unit from `systemd/label-studio-ml.service` → `~/.config/systemd/user/`), or `.venv/bin/python training/ls_yolo_backend.py`.
+2. In Label Studio → Open Soccer → Settings → Model, connect `http://127.0.0.1:9090` (interactive preannotations off).
+3. Open a task (or use Retrieve predictions) — only `Ball` / `Bot` are emitted; other model classes (e.g. goals) are skipped. Confidence defaults to `0.25` (`LS_ML_CONF`), or `model_score_threshold` on `<RectangleLabels>` if set.
+4. After retraining, `systemctl --user restart label-studio-ml` so it reloads `best.pt`.
+
 ## Hailo-8 AI HAT+ ball inference (`training/`)
 
 **Problem:** Ultralytics NCNN on the Pi CPU (~5 FPS) never uses the AI HAT+ (Hailo-8, 26 TOPS). Hailo only runs compiled `.hef` models. Training is axis-aligned YOLO26 detect (not OBB).
