@@ -4,6 +4,7 @@ git+https://github.com/Aw3someAndrew/SteelBar_CircuitPython_powerful_bldc_driver
 websockets
 smbus2
 adafruit-blinka
+adafruit-lgpio
 adafruit-circuitpython-bno08x
 matplotlib
 pandas-stubs

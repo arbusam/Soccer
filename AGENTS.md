@@ -109,3 +109,9 @@ YOLO26’s end2end TopK head is unsupported on Hailo. `compile_hailo.py` cuts at
 **Solution:** Persist hiding in the returned `steering_state` bool. Enter hide when `dist >= START`; stay hidden until `dist < END`, then aim. `main.py` / `simulate.py` must feed the previous steering flag back in each call.
 
 **Aim angle:** Do not aim at goal-centre Y. Take the angular midpoint of directions that hit `GOAL_BACK_Y_MIN..MAX` on `CYAN_GOAL_BACK_X`, clipped to rays that pass through the goal mouth (`CYAN_GOAL_MOUTH_X`, side walls at `GOAL_SIDE_WALL_Y_MIN/MAX` inset by `BALL_RADIUS`). If the clipped back-wall window is empty, bank onto the inside of the opposite side wall as close to the back as possible, keeping at least `SIDE_WALL_CLEARANCE_DEG` (2°) from the near wall when the mouth sector allows it. Aim/kick directions must also clear both mouth posts by `BALL_RADIUS + GOAL_LINE_WIDTH/2` (angular mouth clearance alone can still clip a post). Kick only when the actual `yaw` (kick impulse direction) passes `kick_direction_scores`, not merely when yaw is close to the aim angle. If neither a back-wall nor a valid rebound shot exists, dribble toward own goal and pitch centre (`x - SHOT_REPOSITION_PULL_X`, `GOAL_CENTRE_Y`) instead of kicking.
+
+## Blinka / `import board` on Pi 5 (`ModuleNotFoundError: lgpio`)
+
+**Problem:** `import board` (Adafruit Blinka) fails on Raspberry Pi 5 with Python 3.13: `ModuleNotFoundError: No module named 'lgpio'`. Blinka’s BCM2712 pin backend imports `lgpio`, which is not always installed as a transitive dep (especially on 3.13).
+
+**Solution:** In the project venv on the Pi: `pip install adafruit-lgpio` (listed in `requirements.txt`). Alternative: `sudo apt install python3-lgpio` and recreate the venv with `--system-site-packages`.
