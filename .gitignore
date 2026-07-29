@@ -228,5 +228,6 @@ config.txt
 *.onnx
 
 !open-soccer-detect-n_hailo_model/*
+!open-soccer-detect-s_hailo_model/*
 
 .vscode/
