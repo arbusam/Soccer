@@ -19,8 +19,8 @@ from ball_distance_calibration import (
 )
 # change to picamzero
 from picamera2 import Picamera2
-from picamera2.encoders import JpegEncoder
-from picamera2.outputs import FileOutput
+from picamera2.encoders import H264Encoder, JpegEncoder
+from picamera2.outputs import FileOutput, PyavOutput
 from picamera2.request import MappedArray
 from hailo_ball import HailoBallDetector
 
@@ -44,6 +44,9 @@ class Camera:
         distance_calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE,
         ball_model_path=DEFAULT_BALL_MODEL_PATH,
         ball_confidence=0.25,
+        recording_path=None,
+        session_epoch_monotonic=None,
+        detection_callback=None,
     ):
         self.ball_model_path = _resolve_model_path(ball_model_path)
         self.ball_confidence = ball_confidence
@@ -56,11 +59,20 @@ class Camera:
             resolution = calib_res or (self.ball_model.imgsz, self.ball_model.imgsz)
         self.PORT = PORT
         self.resolution = resolution
+        self.frame_rate = frame_rate
+        self.recording_path = Path(recording_path) if recording_path is not None else None
+        self.session_epoch_monotonic = session_epoch_monotonic
+        self.detection_callback = detection_callback
         self.picam2 = Picamera2()
-        video_config = self.picam2.create_video_configuration(
-            main={"size": resolution, "format": "RGB888"},
-            buffer_count=4,
-        )
+        config_options = {
+            "main": {"size": resolution, "format": "RGB888"},
+            "buffer_count": 8 if self.recording_path is not None else 4,
+        }
+        if self.recording_path is not None:
+            # Feed the software H.264 encoder YUV directly so it does not convert
+            # the RGB inference stream on the CPU.
+            config_options["lores"] = {"size": resolution, "format": "YUV420"}
+        video_config = self.picam2.create_video_configuration(**config_options)
         self.picam2.configure(video_config)
         self.picam2.controls.FrameRate = frame_rate
         self.forward_angle = 0  # Add forward angle property
@@ -76,12 +88,19 @@ class Camera:
         self._measurement_lock = threading.Lock()
         self._capture_started = False
         self._recording = False
+        self._video_recording = False
+        self._video_encoder = None
+        self._video_output = None
+        self._recording_error = None
+        self._first_sensor_timestamp_ns = None
+        self._video_start_elapsed_s = None
         self._server_started = False
         self._is_shutting_down = False
         # Latest-frame slot: callback only publishes; infer thread drops stale frames.
         self._latest_lock = threading.Lock()
         self._latest_buf = None
         self._latest_seq = 0
+        self._latest_sensor_timestamp_ns = None
         self._last_detection = None
         self._infer_stop = threading.Event()
         self._infer_thread = None
@@ -205,6 +224,17 @@ class Camera:
         with self._measurement_lock:
             return self._frame_id
 
+    @property
+    def recording_info(self):
+        return {
+            "video_start_elapsed_s": self._video_start_elapsed_s,
+            "captured_frames": self.capture_count,
+            "inference_frames": self.infer_count,
+            "recording_error": (
+                str(self._recording_error) if self._recording_error is not None else None
+            ),
+        }
+
     def get_measurement(self):
         if self._is_shutting_down:
             with self._measurement_lock:
@@ -234,8 +264,18 @@ class Camera:
         self._infer_stop.set()
         thread = self._infer_thread
         if thread is not None:
-            thread.join(timeout=2.0)
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                logging.error(
+                    "Hailo inference thread did not stop; detector will remain open"
+                )
+                return False
         self._infer_thread = None
+        return True
+
+    def _handle_recording_error(self, error):
+        self._recording_error = error
+        logging.error("Video recording failed: %s", error)
 
     def _infer_loop(self):
         """Always infer the newest published frame; skip anything older."""
@@ -252,6 +292,7 @@ class Camera:
                     np.copyto(infer_buf, self._latest_buf)
                     frame = infer_buf
                     last_seq = seq
+                    sensor_timestamp_ns = self._latest_sensor_timestamp_ns
             if frame is None:
                 time.sleep(0.0005)
                 continue
@@ -265,7 +306,7 @@ class Camera:
                     frame.shape[1],
                     frame.shape[0],
                 )
-                new_bearing += 180
+                new_bearing += 270
                 new_distance = predict_distance_from_calibration(
                     self.distance_calibration,
                     detection["radial_pixels"],
@@ -288,15 +329,80 @@ class Camera:
                 self._bearing = new_bearing
                 self._distance = new_distance
                 self._frame_id += 1
+                inference_sequence = self._frame_id
+
+            if self.detection_callback is not None:
+                if (
+                    sensor_timestamp_ns is not None
+                    and self._first_sensor_timestamp_ns is not None
+                ):
+                    video_time_s = (
+                        sensor_timestamp_ns - self._first_sensor_timestamp_ns
+                    ) / 1_000_000_000
+                else:
+                    video_time_s = None
+                if (
+                    video_time_s is not None
+                    and self._video_start_elapsed_s is not None
+                ):
+                    # Use the sensor timeline after anchoring its first frame to
+                    # the session. Callback scheduling jitter then cannot drift
+                    # detections relative to encoded video.
+                    elapsed_s = self._video_start_elapsed_s + video_time_s
+                else:
+                    elapsed_s = None
+                try:
+                    self.detection_callback(
+                        {
+                            "elapsed_s": elapsed_s,
+                            "video_time_s": video_time_s,
+                            "capture_sequence": seq,
+                            "sensor_timestamp_ns": sensor_timestamp_ns,
+                            "inference_sequence": inference_sequence,
+                            "detection": detection,
+                        }
+                    )
+                except Exception as exc:
+                    logging.warning("Detection metadata callback failed: %s", exc)
 
     def _start_capture(self, enable_stream=False):
         if self._capture_started:
             return
 
+        if enable_stream and self.recording_path is not None:
+            raise RuntimeError(
+                "MP4 session recording and the MJPEG HTTP preview cannot run together"
+            )
+
         if enable_stream:
             # JPEG encode frames into the MJPEG buffer used by the HTTP preview.
             self.picam2.start_recording(JpegEncoder(), FileOutput(self.output))
             self._recording = True
+        elif self.recording_path is not None:
+            self.recording_path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                encoder = H264Encoder(
+                    bitrate=4_000_000,
+                    framerate=self.frame_rate,
+                    iperiod=max(1, int(round(self.frame_rate))),
+                )
+                # This is already the Pi 5 default, but setting it documents and
+                # preserves the low-CPU recording choice.
+                if hasattr(encoder, "preset"):
+                    encoder.preset = "ultrafast"
+                output = PyavOutput(str(self.recording_path))
+                if hasattr(output, "error_callback"):
+                    output.error_callback = self._handle_recording_error
+                self.picam2.start_recording(encoder, output, name="lores")
+                self._video_encoder = encoder
+                self._video_output = output
+                self._video_recording = True
+                self._recording = True
+            except Exception as exc:
+                self._recording_error = exc
+                logging.warning("Video recording unavailable; continuing capture: %s", exc)
+                self.picam2.start()
+                self._recording = False
         else:
             # Capture-only path: run the detection callback without JPEG encoding.
             self.picam2.start()
@@ -338,6 +444,18 @@ class Camera:
                 hsv = cv2.cvtColor(m.array, cv2.COLOR_BGR2HSV) if needs_hsv else None
 
                 if self.calibrated:
+                    metadata = request.get_metadata()
+                    sensor_timestamp_ns = metadata.get("SensorTimestamp")
+                    capture_monotonic = time.monotonic()
+                    if (
+                        sensor_timestamp_ns is not None
+                        and self._first_sensor_timestamp_ns is None
+                    ):
+                        self._first_sensor_timestamp_ns = int(sensor_timestamp_ns)
+                        if self.session_epoch_monotonic is not None:
+                            self._video_start_elapsed_s = (
+                                capture_monotonic - self.session_epoch_monotonic
+                            )
                     # Publish latest frame only (infer thread drops anything older).
                     with self._latest_lock:
                         if (
@@ -347,6 +465,7 @@ class Camera:
                             self._latest_buf = np.empty_like(m.array)
                         np.copyto(self._latest_buf, m.array)
                         self._latest_seq += 1
+                        self._latest_sensor_timestamp_ns = sensor_timestamp_ns
 
                     with self._measurement_lock:
                         detection = self._last_detection
@@ -424,7 +543,7 @@ class Camera:
         if self._is_shutting_down:
             return
         self._is_shutting_down = True
-        self._stop_infer_thread()
+        infer_stopped = self._stop_infer_thread()
 
         if not self._capture_started and not self._server_started:
             print("Camera stopped")
@@ -454,10 +573,14 @@ class Camera:
                 logging.warning("Error stopping camera capture: %s", e)
             self._capture_started = False
             self._recording = False
-        try:
-            self.ball_model.close()
-        except Exception as e:
-            logging.warning("Error closing Hailo detector: %s", e)
+            self._video_recording = False
+            self._video_encoder = None
+            self._video_output = None
+        if infer_stopped:
+            try:
+                self.ball_model.close()
+            except Exception as e:
+                logging.warning("Error closing Hailo detector: %s", e)
         print("Camera stopped")
 
 async def main():

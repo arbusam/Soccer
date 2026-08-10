@@ -22,6 +22,7 @@ from camera import Camera
 from communication import Peer
 from kicker import Kicker
 from break_beam import Breakbeam
+from recording_session import RecordingSession
 from enum import Enum
 
 LOG_FPS = 30
@@ -39,6 +40,8 @@ MAX_MOTOR_RPM = 1000  # Max translation ~2618 mm/s at 50 mm wheels; driver hardw
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000
+CAMERA_RESOLUTION = (640, 640)
+CAMERA_FPS = 90
 
 BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
 
@@ -115,11 +118,20 @@ parser.add_argument(
     help=f"Write game log lines to PATH at {LOG_FPS} FPS for playback with simulate.py.",
 )
 parser.add_argument(
+    "--record-session",
+    metavar="DIRECTORY",
+    help=(
+        "Record synchronized video, controller state, and model detections in DIRECTORY."
+    ),
+)
+parser.add_argument(
     "--fps",
     action="store_true",
     help="Print logic-loop and background-thread rates once per second.",
 )
 args = parser.parse_args()
+if args.record_session is not None and args.camera_stream:
+    parser.error("--record-session cannot be combined with --camera-stream")
 
 
 class FpsMonitor:
@@ -217,6 +229,7 @@ kicker = None
 movement_controller = None
 imu = None
 peer = None
+recording_session = None
 last_pose_time = None
 
 def enter_pressed():
@@ -291,7 +304,41 @@ try:
         feed_imu_yaw_prior(imu, startup_yaw)
         time.sleep(0.1)
 
-    camera = Camera(CAMERA_PORT, resolution=(640, 640), frame_rate=90)
+    if args.record_session is not None:
+        recording_session = RecordingSession(
+            args.record_session,
+            resolution=CAMERA_RESOLUTION,
+            requested_fps=CAMERA_FPS,
+        )
+        recording_session.update_metadata(
+            {
+                "bot_mode_at_start": bot_mode.name,
+                "performance_note": (
+                    "Use --fps with and without --record-session to compare camera_cap, "
+                    "camera_infer, and logic rates on this robot."
+                ),
+            }
+        )
+        print(f"Recording synchronized session to {recording_session.directory}")
+
+    camera = Camera(
+        CAMERA_PORT,
+        resolution=CAMERA_RESOLUTION,
+        frame_rate=CAMERA_FPS,
+        recording_path=(
+            recording_session.video_path if recording_session is not None else None
+        ),
+        session_epoch_monotonic=(
+            recording_session.epoch_monotonic
+            if recording_session is not None
+            else None
+        ),
+        detection_callback=(
+            recording_session.record_detection
+            if recording_session is not None
+            else None
+        ),
+    )
     if args.camera_stream:
         camera.start_stream()
     else:
@@ -339,6 +386,12 @@ try:
             fps_monitor.add("peer_rx", lambda: peer.receive_count)
         if log_recorder_thread is not None:
             fps_monitor.add("log", get_log_write_count)
+        if recording_session is not None:
+            fps_monitor.add("session_game", lambda: recording_session.game_writer.written)
+            fps_monitor.add(
+                "session_detection",
+                lambda: recording_session.detection_writer.written,
+            )
         print("FPS monitoring enabled")
 
     while True:
@@ -496,7 +549,11 @@ try:
                     enemy_bot_positions=[],
                 )
                 steering_state = False
-            if args.stream or log_recorder_thread is not None:
+            if (
+                args.stream
+                or log_recorder_thread is not None
+                or recording_session is not None
+            ):
                 log_values = [
                     x_pos,
                     y_pos,
@@ -519,6 +576,8 @@ try:
                     send_log.update_latest_log(log_line)
                 if log_recorder_thread is not None:
                     update_latest_log_snapshot(log_line)
+                if recording_session is not None:
+                    recording_session.record_game(log_values)
             if kick:
                 kicker.kick()
             try:
@@ -556,6 +615,20 @@ finally:
             camera.stop()
         except Exception as exc:
             print(f"Warning: failed to stop camera cleanly: {exc}")
+    if recording_session is not None:
+        try:
+            if camera is not None:
+                recording_session.update_metadata(camera.recording_info)
+            recording_session.close()
+            dropped_game = recording_session.game_writer.dropped
+            dropped_detection = recording_session.detection_writer.dropped
+            print(
+                "Session saved "
+                f"(dropped game rows={dropped_game}, "
+                f"detection rows={dropped_detection})"
+            )
+        except Exception as exc:
+            print(f"Warning: failed to finalize recording session cleanly: {exc}")
     if imu is not None:
         try:
             imu.close()

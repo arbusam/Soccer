@@ -225,8 +225,8 @@ def calculate_ball_bearing_deg(centre_x, centre_y, frame_width, frame_height):
 
 
 def apply_camera_bearing_offset(bearing_deg):
-    """Match camera.py's additional 180 degree offset."""
-    return bearing_deg + 180.0
+    """Match camera.py's additional mount offset (270° after physical rotation)."""
+    return bearing_deg + 270.0
 
 
 def _calculate_rmse(actual_values, predicted_values):

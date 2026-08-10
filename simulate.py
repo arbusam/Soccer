@@ -1,11 +1,14 @@
 import argparse
+import bisect
 import math
 import random
 import sys
+import time
 from dataclasses import dataclass, field
 import asyncio
 import threading
 import tkinter as tk
+from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
 import pygame
@@ -14,6 +17,13 @@ import websockets
 from defence import defence, goalie
 from striker import striker
 from test_bot import test_bot
+from session_replay import (
+    EventTimeline,
+    VideoReader,
+    annotate_video_frame,
+    game_event_tokens,
+    load_recorded_session,
+)
 
 parser = argparse.ArgumentParser(
     description="Visualize a simulated match from a log file.",
@@ -82,7 +92,8 @@ parser.add_argument(
 args = parser.parse_args()
 
 lines = []
-log_provided = args.log_file is not None
+session_provided = args.log_file is not None and Path(args.log_file).is_dir()
+log_provided = args.log_file is not None and not session_provided
 
 if log_provided:
     try:
@@ -1197,6 +1208,30 @@ def blit_frame(frame_surface):
     display.blit(scaled, (offset_x, offset_y))
     pygame.display.flip()
 
+
+def blit_pitch_and_video(pitch_surface, video_rgb):
+    """Show the field and camera frame side by side in one Pygame window."""
+    video_surface = pygame.image.frombuffer(
+        video_rgb.tobytes(),
+        (video_rgb.shape[1], video_rgb.shape[0]),
+        "RGB",
+    )
+    target_height = pitch_surface.get_height()
+    target_width = max(
+        1,
+        int(video_surface.get_width() * target_height / video_surface.get_height()),
+    )
+    video_surface = pygame.transform.smoothscale(
+        video_surface,
+        (target_width, target_height),
+    )
+    combined = pygame.Surface(
+        (pitch_surface.get_width() + target_width, target_height)
+    )
+    combined.blit(pitch_surface, (0, 0))
+    combined.blit(video_surface, (pitch_surface.get_width(), 0))
+    blit_frame(combined)
+
 log_client_error: Optional[Exception] = None
 log_client_stop_event = threading.Event()
 
@@ -1235,11 +1270,7 @@ def start_log_client(addr, stop_event):
     thread.start()
     return thread
 
-def render_line(line_data):
-    frame = parse_log_frame(line_data)
-    if frame is None:
-        return None
-
+def build_log_pitch(frame):
     ball_x = frame["ball_x"] if frame["ball_x"] is not None else CENTRE_POINT[0]
     ball_y = frame["ball_y"] if frame["ball_y"] is not None else CENTRE_POINT[1]
 
@@ -1256,8 +1287,14 @@ def render_line(line_data):
         {"x": bot_x, "y": bot_y, "yaw": None, "color": cyan, "draw_geometry": False}
         for bot_x, bot_y in frame["other_bots"]
     )
-    frame_pitch = build_frame(ball_x, ball_y, render_bots)
-    blit_frame(frame_pitch)
+    return build_frame(ball_x, ball_y, render_bots)
+
+
+def render_line(line_data):
+    frame = parse_log_frame(line_data)
+    if frame is None:
+        return None
+    blit_frame(build_log_pitch(frame))
     return frame
 
 
@@ -1379,8 +1416,15 @@ class LogControllerDebug:
 class LogPlaybackControls:
     """Separate tkinter window for pause / play / scrub during log playback."""
 
-    def __init__(self, frame_count: int):
+    def __init__(
+        self,
+        frame_count: int,
+        playback_fps: Optional[float] = None,
+        playback_times: Optional[Sequence[float]] = None,
+    ):
         self.frame_count = max(frame_count, 1)
+        self.playback_fps = playback_fps
+        self.playback_times = list(playback_times) if playback_times else None
         self.frame_index = 0
         self.playing = True
         self.closed = False
@@ -1434,6 +1478,11 @@ class LogPlaybackControls:
         self.root.columnconfigure(3, weight=1)
         self._was_playing_before_scrub = False
         self._scrubbing = False
+        self._last_advance_time = time.monotonic()
+        self._fractional_frames = 0.0
+        self._timeline_target_time = (
+            self.playback_times[0] if self.playback_times else 0.0
+        )
         self._refresh_status()
 
     def _on_close(self) -> None:
@@ -1467,18 +1516,34 @@ class LogPlaybackControls:
         self.play_button.config(text="Pause" if self.playing else "Play")
 
     def _refresh_status(self) -> None:
-        self.status_label.config(
-            text=f"{self.frame_index + 1} / {self.frame_count}"
-        )
+        if self.playback_times:
+            elapsed = self.playback_times[self.frame_index]
+            duration = self.playback_times[-1]
+            text = f"{elapsed:.2f}s / {duration:.2f}s"
+        elif self.playback_fps:
+            elapsed = self.frame_index / self.playback_fps
+            duration = (self.frame_count - 1) / self.playback_fps
+            text = f"{elapsed:.2f}s / {duration:.2f}s"
+        else:
+            text = f"{self.frame_index + 1} / {self.frame_count}"
+        self.status_label.config(text=text)
 
     def toggle_play(self) -> None:
         if self.frame_index >= self.frame_count - 1 and not self.playing:
             self.seek(0)
         self.playing = not self.playing
+        self._last_advance_time = time.monotonic()
+        self._fractional_frames = 0.0
+        if self.playback_times:
+            self._timeline_target_time = self.playback_times[self.frame_index]
         self._refresh_play_button()
 
     def seek(self, index: int, update_slider: bool = True) -> None:
         self.frame_index = max(0, min(int(index), self.frame_count - 1))
+        self._last_advance_time = time.monotonic()
+        self._fractional_frames = 0.0
+        if self.playback_times:
+            self._timeline_target_time = self.playback_times[self.frame_index]
         if update_slider:
             self._updating_slider = True
             try:
@@ -1488,13 +1553,41 @@ class LogPlaybackControls:
         self._refresh_status()
 
     def advance_if_playing(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_advance_time
+        self._last_advance_time = now
         if not self.playing or self._scrubbing:
             return
         if self.frame_index >= self.frame_count - 1:
             self.playing = False
             self._refresh_play_button()
             return
-        self.seek(self.frame_index + 1)
+        if self.playback_times:
+            self._timeline_target_time += elapsed
+            new_index = bisect.bisect_right(
+                self.playback_times,
+                self._timeline_target_time,
+            ) - 1
+            new_index = max(self.frame_index, min(new_index, self.frame_count - 1))
+            if new_index == self.frame_index:
+                return
+            steps = new_index - self.frame_index
+        elif self.playback_fps is None:
+            steps = 1
+        else:
+            self._fractional_frames += elapsed * self.playback_fps
+            steps = int(self._fractional_frames)
+            self._fractional_frames -= steps
+            if steps == 0:
+                return
+        new_index = min(self.frame_index + steps, self.frame_count - 1)
+        self.frame_index = new_index
+        self._updating_slider = True
+        try:
+            self.slider.set(self.frame_index)
+        finally:
+            self._updating_slider = False
+        self._refresh_status()
 
     def pump(self) -> bool:
         """Process UI events. Returns False if the control window was closed."""
@@ -1526,6 +1619,110 @@ if args.connect:
     log_thread.join(timeout=2.0)
     pygame.quit()
     exit()
+elif session_provided:
+    try:
+        recorded_session = load_recorded_session(args.log_file)
+        video_reader = VideoReader(recorded_session.video_path)
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"Unable to load recording session '{args.log_file}': {exc}")
+        pygame.quit()
+        sys.exit(1)
+
+    game_timeline = EventTimeline(recorded_session.game_events, "elapsed_s")
+    timed_detections = [
+        event
+        for event in recorded_session.detection_events
+        if event.get("video_time_s") is not None
+    ]
+    detection_timeline = EventTimeline(timed_detections, "video_time_s")
+    metadata_fps = float(recorded_session.metadata.get("requested_fps", 30.0))
+    video_fps = video_reader.fps
+    if not 1.0 <= video_fps <= 240.0:
+        video_fps = metadata_fps
+    duration_s = video_reader.duration_s
+    if duration_s <= 0:
+        duration_s = max(
+            0.0,
+            float(recorded_session.metadata.get("duration_s", 0.0))
+            - float(recorded_session.metadata.get("video_start_elapsed_s") or 0.0),
+        )
+    playback_times = video_reader.frame_times
+    if not playback_times:
+        frame_count = max(1, int(round(duration_s * video_fps)))
+        playback_times = [index / video_fps for index in range(frame_count)]
+    frame_count = len(playback_times)
+    video_start_elapsed_s = float(
+        recorded_session.metadata.get("video_start_elapsed_s") or 0.0
+    )
+
+    pygame.display.set_caption("Soccer Session Playback")
+    controls = LogPlaybackControls(
+        frame_count,
+        playback_fps=video_fps,
+        playback_times=playback_times,
+    )
+    debug = LogControllerDebug(controls.root)
+    last_rendered_index = None
+    running = True
+    try:
+        while running:
+            if not controls.pump():
+                break
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_SPACE:
+                        controls.toggle_play()
+                    elif event.key == pygame.K_LEFT:
+                        controls.seek(controls.frame_index - 1)
+                    elif event.key == pygame.K_RIGHT:
+                        controls.seek(controls.frame_index + 1)
+
+            controls.advance_if_playing()
+            frame_index = controls.frame_index
+            if frame_index != last_rendered_index:
+                video_time_s = playback_times[frame_index]
+                session_time_s = video_start_elapsed_s + video_time_s
+                game_event = game_timeline.latest(session_time_s)
+                parsed_frame = (
+                    parse_log_frame(game_event_tokens(game_event))
+                    if game_event is not None
+                    else None
+                )
+                previous_event = (
+                    game_timeline.latest(float(game_event["elapsed_s"]) - 1e-9)
+                    if game_event is not None
+                    else None
+                )
+                previous_frame = (
+                    parse_log_frame(game_event_tokens(previous_event))
+                    if previous_event is not None
+                    else None
+                )
+                video_rgb = video_reader.frame_at(video_time_s)
+                if video_rgb is None:
+                    break
+                detection = detection_timeline.nearest(
+                    video_time_s,
+                    tolerance=0.6 / video_fps,
+                )
+                annotated_video = annotate_video_frame(video_rgb, detection)
+                if parsed_frame is None:
+                    pitch_frame = build_frame(*CENTRE_POINT, [])
+                else:
+                    pitch_frame = build_log_pitch(parsed_frame)
+                blit_pitch_and_video(pitch_frame, annotated_video)
+                debug.update(parsed_frame, previous_frame)
+                last_rendered_index = frame_index
+            clock.tick(FPS)
+    finally:
+        video_reader.close()
+        debug.close()
+        if not controls.closed:
+            controls.close()
+        pygame.quit()
+    sys.exit(0)
 elif log_provided:
     frames = [line.strip().split(",") for line in lines if line.strip()]
     if not frames:
