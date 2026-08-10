@@ -271,7 +271,7 @@ def feed_imu_yaw_prior(imu_sensor, startup_yaw):
 
 try:
     kicker = Kicker(board.D26, 0.1)
-    break_beam = Breakbeam(board.D27)
+    break_beam = Breakbeam(board.D14)
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
         lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
