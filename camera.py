@@ -193,6 +193,18 @@ class Camera:
         with self._measurement_lock:
             return self._frame_id
 
+    @property
+    def capture_count(self):
+        """Number of frames published by the Picamera2 callback."""
+        with self._latest_lock:
+            return self._latest_seq
+
+    @property
+    def infer_count(self):
+        """Number of Hailo inference completions (same counter as frame_id)."""
+        with self._measurement_lock:
+            return self._frame_id
+
     def get_measurement(self):
         if self._is_shutting_down:
             with self._measurement_lock:

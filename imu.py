@@ -17,6 +17,7 @@ class IMU:
         self._latest_quaternion = None
         self._latest_yaw = None
         self._latest_gyro = None
+        self._update_count = 0
 
         i2c = busio.I2C(board.SCL, board.SDA)
         self._bno = BNO08X_I2C(i2c)
@@ -36,10 +37,16 @@ class IMU:
                     self._latest_quaternion = (quat_i, quat_j, quat_k, quat_real)
                     self._latest_yaw = yaw
                     self._latest_gyro = gyro
+                    self._update_count += 1
             except Exception:
                 # Keep the updater alive if a read occasionally fails.
                 pass
             time.sleep(self._poll_interval)
+
+    @property
+    def update_count(self):
+        with self._lock:
+            return self._update_count
 
     @staticmethod
     def _quaternion_to_yaw_degrees(x, y, z, w):

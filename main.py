@@ -21,17 +21,17 @@ from movement import (
 from camera import Camera
 from communication import Peer
 from kicker import Kicker
-from tof import ToF
+from break_beam import Breakbeam
 from enum import Enum
 
 LOG_FPS = 30
+FPS_REPORT_INTERVAL_S = 1.0
 PEER_PORT = 5005
 ENABLE_COMMUNICATION = False
 
 WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
 
-TOF_ADDRESS = 0x50
 LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
@@ -40,7 +40,6 @@ YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
 CAMERA_PORT = 8000
 
-BALL_CAPTURED_DISTANCE = 27 # mm, distance from the ToF to the ball to consider it captured
 BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.txt"
@@ -115,7 +114,41 @@ parser.add_argument(
     metavar="PATH",
     help=f"Write game log lines to PATH at {LOG_FPS} FPS for playback with simulate.py.",
 )
+parser.add_argument(
+    "--fps",
+    action="store_true",
+    help="Print logic-loop and background-thread rates once per second.",
+)
 args = parser.parse_args()
+
+
+class FpsMonitor:
+    """Sample monotonic counters and print Hz once per reporting interval."""
+
+    def __init__(self, interval_s=FPS_REPORT_INTERVAL_S):
+        self._interval_s = interval_s
+        self._sources: list[tuple[str, object]] = []
+        self._last_counts: dict[str, int] = {}
+        self._last_t = time.monotonic()
+
+    def add(self, name: str, getter) -> None:
+        self._sources.append((name, getter))
+        self._last_counts[name] = int(getter())
+
+    def maybe_print(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_t
+        if elapsed < self._interval_s:
+            return
+        parts = []
+        for name, getter in self._sources:
+            count = int(getter())
+            rate = (count - self._last_counts[name]) / elapsed
+            self._last_counts[name] = count
+            parts.append(f"{name}={rate:.1f}")
+        self._last_t = now
+        print("FPS " + " ".join(parts), flush=True)
+
 
 if args.stream:
     import send_log
@@ -127,6 +160,9 @@ log_recorder_stop = threading.Event()
 log_recorder_thread = None
 _latest_log_line = None
 _latest_log_lock = threading.Lock()
+_log_write_count = 0
+_log_write_count_lock = threading.Lock()
+_logic_loop_count = 0
 
 
 def update_latest_log_snapshot(log_line: str) -> None:
@@ -136,6 +172,7 @@ def update_latest_log_snapshot(log_line: str) -> None:
 
 
 def _log_recorder_loop(path: str) -> None:
+    global _log_write_count
     interval = 1.0 / LOG_FPS
     next_write = time.monotonic()
     try:
@@ -154,8 +191,15 @@ def _log_recorder_loop(path: str) -> None:
                 if line is not None:
                     log_file_handle.write(line + "\n")
                     log_file_handle.flush()
+                    with _log_write_count_lock:
+                        _log_write_count += 1
     except Exception as exc:
         print(f"Warning: log recorder stopped with error: {exc}")
+
+
+def get_log_write_count() -> int:
+    with _log_write_count_lock:
+        return _log_write_count
 
 
 if args.save_log is not None:
@@ -214,7 +258,7 @@ def feed_imu_yaw_prior(imu_sensor, startup_yaw):
 
 try:
     kicker = Kicker(board.D26, 0.1)
-    tof = ToF(address=TOF_ADDRESS)
+    break_beam = Breakbeam(board.D27)
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
         lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)
@@ -279,7 +323,27 @@ try:
     last_mcl_yaw = None
     lidar_velocity = LidarVelocityEstimator()
 
+    fps_monitor = None
+    if args.fps:
+        fps_monitor = FpsMonitor()
+        fps_monitor.add("logic", lambda: _logic_loop_count)
+        fps_monitor.add("camera_cap", lambda: camera.capture_count)
+        fps_monitor.add("camera_infer", lambda: camera.infer_count)
+        fps_monitor.add("drive", lambda: movement_controller.loop_count)
+        fps_monitor.add("imu", lambda: imu.update_count)
+        if hasattr(lidar, "get_scan_generation"):
+            fps_monitor.add("lidar_scan", lidar.get_scan_generation)
+        if hasattr(lidar, "get_mcl_update_count"):
+            fps_monitor.add("lidar_mcl", lidar.get_mcl_update_count)
+        if peer is not None:
+            fps_monitor.add("peer_rx", lambda: peer.receive_count)
+        if log_recorder_thread is not None:
+            fps_monitor.add("log", get_log_write_count)
+        print("FPS monitoring enabled")
+
     while True:
+        if fps_monitor is not None:
+            fps_monitor.maybe_print()
         if pause_switch.read():
             run = not run
             last_pose_time = time.monotonic()
@@ -292,6 +356,8 @@ try:
             if enter_pressed():
                 print("Shutdown requested, exiting.")
                 break
+
+            _logic_loop_count += 1
 
             now_pose = time.monotonic()
             dt_pose = now_pose - last_pose_time
@@ -358,8 +424,7 @@ try:
             else:
                 ball_x = None
                 ball_y = None
-            distance_to_ball = tof.read()
-            if distance_to_ball is not None and distance_to_ball < BALL_CAPTURED_DISTANCE:
+            if break_beam.read():
                 ball_captured = True
                 ball_x = x_pos + 150 * math.cos(math.radians(yaw))
                 ball_y = y_pos + 150 * math.sin(math.radians(yaw))

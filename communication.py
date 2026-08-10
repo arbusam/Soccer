@@ -24,6 +24,7 @@ class Peer:
         self._lock = threading.Lock()
         self._last_message: dict | None = None
         self._last_received_at: float | None = None
+        self._receive_count = 0
 
     def start(self) -> None:
         if self._running:
@@ -108,3 +109,9 @@ class Peer:
             with self._lock:
                 self._last_message = message
                 self._last_received_at = time.monotonic()
+                self._receive_count += 1
+
+    @property
+    def receive_count(self) -> int:
+        with self._lock:
+            return self._receive_count

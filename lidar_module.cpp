@@ -329,6 +329,14 @@ static int get_scan_count() {
     return (int)g_latest_scan.size();
 }
 
+static std::uint64_t get_scan_generation() {
+    return g_scan_generation.load();
+}
+
+static std::uint64_t get_mcl_update_count() {
+    return loc_get_last_scan_correction().sequence;
+}
+
 static void start_coordinates(float pitch_x, float pitch_y) {
     if (g_loc_running.load()) {
         throw std::runtime_error("Localization already running.");
@@ -434,6 +442,12 @@ PYBIND11_MODULE(lidar, m) {
 
     m.def("get_scan_count", &get_scan_count,
           "Get number of points in latest scan.");
+
+    m.def("get_scan_generation", &get_scan_generation,
+          "Monotonic count of completed LIDAR scan captures.");
+
+    m.def("get_mcl_update_count", &get_mcl_update_count,
+          "Monotonic count of MCL scan updates applied.");
 
     m.def("start_coordinates", &start_coordinates,
           py::arg("pitch_x"), py::arg("pitch_y"),

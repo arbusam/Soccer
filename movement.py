@@ -186,6 +186,8 @@ class MovementController:
         self._current_direction = 0.0
         self._current_speed = 0.0
         self._last_error = None
+        self._loop_count = 0
+        self._loop_count_lock = threading.Lock()
 
         self._running = True
         self._thread = threading.Thread(
@@ -194,6 +196,11 @@ class MovementController:
             daemon=True,
         )
         self._thread.start()
+
+    @property
+    def loop_count(self):
+        with self._loop_count_lock:
+            return self._loop_count
 
     @property
     def current_direction(self):
@@ -314,6 +321,9 @@ class MovementController:
             last_update_time = now
             if dt <= 0.0:
                 continue
+
+            with self._loop_count_lock:
+                self._loop_count += 1
 
             (
                 direction,
