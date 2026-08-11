@@ -6,16 +6,23 @@ import os
 import socketserver
 import threading
 from http import server
+from pathlib import Path
 
 import cv2
 import numpy as np
+from hailo_ball import HailoBallDetector
 
 
 DEFAULT_DISTANCE_CALIBRATION_FILE = "ball_distance_calibration.json"
-ORANGE_LOWER_BOUND = np.array([0, 200, 140])
-ORANGE_UPPER_BOUND = np.array([15, 255, 255])
-MIN_CONTOUR_AREA = 200
-MAX_BOUNDING_BOX_AREA = 50000
+DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-detect-n_hailo_model"
+DEFAULT_BALL_CONFIDENCE = 0.25
+
+
+def _resolve_model_path(model_path):
+    model_path = Path(model_path)
+    if model_path.is_absolute():
+        return model_path
+    return Path(__file__).resolve().parent / model_path
 
 
 class StreamingOutput:
@@ -108,8 +115,14 @@ def _draw_status_overlay(frame, detection, samples):
     if detection is not None:
         x, y, width, height = detection["bbox"]
         centre_x, centre_y = detection["centre"]
-        cv2.drawContours(display_frame, [detection["contour"]], -1, (0, 165, 255), 2)
-        cv2.rectangle(display_frame, (x, y), (x + width, y + height), (0, 255, 0), 2)
+        polygon = detection.get("polygon")
+        if polygon is not None:
+            points = polygon.astype(np.int32).reshape(-1, 1, 2)
+            cv2.polylines(display_frame, [points], True, (0, 165, 255), 2)
+        else:
+            cv2.rectangle(
+                display_frame, (x, y), (x + width, y + height), (0, 165, 255), 2
+            )
         cv2.circle(
             display_frame,
             (int(round(centre_x)), int(round(centre_y))),
@@ -128,6 +141,8 @@ def _draw_status_overlay(frame, detection, samples):
         status_lines.append(
             f"bearing: {apply_camera_bearing_offset(detection['bearing_deg']):.2f} deg"
         )
+        if "confidence" in detection:
+            status_lines.append(f"confidence: {detection['confidence']:.2f}")
     else:
         status_lines.append("ball not detected")
 
@@ -175,47 +190,22 @@ def get_distance_calibration_resolution(calibration_file=DEFAULT_DISTANCE_CALIBR
         return None
 
 
-def detect_orange_ball(frame_bgr):
-    """Return the strongest orange-ball detection plus its radial pixel offset."""
-    hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
-    orange_mask = cv2.inRange(hsv, ORANGE_LOWER_BOUND, ORANGE_UPPER_BOUND)
-    orange_contours, _ = cv2.findContours(orange_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    valid_detections = []
-    for contour in orange_contours:
-        area = cv2.contourArea(contour)
-        if area <= MIN_CONTOUR_AREA:
-            continue
-        x, y, width, height = cv2.boundingRect(contour)
-        if width * height >= MAX_BOUNDING_BOX_AREA:
-            continue
-        valid_detections.append((contour, x, y, width, height, area))
-
-    if not valid_detections:
+def detect_ball(frame_rgb, ball_model):
+    """Return the highest-confidence Hailo ball detection for calibration."""
+    detection = ball_model.best_ball(frame_rgb)
+    if detection is None:
         return None
 
-    contour, x, y, width, height, area = max(valid_detections, key=lambda item: item[3] * item[4])
-    centre_x = x + (width / 2.0)
-    centre_y = y + (height / 2.0)
-    frame_centre_x = frame_bgr.shape[1] / 2.0
-    frame_centre_y = frame_bgr.shape[0] / 2.0
-    radial_pixels = math.hypot(centre_x - frame_centre_x, centre_y - frame_centre_y)
-
-    return {
-        "contour": contour,
-        "bbox": (x, y, width, height),
-        "centre": (centre_x, centre_y),
-        "frame_centre": (frame_centre_x, frame_centre_y),
-        "radial_pixels": radial_pixels,
-        "bearing_deg": calculate_ball_bearing_deg(
-            centre_x,
-            centre_y,
-            frame_bgr.shape[1],
-            frame_bgr.shape[0],
-        ),
-        "contour_area": area,
-        "bounding_box_area": width * height,
-    }
+    x, y, width, height = detection["bbox"]
+    centre_x, centre_y = detection["centre"]
+    detection["bearing_deg"] = calculate_ball_bearing_deg(
+        centre_x,
+        centre_y,
+        frame_rgb.shape[1],
+        frame_rgb.shape[0],
+    )
+    detection["bounding_box_area"] = width * height
+    return detection
 
 
 def calculate_ball_bearing_deg(centre_x, centre_y, frame_width, frame_height):
@@ -433,9 +423,14 @@ def run_interactive_calibration(
     frame_rate=90,
     calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE,
     stream_port=8000,
+    ball_model_path=DEFAULT_BALL_MODEL_PATH,
+    ball_confidence=DEFAULT_BALL_CONFIDENCE,
 ):
     """Capture samples in the terminal and save a radial-pixels-to-distance fit."""
     from picamera2 import Picamera2
+
+    ball_model_path = _resolve_model_path(ball_model_path)
+    ball_model = HailoBallDetector(ball_model_path, conf=ball_confidence)
 
     picam2 = Picamera2()
     picam2.configure(picam2.create_video_configuration(main={"size": resolution, "format": "RGB888"}))
@@ -450,6 +445,7 @@ def run_interactive_calibration(
     stream_thread.start()
 
     print("Ball distance calibration")
+    print(f"Ball model: {ball_model_path} (conf={ball_confidence})")
     print(f"Stream available at http://localhost:{stream_port}/stream.mjpg")
     print("Press Enter to capture a fresh frame.")
     print("Type a distance in mm to save a sample.")
@@ -459,7 +455,7 @@ def run_interactive_calibration(
     try:
         while True:
             frame = picam2.capture_array()
-            detection = detect_orange_ball(frame)
+            detection = detect_ball(frame, ball_model)
             display_frame = _draw_status_overlay(frame, detection, samples)
             success, encoded_frame = cv2.imencode(".jpg", display_frame)
             if success:
@@ -474,7 +470,8 @@ def run_interactive_calibration(
                     "Ball detected:",
                     f"radial={radial_pixels:.2f} px,",
                     f"bearing={bearing_deg:.2f} deg,",
-                    f"centre=({centre_x:.1f}, {centre_y:.1f})",
+                    f"centre=({centre_x:.1f}, {centre_y:.1f}),",
+                    f"conf={detection['confidence']:.2f}",
                 )
             else:
                 print("Ball not detected in the current frame.")
@@ -576,13 +573,15 @@ def run_interactive_calibration(
         stream_server.shutdown()
         stream_server.server_close()
         picam2.stop()
+        ball_model.close()
 
 
 def main():
     parser = argparse.ArgumentParser(
         description=(
-            "Capture orange-ball samples at known distances, then fit and save a "
-            "distance_mm = f(radial_pixels_from_frame_centre) calibration model."
+            "Capture ball samples at known distances with the Hailo detector, "
+            "then fit and save a distance_mm = f(radial_pixels_from_frame_centre) "
+            "calibration model."
         )
     )
     parser.add_argument("--width", type=int, default=640, help="Camera frame width in pixels.")
@@ -599,6 +598,17 @@ def main():
         default=8000,
         help="HTTP port for the MJPEG calibration stream.",
     )
+    parser.add_argument(
+        "--ball-model",
+        default=str(DEFAULT_BALL_MODEL_PATH),
+        help="Path to the Hailo ball detection model directory.",
+    )
+    parser.add_argument(
+        "--ball-confidence",
+        type=float,
+        default=DEFAULT_BALL_CONFIDENCE,
+        help="Minimum confidence for Hailo ball detections.",
+    )
     args = parser.parse_args()
 
     run_interactive_calibration(
@@ -606,6 +616,8 @@ def main():
         frame_rate=args.frame_rate,
         calibration_file=args.output,
         stream_port=args.stream_port,
+        ball_model_path=args.ball_model,
+        ball_confidence=args.ball_confidence,
     )
 
 
