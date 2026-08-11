@@ -23,6 +23,7 @@ class Kicker:
             pin.value = True
             time.sleep(self._pulse)
             pin.value = False
+            pin.direction = digitalio.Direction.INPUT
         finally:
             with self._state_lock:
                 self._kicking = False
