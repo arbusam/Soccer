@@ -30,6 +30,7 @@ WorkingDirectory=/home/arhan/Soccer
 Environment=LABEL_STUDIO_BASE_DATA_DIR=/home/arhan/Soccer/label-studio-data
 Environment=HOME=/home/arhan
 Environment=CSRF_TRUSTED_ORIGINS=https://label-studio.arhan.tech
+Environment=LABEL_STUDIO_DISABLE_SIGNUP_WITHOUT_LINK=true
 ExecStart=/home/arhan/Soccer/.labelstudio-venv/bin/label-studio start --internal-host 0.0.0.0 --port 8080 --no-browser --data-dir /home/arhan/Soccer/label-studio-data
 Restart=on-failure
 RestartSec=5
