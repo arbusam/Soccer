@@ -152,6 +152,7 @@ training/datasets/
 training/runs/
 training/exports/
 training/*.pt
+training/.build_all_state.json
 **/yolo26*.pt
 
 # Spyder project settings
