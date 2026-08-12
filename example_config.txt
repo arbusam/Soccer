@@ -1,6 +1,6 @@
 # Copy this file to config.txt and edit for robot specific settings.
 
-# Motor I2C addresses: back left, back right, front left, front right, dribbler
+# Motor I2C addresses: back left, back right, front right, front left, dribbler
 i2c_addresses=28,32,31,30,29
 
 # Bot mode for each mode-switch position: DEFENCE, GOALIE, or STRIKER

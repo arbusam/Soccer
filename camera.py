@@ -25,7 +25,7 @@ from picamera2.request import MappedArray
 from hailo_ball import HailoBallDetector
 
 
-DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-detect-n_hailo_model"
+DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-detect-s_hailo_model"
 DEFAULT_RESOLUTION = (640, 640)
 
 

@@ -13,6 +13,8 @@ viewing with ``python simulate.py --connect 127.0.0.1:8765``.
 
 import argparse
 import math
+import queue
+import threading
 import time
 
 import lidar
@@ -216,7 +218,7 @@ def drive_to_target(
     send_log_module=None,
 ):
     """Drive toward (target_x, target_y) using localized pose feedback."""
-    last_status_print = 0.0
+    # last_status_print = 0.0
     while True:
         now = time.monotonic()
         yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
@@ -233,18 +235,20 @@ def drive_to_target(
             lidar_module, last_scan_sequence
         )
 
-        if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
-            print_localisation_status(lidar_module)
-            last_status_print = now
+        # if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
+        #     print_localisation_status(lidar_module)
+        #     last_status_print = now
 
         pose = get_position(lidar_module)
         if pose is None:
+            movement_controller.stop()
             time.sleep(LOOP_DELAY_SECONDS)
             continue
 
         current_x, current_y, mcl_yaw = pose
         yaw = get_yaw(imu, startup_yaw, mcl_yaw)
         if yaw is None:
+            movement_controller.stop()
             time.sleep(LOOP_DELAY_SECONDS)
             continue
 
@@ -267,6 +271,96 @@ def drive_to_target(
     return last_pose_time, last_mcl_yaw, last_scan_sequence
 
 
+def _read_target_coordinates(result_queue):
+    """Blocking stdin prompt; runs on a worker thread so MCL can keep updating."""
+    try:
+        target_x = float(input("What x position to move to? "))
+        target_y = float(input("What y position to move to? "))
+        result_queue.put(("ok", target_x, target_y))
+    except ValueError as exc:
+        result_queue.put(("error", exc))
+    except EOFError as exc:
+        result_queue.put(("error", exc))
+
+
+def wait_for_target_while_localising(
+    lidar_module,
+    imu,
+    startup_yaw,
+    lidar_velocity,
+    last_pose_time,
+    last_mcl_yaw,
+    last_scan_sequence=0,
+    stream_enabled=False,
+    send_log_module=None,
+    movement_controller=None,
+):
+    """Keep feeding MCL until the user enters a target (x, y).
+
+    ``input()`` blocks the calling thread, which would otherwise pause IMU/odom
+    updates and stall particle-filter convergence. Prompt on a side thread and
+    keep running the usual localisation loop here until a target arrives.
+    """
+    result_queue = queue.Queue()
+    prompt_thread = threading.Thread(
+        target=_read_target_coordinates,
+        args=(result_queue,),
+        daemon=True,
+    )
+    prompt_thread.start()
+
+    # last_status_print = 0.0
+    while True:
+        try:
+            status, *payload = result_queue.get_nowait()
+        except queue.Empty:
+            status = None
+
+        if status == "ok":
+            target_x, target_y = payload
+            return (
+                target_x,
+                target_y,
+                last_pose_time,
+                last_mcl_yaw,
+                last_scan_sequence,
+            )
+        if status == "error":
+            raise payload[0]
+
+        now = time.monotonic()
+        yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
+        last_pose_time = predict_odometry(
+            lidar_module,
+            movement_controller,
+            imu,
+            startup_yaw,
+            lidar_velocity,
+            yaw_for_odom,
+            last_pose_time,
+        )
+        last_scan_sequence = print_scan_correction_if_new(
+            lidar_module, last_scan_sequence
+        )
+
+        # if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
+        #     print_localisation_status(lidar_module)
+        #     last_status_print = now
+
+        pose = get_position(lidar_module)
+        if pose is not None:
+            current_x, current_y, mcl_yaw = pose
+            yaw = get_yaw(imu, startup_yaw, mcl_yaw)
+            if yaw is not None:
+                last_mcl_yaw = mcl_yaw
+                lidar_velocity.update(current_x, current_y, yaw, now)
+                stream_pose(
+                    stream_enabled, send_log_module, current_x, current_y, yaw
+                )
+
+        time.sleep(LOOP_DELAY_SECONDS)
+
+
 def monitor_pose(
     lidar_module,
     imu,
@@ -279,7 +373,7 @@ def monitor_pose(
     send_log_module=None,
 ):
     """Print and optionally stream localized pose without commanding motors."""
-    last_status_print = 0.0
+    # last_status_print = 0.0
     while True:
         now = time.monotonic()
         yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
@@ -296,9 +390,9 @@ def monitor_pose(
             lidar_module, last_scan_sequence
         )
 
-        if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
-            print_localisation_status(lidar_module)
-            last_status_print = now
+        # if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
+        #     print_localisation_status(lidar_module)
+        #     last_status_print = now
 
         pose = get_position(lidar_module)
         if pose is None:
@@ -349,7 +443,7 @@ def main():
 
         print("Waiting for first pose estimate...")
         last_pose_time = time.monotonic()
-        last_status_print = 0.0
+        # last_status_print = 0.0
         while not lidar.is_coordinates_ready():
             now = time.monotonic()
             omega = 0.0
@@ -361,10 +455,10 @@ def main():
             # after resampling; without this the filter often never reaches confidence.
             lidar.predict_odometry(0.0, 0.0, omega, now - last_pose_time)
             last_pose_time = now
-            if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
-                print_localisation_status(lidar)
-                print(f"  scan_points={lidar.get_scan_count()}")
-                last_status_print = now
+            # if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
+            #     print_localisation_status(lidar)
+            #     print(f"  scan_points={lidar.get_scan_count()}")
+            #     last_status_print = now
             time.sleep(0.1)
 
         lidar_velocity = LidarVelocityEstimator()
@@ -394,12 +488,31 @@ def main():
                 YAW_CORRECT_THRESHOLD,
             )
 
-            print("Enter target coordinates in mm. Press Ctrl+C to quit.")
+            print(
+                "Enter target coordinates in mm. Localisation keeps running "
+                "while you type. Press Ctrl+C to quit."
+            )
             while True:
-                target_x = float(input("What x position to move to? "))
-                target_y = float(input("What y position to move to? "))
+                (
+                    target_x,
+                    target_y,
+                    last_pose_time,
+                    last_mcl_yaw,
+                    last_scan_sequence,
+                ) = wait_for_target_while_localising(
+                    lidar,
+                    imu,
+                    startup_yaw,
+                    lidar_velocity,
+                    last_pose_time,
+                    last_mcl_yaw,
+                    last_scan_sequence,
+                    stream_enabled=args.stream,
+                    send_log_module=send_log_module,
+                    movement_controller=movement_controller,
+                )
 
-                print_localisation_status(lidar)
+                # print_localisation_status(lidar)
                 pose = get_position(lidar)
                 if pose is not None:
                     stream_pose(args.stream, send_log_module, pose[0], pose[1], pose[2])
