@@ -27,8 +27,8 @@ def letterbox(
 
     height, width = image.shape[:2]
     scale = min(imgsz / height, imgsz / width)
-    new_w = int(round(width * scale))
-    new_h = int(round(height * scale))
+    new_w = round(width * scale)
+    new_h = round(height * scale)
     resized = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
     if (
         canvas is None
@@ -305,13 +305,13 @@ class HailoBallDetector:
         try:
             from hailo_platform import (
                 HEF,
-                VDevice,
                 ConfigureParams,
+                FormatType,
+                HailoStreamInterface,
                 InferVStreams,
                 InputVStreamParams,
                 OutputVStreamParams,
-                FormatType,
-                HailoStreamInterface,
+                VDevice,
             )
         except ImportError as exc:
             raise ImportError(
@@ -555,10 +555,10 @@ class HailoBallDetector:
         centre_y = (y1 + y2) / 2.0
         return {
             "bbox": (
-                int(round(x1)),
-                int(round(y1)),
-                int(round(x2 - x1)),
-                int(round(y2 - y1)),
+                round(x1),
+                round(y1),
+                round(x2 - x1),
+                round(y2 - y1),
             ),
             "centre": (centre_x, centre_y),
             "radial_pixels": math.hypot(

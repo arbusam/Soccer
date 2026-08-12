@@ -1,5 +1,6 @@
 import digitalio
 
+
 class Breakbeam:
     switch = None
     def __init__(self, pin):

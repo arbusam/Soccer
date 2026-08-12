@@ -1,6 +1,8 @@
 import time
-import switch
+
 import board
+
+import switch
 
 switch = switch.Switch(board.D16)
 

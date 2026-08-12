@@ -1,7 +1,7 @@
+import asyncio
 import io
 import logging
 import socketserver
-import asyncio
 import threading
 import time
 from http import server
@@ -10,6 +10,13 @@ from threading import Condition
 
 import cv2
 import numpy as np
+
+# change to picamzero
+from picamera2 import Picamera2
+from picamera2.encoders import H264Encoder, JpegEncoder
+from picamera2.outputs import FileOutput, PyavOutput
+from picamera2.request import MappedArray
+
 from ball_distance_calibration import (
     DEFAULT_DISTANCE_CALIBRATION_FILE,
     calculate_ball_bearing_deg,
@@ -17,13 +24,9 @@ from ball_distance_calibration import (
     load_distance_calibration,
     predict_distance_from_calibration,
 )
-# change to picamzero
-from picamera2 import Picamera2
-from picamera2.encoders import H264Encoder, JpegEncoder
-from picamera2.outputs import FileOutput, PyavOutput
-from picamera2.request import MappedArray
 from hailo_ball import HailoBallDetector
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-detect-s_hailo_model"
 DEFAULT_RESOLUTION = (640, 640)
@@ -114,7 +117,7 @@ class Camera:
         )
         self._distance_calibration_warning_logged = False
         if self.distance_calibration is None:
-            logging.warning(
+            logger.warning(
                 "Ball distance calibration file '%s' was not loaded; distance estimates will be unavailable.",
                 distance_calibration_file,
             )
@@ -153,9 +156,9 @@ class Camera:
 
         def serve_index(self):
             content = (
-                "<html><head><title>Camera Preview</title></head>"
-                "<body><img src='/stream.mjpg' /></body></html>"
-            ).encode("utf-8")
+                b"<html><head><title>Camera Preview</title></head>"
+                b"<body><img src='/stream.mjpg' /></body></html>"
+            )
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", str(len(content)))
@@ -181,7 +184,7 @@ class Camera:
                     self.wfile.write(frame)
                     self.wfile.write(b'\r\n')
             except Exception as e:
-                logging.warning(
+                logger.warning(
                     'Removed streaming client %s: %s',
                     self.client_address, str(e))
 
@@ -266,7 +269,7 @@ class Camera:
         if thread is not None:
             thread.join(timeout=5.0)
             if thread.is_alive():
-                logging.error(
+                logger.error(
                     "Hailo inference thread did not stop; detector will remain open"
                 )
                 return False
@@ -275,7 +278,7 @@ class Camera:
 
     def _handle_recording_error(self, error):
         self._recording_error = error
-        logging.error("Video recording failed: %s", error)
+        logger.error("Video recording failed: %s", error)
 
     def _infer_loop(self):
         """Always infer the newest published frame; skip anything older."""
@@ -311,15 +314,14 @@ class Camera:
                     self.distance_calibration,
                     detection["radial_pixels"],
                 )
-                if new_distance is None:
-                    if (
-                        self.distance_calibration is None
-                        and not self._distance_calibration_warning_logged
-                    ):
-                        logging.warning(
-                            "Ball detected, but no valid distance calibration is loaded."
-                        )
-                        self._distance_calibration_warning_logged = True
+                if new_distance is None and (
+                    self.distance_calibration is None
+                    and not self._distance_calibration_warning_logged
+                ):
+                    logger.warning(
+                        "Ball detected, but no valid distance calibration is loaded."
+                    )
+                    self._distance_calibration_warning_logged = True
             else:
                 new_bearing = None
                 new_distance = None
@@ -363,7 +365,7 @@ class Camera:
                         }
                     )
                 except Exception as exc:
-                    logging.warning("Detection metadata callback failed: %s", exc)
+                    logger.warning("Detection metadata callback failed: %s", exc)
 
     def _start_capture(self, enable_stream=False):
         if self._capture_started:
@@ -384,7 +386,7 @@ class Camera:
                 encoder = H264Encoder(
                     bitrate=4_000_000,
                     framerate=self.frame_rate,
-                    iperiod=max(1, int(round(self.frame_rate))),
+                    iperiod=max(1, round(self.frame_rate)),
                 )
                 # This is already the Pi 5 default, but setting it documents and
                 # preserves the low-CPU recording choice.
@@ -400,7 +402,7 @@ class Camera:
                 self._recording = True
             except Exception as exc:
                 self._recording_error = exc
-                logging.warning("Video recording unavailable; continuing capture: %s", exc)
+                logger.warning("Video recording unavailable; continuing capture: %s", exc)
                 self.picam2.start()
                 self._recording = False
         else:
@@ -480,7 +482,7 @@ class Camera:
                             cv2.rectangle(m.array, (x, y), (x + w, y + h), (0, 165, 255), 2)
                         cv2.circle(
                             m.array,
-                            (int(round(centre_x)), int(round(centre_y))),
+                            (round(centre_x), round(centre_y)),
                             5,
                             (255, 255, 255),
                             -1,
@@ -511,9 +513,13 @@ class Camera:
 
                     # Check for colour values in certain range
                     pixel_colour = hsv[center_y, center_x]
-                    if 10 < pixel_colour[0] < 25 and 100 < pixel_colour[1] < 255 and 100 < pixel_colour[2] < 255:
-                        if (pixel_colour[0], pixel_colour[1], pixel_colour[2]) not in self.colours:
-                            self.colours.append((pixel_colour[0], pixel_colour[1], pixel_colour[2]))
+                    if (
+                        10 < pixel_colour[0] < 25
+                        and 100 < pixel_colour[1] < 255
+                        and 100 < pixel_colour[2] < 255
+                        and (pixel_colour[0], pixel_colour[1], pixel_colour[2]) not in self.colours
+                    ):
+                        self.colours.append((pixel_colour[0], pixel_colour[1], pixel_colour[2]))
 
                     # Add detected colour to text file
                     with open("calibrate_camera.txt", "w") as c:
@@ -526,7 +532,7 @@ class Camera:
                         self._frame_id += 1
 
         except Exception as e:
-            logging.warning("Camera callback error (may be during shutdown): %s", e)
+            logger.warning("Camera callback error (may be during shutdown): %s", e)
 
     async def run_server(self):
         """Async task to run the camera server"""
@@ -552,14 +558,14 @@ class Camera:
         try:
             self.picam2.pre_callback = None
         except Exception as e:
-            logging.warning("Error clearing camera callback: %s", e)
+            logger.warning("Error clearing camera callback: %s", e)
 
         if self.server:
             try:
                 self.server.shutdown()
                 self.server.server_close()
             except Exception as e:
-                logging.warning("Error shutting down camera HTTP server: %s", e)
+                logger.warning("Error shutting down camera HTTP server: %s", e)
             self.server = None
         self.server_thread = None
         self._server_started = False
@@ -570,7 +576,7 @@ class Camera:
                 else:
                     self.picam2.stop()
             except Exception as e:
-                logging.warning("Error stopping camera capture: %s", e)
+                logger.warning("Error stopping camera capture: %s", e)
             self._capture_started = False
             self._recording = False
             self._video_recording = False
@@ -580,7 +586,7 @@ class Camera:
             try:
                 self.ball_model.close()
             except Exception as e:
-                logging.warning("Error closing Hailo detector: %s", e)
+                logger.warning("Error closing Hailo detector: %s", e)
         print("Camera stopped")
 
 async def main():

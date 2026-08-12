@@ -18,6 +18,7 @@ import threading
 import time
 
 import lidar
+
 from imu import IMU
 from movement import (
     LidarVelocityEstimator,

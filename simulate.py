@@ -1,22 +1,20 @@
 import argparse
+import asyncio
 import bisect
 import math
 import random
 import sys
-import time
-from dataclasses import dataclass, field
-import asyncio
 import threading
+import time
 import tkinter as tk
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
 
 import pygame
 import websockets
 
 from defence import defence, goalie
-from striker import striker
-from test_bot import test_bot
 from session_replay import (
     EventTimeline,
     VideoReader,
@@ -24,6 +22,8 @@ from session_replay import (
     game_event_tokens,
     load_recorded_session,
 )
+from striker import striker
+from test_bot import test_bot
 
 parser = argparse.ArgumentParser(
     description="Visualize a simulated match from a log file.",
@@ -234,7 +234,7 @@ RED_DURATION_MS = 1000
 BOT_DIAMETER = BOT_RADIUS * 2
 
 
-def parse_optional_float(token: Optional[str]) -> Optional[float]:
+def parse_optional_float(token: str | None) -> float | None:
     """Return float(token) or None if token is missing/None/empty/'None'."""
     if token is None:
         return None
@@ -247,7 +247,7 @@ def parse_optional_float(token: Optional[str]) -> Optional[float]:
         return None
 
 
-def parse_optional_bool(token: Optional[str]) -> Optional[bool]:
+def parse_optional_bool(token: str | None) -> bool | None:
     if token is None:
         return None
     token = token.strip().lower()
@@ -293,7 +293,7 @@ def format_log_value(value) -> str:
     return str(value)
 
 
-def parse_log_frame(tokens: Sequence[str]) -> Optional[dict]:
+def parse_log_frame(tokens: Sequence[str]) -> dict | None:
     """Parse one CSV log line into pose / ball / optional controller fields."""
     if len(tokens) < 3:
         return None
@@ -353,10 +353,10 @@ class Bot:
     y: float
     yaw: float
     base_color: tuple
-    controller: Optional[ControllerFunc] = None
+    controller: ControllerFunc | None = None
     manual: bool = False
     name: str = "bot"
-    red_until_time: Optional[int] = None
+    red_until_time: int | None = None
     was_out_of_bounds: bool = False
     current_color: tuple = field(init=False)
     push_speed: float = 0.0
@@ -392,9 +392,9 @@ def parse_role_token(token):
     return ROLE_CONTROLLER_MAP[key]
 
 
-def create_team(role_tokens: Sequence[str], team_number: int) -> List[Bot]:
+def create_team(role_tokens: Sequence[str], team_number: int) -> list[Bot]:
     defaults = TEAM_DEFAULTS.get(team_number, TEAM_DEFAULTS[1])
-    bots: List[Bot] = []
+    bots: list[Bot] = []
     for idx, token in enumerate(role_tokens, start=1):
         if team_number == 1:
             start_x = random.randint(450, 600)
@@ -955,10 +955,7 @@ def is_ball_inside_bot_body(ball_x, ball_y, bot):
         return False
 
     geometry = get_capture_geometry(bot.x, bot.y, bot.yaw)
-    if is_point_in_capture_zone(ball_x, ball_y, geometry):
-        return False
-
-    return True
+    return not is_point_in_capture_zone(ball_x, ball_y, geometry)
 
 
 def find_nearest_free_black_point(ball_x, ball_y, bots):
@@ -1036,11 +1033,10 @@ def resolve_circle_segment_penetration(
     diff_x = circle_x - closest_point[0]
     diff_y = circle_y - closest_point[1]
     norm = math.hypot(diff_x, diff_y)
-    if norm < EPSILON:
-        if outward_reference is not None:
-            diff_x = circle_x - outward_reference[0]
-            diff_y = circle_y - outward_reference[1]
-            norm = math.hypot(diff_x, diff_y)
+    if norm < EPSILON and outward_reference is not None:
+        diff_x = circle_x - outward_reference[0]
+        diff_y = circle_y - outward_reference[1]
+        norm = math.hypot(diff_x, diff_y)
     if norm < EPSILON:
         # Default normal if we still cannot determine direction
         diff_x, diff_y = 1.0, 0.0
@@ -1232,7 +1228,7 @@ def blit_pitch_and_video(pitch_surface, video_rgb):
     combined.blit(video_surface, (pitch_surface.get_width(), 0))
     blit_frame(combined)
 
-log_client_error: Optional[Exception] = None
+log_client_error: Exception | None = None
 log_client_stop_event = threading.Event()
 
 
@@ -1378,7 +1374,7 @@ class LogControllerDebug:
             var.set("—")
         self._other_bots_var.set("—")
 
-    def update(self, frame: Optional[dict], previous_frame: Optional[dict] = None) -> None:
+    def update(self, frame: dict | None, previous_frame: dict | None = None) -> None:
         if self.closed or frame is None:
             return
         controller = frame.get("controller") or {}
@@ -1419,8 +1415,8 @@ class LogPlaybackControls:
     def __init__(
         self,
         frame_count: int,
-        playback_fps: Optional[float] = None,
-        playback_times: Optional[Sequence[float]] = None,
+        playback_fps: float | None = None,
+        playback_times: Sequence[float] | None = None,
     ):
         self.frame_count = max(frame_count, 1)
         self.playback_fps = playback_fps
@@ -1618,7 +1614,7 @@ if args.connect:
     log_client_stop_event.set()
     log_thread.join(timeout=2.0)
     pygame.quit()
-    exit()
+    sys.exit()
 elif session_provided:
     try:
         recorded_session = load_recorded_session(args.log_file)
@@ -1648,7 +1644,7 @@ elif session_provided:
         )
     playback_times = video_reader.frame_times
     if not playback_times:
-        frame_count = max(1, int(round(duration_s * video_fps)))
+        frame_count = max(1, round(duration_s * video_fps))
         playback_times = [index / video_fps for index in range(frame_count)]
     frame_count = len(playback_times)
     video_start_elapsed_s = float(
@@ -1770,7 +1766,7 @@ else:
     ball_vy = 0.0
 
     team_mode = bool(args.team1 or args.team2)
-    bots: List[Bot] = []
+    bots: list[Bot] = []
     if team_mode:
         if args.team1:
             bots.extend(create_team(args.team1, 1))
@@ -1873,39 +1869,7 @@ else:
                         for other_x, other_y in controller_enemy_bot_positions
                     ]
 
-                if bot.controller is defence:
-                    direction, speed, rotation, steering_state, kick_state, dribbler_state = bot.controller(
-                        controller_x,
-                        controller_y,
-                        controller_yaw,
-                        controller_ball_x,
-                        controller_ball_y,
-                        ball_captured,
-                        bot.steering,
-                        friendly_bot_positions=controller_friendly_bot_positions,
-                        enemy_bot_positions=controller_enemy_bot_positions,
-                    )
-                    if controller_inverted:
-                        direction = invert_angle_deg(direction)
-                        rotation = invert_angle_deg(rotation)
-                    bot.steering = steering_state
-                elif bot.controller is striker:
-                    direction, speed, rotation, steering_state, kick_state, dribbler_state = bot.controller(
-                        controller_x,
-                        controller_y,
-                        controller_yaw,
-                        controller_ball_x,
-                        controller_ball_y,
-                        ball_captured,
-                        bot.steering,
-                        friendly_bot_positions=controller_friendly_bot_positions,
-                        enemy_bot_positions=controller_enemy_bot_positions,
-                    )
-                    if controller_inverted:
-                        direction = invert_angle_deg(direction)
-                        rotation = invert_angle_deg(rotation)
-                    bot.steering = steering_state
-                elif bot.controller is test_bot:
+                if bot.controller is defence or bot.controller is striker or bot.controller is test_bot:
                     direction, speed, rotation, steering_state, kick_state, dribbler_state = bot.controller(
                         controller_x,
                         controller_y,
@@ -2175,4 +2139,4 @@ else:
         blit_frame(frame_pitch)
 
 pygame.quit()
-exit()
+sys.exit()

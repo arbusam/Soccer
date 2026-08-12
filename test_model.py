@@ -68,10 +68,10 @@ def _det_from_xyxy(det: dict, frame_width: int, frame_height: int) -> dict:
     centre_y = (y1 + y2) / 2.0
     return {
         "bbox": (
-            int(round(x1)),
-            int(round(y1)),
-            int(round(x2 - x1)),
-            int(round(y2 - y1)),
+            round(x1),
+            round(y1),
+            round(x2 - x1),
+            round(y2 - y1),
         ),
         "centre": (centre_x, centre_y),
         "radial_pixels": float(

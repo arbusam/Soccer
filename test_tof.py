@@ -2,7 +2,6 @@ import time
 
 from tof import ToF
 
-
 tof = ToF()
 
 try:

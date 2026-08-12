@@ -1,5 +1,6 @@
 import digitalio
 
+
 class Switch:
     switch = None
     def __init__(self, pin):

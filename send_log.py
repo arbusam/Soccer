@@ -1,5 +1,6 @@
 import asyncio
 import threading
+
 import websockets
 
 HOST = "0.0.0.0"  # listen on all interfaces so simulate.py -c <LAN_IP>:8765 works
@@ -36,7 +37,6 @@ def update_latest_log(log: str) -> None:
     """
     Thread-safe: may be called from non-async code / different threads.
     """
-    global latest_log
 
     def _apply_update() -> None:
         global latest_log

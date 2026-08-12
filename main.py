@@ -1,16 +1,23 @@
-import board
 import argparse
-import time
+import math
 import select
 import sys
-import math
 import threading
+import time
+from enum import Enum
 from pathlib import Path
+
+import board
 import lidar
+
+import defence
 import striker
 import switch
-import defence
+from break_beam import Breakbeam
+from camera import Camera
+from communication import Peer
 from imu import IMU
+from kicker import Kicker
 from movement import (
     LidarVelocityEstimator,
     MotorCommunicationError,
@@ -18,12 +25,7 @@ from movement import (
     compute_wheel_odometry_trust,
     imu_yaw_to_relative_yaw,
 )
-from camera import Camera
-from communication import Peer
-from kicker import Kicker
-from break_beam import Breakbeam
 from recording_session import RecordingSession
-from enum import Enum
 
 LOG_FPS = 30
 FPS_REPORT_INTERVAL_S = 1.0

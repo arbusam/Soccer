@@ -40,7 +40,7 @@ class ToF:
     def _update_loop(self):
         while self._running:
             try:
-                sequence, distance = self._read_next_measurement()
+                _sequence, distance = self._read_next_measurement()
                 if distance is None:
                     continue
                 with self._lock:

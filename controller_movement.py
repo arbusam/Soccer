@@ -1,5 +1,8 @@
-import pygame
+import sys
 from math import atan2, degrees, hypot
+
+import pygame
+
 from movement import MovementController
 
 WHEEL_DIAMETER = 50 # mm
@@ -28,7 +31,7 @@ def _prompt_i2c_addresses():
     tempuint32 = int(input())
     if tempuint32 == 0 or tempuint32 > 8:
         print("Error motor count out of range, please reboot microcontroller to try again.")
-        quit()
+        sys.exit()
 
     addresses = []
     setup_motor_count = 0
@@ -37,7 +40,7 @@ def _prompt_i2c_addresses():
         address = int(input())
         if address <= 7 or address >= 120:
             print("Error invalid i2c address, please reboot microcontroller to try again.")
-            quit()
+            sys.exit()
         addresses.append(address)
         setup_motor_count += 1
     return addresses
@@ -62,7 +65,7 @@ try:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
-                quit()
+                sys.exit()
 
         if joysticks:
             joystick = joysticks[0]

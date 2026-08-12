@@ -2,7 +2,7 @@
 import sys
 import time
 
-from defence import LIDAR_PORT, LIDAR_BAUDRATE
+from defence import LIDAR_BAUDRATE, LIDAR_PORT
 
 
 def main():

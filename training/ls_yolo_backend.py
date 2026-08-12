@@ -211,7 +211,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         path = urlparse(self.path).path
         if path in ("/", "/health"):
             self._send_json(
@@ -225,7 +225,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "not found"}, status=404)
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         path = urlparse(self.path).path
         try:
             data = self._read_json()

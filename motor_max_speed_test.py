@@ -22,7 +22,7 @@ def _prompt_i2c_addresses():
     tempuint32 = int(input())
     if tempuint32 == 0 or tempuint32 > 8:
         print("Error motor count out of range, please reboot microcontroller to try again.")
-        quit()
+        sys.exit()
 
     addresses = []
     setup_motor_count = 0
@@ -31,7 +31,7 @@ def _prompt_i2c_addresses():
         address = int(input())
         if address <= 7 or address >= 120:
             print("Error invalid i2c address, please reboot microcontroller to try again.")
-            quit()
+            sys.exit()
         addresses.append(address)
         setup_motor_count += 1
     return addresses
@@ -41,7 +41,7 @@ def _prompt_motor_index(motors) -> int:
     valid_indices = [i for i, m in enumerate(motors) if m is not None]
     if not valid_indices:
         print("Error no initialized motors.")
-        quit()
+        sys.exit()
     print(f"Initialized motor indices: {valid_indices}")
     while True:
         print("Enter the motor index to test:")

@@ -1,2 +1,7 @@
 [tool.ruff]
+required-version = ">=0.16.2"
 extend-exclude = []
+
+[tool.ruff.lint]
+# Best-effort hardware shutdown and background reader loops intentionally catch broad exceptions.
+ignore = ["BLE001", "S110"]

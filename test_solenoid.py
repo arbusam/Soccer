@@ -3,8 +3,9 @@
 Pulse GPIO 26 high for 0.1 s, then low (e.g. solenoid kick test on Raspberry Pi).
 """
 
-import board
 import time
+
+import board
 
 from kicker import Kicker
 

@@ -211,12 +211,12 @@ def annotate_video_frame(frame_rgb, detection: dict | None):
         label = "NO BALL"
         colour = (255, 80, 80)
     else:
-        x = int(round(detection["bbox_x"]))
-        y = int(round(detection["bbox_y"]))
-        width = int(round(detection["bbox_w"]))
-        height = int(round(detection["bbox_h"]))
-        centre_x = int(round(detection["centre_x"]))
-        centre_y = int(round(detection["centre_y"]))
+        x = round(detection["bbox_x"])
+        y = round(detection["bbox_y"])
+        width = round(detection["bbox_w"])
+        height = round(detection["bbox_h"])
+        centre_x = round(detection["centre_x"])
+        centre_y = round(detection["centre_y"])
         confidence = detection.get("confidence")
         cv2.rectangle(annotated, (x, y), (x + width, y + height), (255, 165, 0), 2)
         cv2.circle(annotated, (centre_x, centre_y), 5, (255, 255, 255), -1)

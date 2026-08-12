@@ -1,4 +1,5 @@
 import time
+
 from imu import IMU
 
 imu = IMU()

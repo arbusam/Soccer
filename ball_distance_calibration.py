@@ -1,6 +1,6 @@
 import argparse
-import logging
 import json
+import logging
 import math
 import os
 import socketserver
@@ -10,8 +10,10 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
 from hailo_ball import HailoBallDetector
 
+logger = logging.getLogger(__name__)
 
 DEFAULT_DISTANCE_CALIBRATION_FILE = "ball_distance_calibration.json"
 DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-detect-n_hailo_model"
@@ -40,9 +42,9 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             body = (
-                "<html><head><title>Ball Distance Calibration</title></head>"
-                "<body><img src='/stream.mjpg' /></body></html>"
-            ).encode("utf-8")
+                b"<html><head><title>Ball Distance Calibration</title></head>"
+                b"<body><img src='/stream.mjpg' /></body></html>"
+            )
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.send_header("Content-Length", len(body))
@@ -69,7 +71,7 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
                     self.wfile.write(frame)
                     self.wfile.write(b"\r\n")
             except Exception as exc:
-                logging.warning("Removed streaming client %s: %s", self.client_address, exc)
+                logger.warning("Removed streaming client %s: %s", self.client_address, exc)
             return
 
         self.send_error(404)
@@ -125,7 +127,7 @@ def _draw_status_overlay(frame, detection, samples):
             )
         cv2.circle(
             display_frame,
-            (int(round(centre_x)), int(round(centre_y))),
+            (round(centre_x), round(centre_y)),
             6,
             (255, 255, 255),
             -1,
@@ -133,7 +135,7 @@ def _draw_status_overlay(frame, detection, samples):
         cv2.line(
             display_frame,
             (frame_centre_x, frame_centre_y),
-            (int(round(centre_x)), int(round(centre_y))),
+            (round(centre_x), round(centre_y)),
             (255, 255, 255),
             2,
         )
@@ -196,7 +198,7 @@ def detect_ball(frame_rgb, ball_model):
     if detection is None:
         return None
 
-    x, y, width, height = detection["bbox"]
+    _x, _y, width, height = detection["bbox"]
     centre_x, centre_y = detection["centre"]
     detection["bearing_deg"] = calculate_ball_bearing_deg(
         centre_x,

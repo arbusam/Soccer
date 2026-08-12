@@ -7,9 +7,8 @@ import json
 import queue
 import threading
 import time
+from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Iterable, Mapping
-
 
 SESSION_SCHEMA_VERSION = 1
 GAME_FIELDS = (

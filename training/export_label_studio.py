@@ -285,7 +285,7 @@ def export_dataset(
     rng = random.Random(seed)
     indices = list(range(len(samples)))
     rng.shuffle(indices)
-    val_count = max(1, int(round(len(samples) * val_fraction))) if len(samples) > 1 else 0
+    val_count = max(1, round(len(samples) * val_fraction)) if len(samples) > 1 else 0
     val_ids = set(indices[:val_count])
 
     exported = 0

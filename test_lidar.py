@@ -8,6 +8,7 @@ Runs continuously until interrupted with Ctrl+C.
 
 import sys
 import time
+
 import lidar
 
 # Default pitch dimensions in mm (same as defence.py)

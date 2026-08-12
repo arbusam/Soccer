@@ -4,9 +4,10 @@ import os
 import sys
 import threading
 import time
-from steelbar_powerful_bldc_driver import PowerfulBLDCDriver
+
 import board
 import busio
+from steelbar_powerful_bldc_driver import PowerfulBLDCDriver
 
 # Initialises the i2c bus
 i2c = busio.I2C(board.SCL, board.SDA)
@@ -52,14 +53,14 @@ def _load_calibration_data(calibration_file):
     calibration_path = _resolve_calibration_path(calibration_file)
     if not os.path.isfile(calibration_path):
         print(f"Error: calibration file '{calibration_path}' not found. Run calibrate.py first to create it.")
-        quit()
+        sys.exit()
 
     if os.path.getsize(calibration_path) == 0:
         print(
             f"Error: calibration file '{calibration_path}' is empty. "
             "Run calibrate.py to regenerate it before starting the motors."
         )
-        quit()
+        sys.exit()
 
     try:
         with open(calibration_path, encoding="utf-8") as f:
@@ -69,14 +70,14 @@ def _load_calibration_data(calibration_file):
             f"Error: calibration file '{calibration_path}' is not valid JSON "
             f"(line {exc.lineno}, column {exc.colno}). Run calibrate.py to regenerate it."
         )
-        quit()
+        sys.exit()
 
     if not isinstance(cal_data, dict) or "motors" not in cal_data or not isinstance(cal_data["motors"], list):
         print(
             f"Error: calibration file '{calibration_path}' has an unexpected format. "
             "Run calibrate.py to regenerate it."
         )
-        quit()
+        sys.exit()
 
     return cal_data
 
@@ -87,13 +88,13 @@ def get_motors_for_calibration(i2c_addresses):
         normalized_addresses = [int(addr) for addr in i2c_addresses]
     except (TypeError, ValueError):
         print("Error invalid i2c address list, please verify inputs and try again.")
-        quit()
+        sys.exit()
 
     motor_count = len(normalized_addresses)
     # motors[0:4] = drive wheels; motors[4] = optional dribbler
     if motor_count == 0 or motor_count > MAX_MOTORS:
         print("Error motor count out of range, please reboot microcontroller to try again.")
-        quit()
+        sys.exit()
 
     motors = [None] * motor_count
 
@@ -101,12 +102,12 @@ def get_motors_for_calibration(i2c_addresses):
     for setup_motor_count, address in enumerate(normalized_addresses):
         if address <= 7 or address >= 120:
             print("Error invalid i2c address, please reboot microcontroller to try again.")
-            quit()
+            sys.exit()
         motors[setup_motor_count] = PowerfulBLDCDriver(i2c, address)
         print(f"The firmware version of motor driver number {setup_motor_count} is: {motors[setup_motor_count].get_firmware_version()}")
         if motors[setup_motor_count].get_firmware_version() != 3:
             print("Error unsupported motor driver version, please check for updates, maybe check wiring and i2c configuration, reboot microcontroller to try again.")
-            quit()
+            sys.exit()
 
     for setup_motor_count in range(motor_count):
         motors[setup_motor_count].set_current_limit_foc(524288)  # set current limit to 8 amp (only works in FOC mode)
@@ -121,7 +122,7 @@ def get_motors_for_calibration(i2c_addresses):
 
 def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
     """Initialises the motors and returns the motor objects and motor modes"""
-    motors, motor_count, normalized_addresses = get_motors_for_calibration(i2c_addresses)
+    motors, motor_count, _normalized_addresses = get_motors_for_calibration(i2c_addresses)
     motor_modes = [None] * motor_count
 
     # Loads the calibration data from the file. Calibration file is created by running calibrate.py
@@ -129,7 +130,7 @@ def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
     # Checks if the calibration file has the correct number of motors
     if len(cal_data["motors"]) < motor_count:
         print(f"Error: calibration file has {len(cal_data['motors'])} motor(s), but {motor_count} motor(s) were requested.")
-        quit()
+        sys.exit()
     # Sets the calibration constants to each motor (drive wheels and optional dribbler)
     for setup_motor_count in range(motor_count):
         motor_cal = cal_data["motors"][setup_motor_count]
@@ -673,7 +674,7 @@ def _prompt_i2c_addresses():
     tempuint32 = int(input())
     if tempuint32 == 0 or tempuint32 > MAX_MOTORS:
         print("Error motor count out of range, please reboot microcontroller to try again.")
-        quit()
+        sys.exit()
 
     addresses = []
     setup_motor_count = 0
@@ -682,7 +683,7 @@ def _prompt_i2c_addresses():
         address = int(input())
         if address <= 7 or address >= 120:
             print("Error invalid i2c address, please reboot microcontroller to try again.")
-            quit()
+            sys.exit()
         addresses.append(address)
         setup_motor_count += 1
     return addresses
