@@ -437,7 +437,7 @@ def run_interactive_calibration(
     picam2 = Picamera2()
     picam2.configure(picam2.create_video_configuration(main={"size": resolution, "format": "RGB888"}))
     picam2.controls.FrameRate = frame_rate
-    picam2.controls.AnalogueGain = 2.0
+    picam2.controls.AnalogueGain = 10.0
     picam2.start()
 
     samples = []

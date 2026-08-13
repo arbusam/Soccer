@@ -80,7 +80,7 @@ class Camera:
         self.picam2.controls.FrameRate = frame_rate
         self.forward_angle = 0  # Add forward angle property
         # self.picam2.controls.ExposureTime = 30000
-        self.picam2.controls.AnalogueGain = 2.0
+        self.picam2.controls.AnalogueGain = 10.0
         self.output = self.StreamingOutput()
         self.server = None
         self.server_thread = None
