@@ -31,6 +31,7 @@ LOG_FPS = 30
 FPS_REPORT_INTERVAL_S = 1.0
 PEER_PORT = 5005
 ENABLE_COMMUNICATION = False
+USE_PAUSE = False
 
 WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
@@ -97,7 +98,7 @@ mode_switch = switch.Switch(board.D16)
 pause_switch = switch.Switch(board.D21)
 bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
 
-run = False
+run = not USE_PAUSE
 
 parser = argparse.ArgumentParser(
     description="Run defence controller with optional live streaming and log recording."
@@ -399,7 +400,7 @@ try:
     while True:
         if fps_monitor is not None:
             fps_monitor.maybe_print()
-        if pause_switch.read():
+        if USE_PAUSE and pause_switch.read():
             run = not run
             last_pose_time = time.monotonic()
             while pause_switch.read():

@@ -15,6 +15,9 @@ i2c = busio.I2C(board.SCL, board.SDA)
 # Conversion factor from RPM to motor speed units.
 # Formula: rpm * 7 (pole pairs) * 36 (36:1 gear ratio) / 60 (seconds per minute) / 2^-16 (electrical revolutions per second)
 RPM_TO_MOTOR_SPEED = 275251.2
+# Installed drive motors have opposite electrical polarity on the two diagonals.
+# Convert only at the hardware boundary so kinematics remain in one wheel frame.
+DRIVE_MOTOR_DIRECTION_SIGNS = (1, -1, 1, -1)
 MAX_VELOCITY_CHANGE_PER_SEC = 8000.0 # Max change in movement vector per second (mm/s/s)
 # Fixed-rate drive loop so control-loop stalls do not inflate accel dt or pause yaw correction.
 DRIVE_LOOP_HZ = 50.0
@@ -375,10 +378,10 @@ class MovementController:
                 self.yaw_correct_threshold,
             )
 
-            a_val = int(a_speed * RPM_TO_MOTOR_SPEED)
-            b_val = int(b_speed * RPM_TO_MOTOR_SPEED)
-            c_val = int(c_speed * RPM_TO_MOTOR_SPEED)
-            d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
+            a_val = int(a_speed * RPM_TO_MOTOR_SPEED * DRIVE_MOTOR_DIRECTION_SIGNS[0])
+            b_val = int(b_speed * RPM_TO_MOTOR_SPEED * DRIVE_MOTOR_DIRECTION_SIGNS[1])
+            c_val = int(c_speed * RPM_TO_MOTOR_SPEED * DRIVE_MOTOR_DIRECTION_SIGNS[2])
+            d_val = int(d_speed * RPM_TO_MOTOR_SPEED * DRIVE_MOTOR_DIRECTION_SIGNS[3])
             drive_motors = self.motors[:4]
 
             try:
@@ -530,7 +533,7 @@ def _calculate_drive_rpms(
 def read_wheel_rpms(motors):
     """Read the current speed of each drive motor in RPM."""
     rpms = []
-    for motor in motors:
+    for motor_index, motor in enumerate(motors):
         if motor is None:
             rpms.append(0.0)
             continue
@@ -539,7 +542,14 @@ def read_wheel_rpms(motors):
             speed_units = motor.get_speed_QDR()
         else:
             speed_units = motor.get_qdr_speed()
-        rpms.append(speed_units / RPM_TO_MOTOR_SPEED)
+        # Firmware QDR exposes the signed speed register as uint32.
+        if speed_units >= 2**31:
+            speed_units -= 2**32
+        rpms.append(
+            speed_units
+            / RPM_TO_MOTOR_SPEED
+            * DRIVE_MOTOR_DIRECTION_SIGNS[motor_index]
+        )
     return rpms
 
 

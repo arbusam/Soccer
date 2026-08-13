@@ -28,7 +28,7 @@ from hailo_ball import HailoBallDetector
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-detect-s_hailo_model"
+DEFAULT_BALL_MODEL_PATH = Path(__file__).resolve().parent / "open-soccer-detect-n_hailo_model"
 DEFAULT_RESOLUTION = (640, 640)
 
 

@@ -16,7 +16,7 @@ from ball_distance_calibration import (
 )
 from hailo_ball import HailoBallDetector
 
-MODEL_DIR = Path(__file__).resolve().parent / "open-soccer-detect-n_hailo_model"
+MODEL_DIR = Path(__file__).resolve().parent / "open-soccer-detect-s_hailo_model"
 BALL_CONFIDENCE = 0.25
 PRINT_EVERY = 30
 DEFAULT_RESOLUTION = (640, 640)

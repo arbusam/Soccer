@@ -29,7 +29,7 @@ from movement import (
 )
 
 TARGET_TOLERANCE_MM = 10
-MAX_SPEED_MM_S = 600
+MAX_SPEED_MM_S = 150
 SLOW_RADIUS_MM = 300
 LOOP_DELAY_SECONDS = 0.02
 STATUS_PRINT_INTERVAL_S = 0.2
@@ -43,7 +43,7 @@ LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 PITCH_X = 2430
 PITCH_Y = 1820
-I2C_ADDRESSES = [28, 32, 31, 30]
+I2C_ADDRESSES = [31,29,32,28]
 
 
 def parse_args():
@@ -242,14 +242,20 @@ def drive_to_target(
 
         pose = get_position(lidar_module)
         if pose is None:
-            movement_controller.stop()
+            # Pause safely without terminating the controller's drive thread.
+            movement_controller.move(
+                0.0, 0.0, yaw_for_odom, 0.0, yaw_for_odom
+            )
             time.sleep(LOOP_DELAY_SECONDS)
             continue
 
         current_x, current_y, mcl_yaw = pose
         yaw = get_yaw(imu, startup_yaw, mcl_yaw)
         if yaw is None:
-            movement_controller.stop()
+            # Pause safely without terminating the controller's drive thread.
+            movement_controller.move(
+                0.0, 0.0, yaw_for_odom, 0.0, yaw_for_odom
+            )
             time.sleep(LOOP_DELAY_SECONDS)
             continue
 
