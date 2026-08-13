@@ -37,7 +37,7 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **Solution — 3-DOF Monte Carlo localization (MCL) in C++:**
 
-- Particles track `(x, y, yaw)` on the known pitch map (walls + goal hardware segments).
+- Particles track `(x, y, yaw)` on the known pitch map (outer walls only; no goal hardware).
 - Each LIDAR scan reweights particles using per-ray Gaussian log-likelihood with a 3σ cap.
 - Systematic resampling after each scan; random particle injection on weight collapse for kidnap recovery.
 - `predict_odometry(vx, vy, omega, dt)` propagates particles between scans (call from Python each control loop). Pass IMU gyro z as `omega_deg_s` (clockwise positive); leave `vx`/`vy` at 0 until wheel odometry exists.

@@ -53,15 +53,6 @@ static constexpr float OMEGA_PAUSE_DEG_S = 50.0f; // Pause LIDAR scan updates wh
 static constexpr float OMEGA_RESUME_DEG_S = 25.0f; // Hysteresis floor before considering resume (deg/s).
 static constexpr float OMEGA_SETTLE_S = 0.15f; // Require |omega| below resume for this long before accepting scans again.
 
-// Physical goal walls
-static constexpr float GOAL_LEFT_BACK_X = 226.0f;
-static constexpr float GOAL_RIGHT_BACK_X = 2204.0f;
-static constexpr float GOAL_LEFT_FRONT_X = 300.0f;
-static constexpr float GOAL_RIGHT_FRONT_X = 2130.0f;
-static constexpr float GOAL_TOP_Y = 685.0f;
-static constexpr float GOAL_BOTTOM_Y = 1135.0f;
-static constexpr float GOAL_BACK_BOTTOM_Y = 1140.0f;
-
 static float wrap_angle_deg(float angle) {
     while (angle >= 180.0f) angle -= 360.0f;
     while (angle < -180.0f) angle += 360.0f;
@@ -316,17 +307,11 @@ void loc_init_map(float pitch_x, float pitch_y) {
     g_pitch_y = pitch_y;
     g_static_segments.clear();
 
+    // Outer pitch walls only (no goal hardware).
     g_static_segments.push_back({0.0f, 0.0f, pitch_x, 0.0f});
     g_static_segments.push_back({pitch_x, 0.0f, pitch_x, pitch_y});
     g_static_segments.push_back({pitch_x, pitch_y, 0.0f, pitch_y});
     g_static_segments.push_back({0.0f, pitch_y, 0.0f, 0.0f});
-
-    g_static_segments.push_back({GOAL_LEFT_FRONT_X, GOAL_TOP_Y, 0.0f, GOAL_TOP_Y});
-    g_static_segments.push_back({GOAL_LEFT_BACK_X, GOAL_TOP_Y, GOAL_LEFT_BACK_X, GOAL_BACK_BOTTOM_Y});
-    g_static_segments.push_back({0.0f, GOAL_BOTTOM_Y, GOAL_LEFT_FRONT_X, GOAL_BOTTOM_Y});
-    g_static_segments.push_back({GOAL_RIGHT_FRONT_X, GOAL_TOP_Y, pitch_x, GOAL_TOP_Y});
-    g_static_segments.push_back({GOAL_RIGHT_BACK_X, GOAL_TOP_Y, GOAL_RIGHT_BACK_X, GOAL_BACK_BOTTOM_Y});
-    g_static_segments.push_back({pitch_x, GOAL_BOTTOM_Y, GOAL_RIGHT_FRONT_X, GOAL_BOTTOM_Y});
 }
 
 void loc_set_imu_yaw(float yaw_deg) {
