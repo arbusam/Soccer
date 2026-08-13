@@ -37,12 +37,17 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **Solution — 3-DOF Monte Carlo localization (MCL) in C++:**
 
-- Particles track `(x, y, yaw)` on the known pitch map (outer walls only; no goal hardware).
-- Each LIDAR scan reweights particles using per-ray Gaussian log-likelihood with a 3σ cap.
-- Systematic resampling after each scan; random particle injection on weight collapse for kidnap recovery.
+- Particles track `(x, y, yaw)` on the known pitch map (outer walls + goal hardware segments).
+- Scan thread keeps explicit no-return bearings (`hit=false`) as well as valid hits. MCL bins them into 2° angular bins before scoring.
+- Likelihood is incidence-aware: ray casting returns range + wall normal; near-normal walls are expected to return, grazing walls (`|cos θ|` ≲ 0.25) are expected to miss. Hits use a Gaussian+outlier mixture with incidence-scaled σ; misses get a soft expected/unexpected miss probability instead of free-space penalties.
+- Confidence combines inlier quality, particle spread, and visible wall-normal diversity (one wall alone cannot claim a strong along-wall pose). Resample only when ESS drops below 50% of the particle count so partial scans keep diversity.
 - `predict_odometry(vx, vy, omega, dt)` propagates particles between scans (call from Python each control loop). Pass IMU gyro z as `omega_deg_s` (clockwise positive); leave `vx`/`vy` at 0 until wheel odometry exists.
 - Estimation runs in a background thread; Python reads the latest pose.
 - Fast rotation gate: when `|omega|` exceeds 50 deg/s, MCL skips LIDAR scan updates and dead-reckons via predict only. Scan updates resume after `|omega|` stays below 25 deg/s for 150 ms. `lidar.scan_updates_enabled()` reports whether scans are currently accepted.
+
+**Problem:** LIDAR often drops walls at extreme incidence angles. The old hit-only Gaussian treated every surviving return as a perfect first-wall match and ignored missing bearings, so partial scans could under-constrain or destabilize the pose.
+
+**Solution:** Model visibility from incidence angle; score explicit misses; lower confidence when geometry is under-constrained. Offline check: `python test_grazing_localisation.py` (uses `lidar.test_mcl_*` hooks, no hardware).
 
 **Python API:**
 

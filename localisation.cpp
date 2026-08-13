@@ -20,6 +20,19 @@ struct Particle {
     float weight;
 };
 
+struct PredictedHit {
+    float range_mm;
+    float nx;
+    float ny;
+};
+
+struct Observation {
+    float angle_deg;
+    float distance_mm;
+    float weight;
+    bool hit;
+};
+
 static std::vector<Segment> g_static_segments;
 static std::vector<Particle> g_particles;
 static std::mutex g_loc_mutex;
@@ -37,25 +50,55 @@ static float g_omega_below_resume_s = 0.0f;
 static float g_imu_yaw_deg = 0.0f;
 static bool g_imu_yaw_valid = false;
 
-static constexpr float COORD_SIGMA = 30.0f; // Standard deviation for coordinate error (mm)
-static constexpr float COORD_EPS = 1e-9f; // Epsilon for coordinate error (mm)
-static constexpr float INLIER_THRESH = 80.0f; // Inlier threshold (mm) Any ray with error less than this is considered an inlier, and is ignored.
-static constexpr float CONF_THRESHOLD = 0.35f; // Confidence threshold for pose estimation. If the confidence is less than this, the pose is not considered valid.
-static constexpr int PARTICLE_COUNT = 1000; // Number of particles to use for pose estimation.
-static constexpr int MIN_BEAM_COUNT = 30; // Minimum number of beams to use for pose estimation.
-static constexpr int RAY_STRIDE = 2; // Stride for ray casting.
-static constexpr float TRANS_NOISE_MM = 8.0f; // Standard deviation for translation noise (mm).
-static constexpr float YAW_NOISE_DEG = 2.0f; // Standard deviation for yaw noise (deg).
-static constexpr float YAW_PRIOR_SIGMA_DEG = 45.0f; // Soft IMU yaw prior sigma (deg); breaks 180° LIDAR symmetry.
-static constexpr float RECOVERY_FRACTION = 0.05f; // Fraction of particles to inject when resampling.
-static constexpr float RECOVERY_WEIGHT_THRESHOLD = 1e-12f; // Threshold for resampling. If the weight sum is less than this, the particles are resampled.
-static constexpr float OMEGA_PAUSE_DEG_S = 50.0f; // Pause LIDAR scan updates when |omega| exceeds this (deg/s).
-static constexpr float OMEGA_RESUME_DEG_S = 25.0f; // Hysteresis floor before considering resume (deg/s).
-static constexpr float OMEGA_SETTLE_S = 0.15f; // Require |omega| below resume for this long before accepting scans again.
+static constexpr float COORD_SIGMA = 30.0f;
+static constexpr float COORD_EPS = 1e-9f;
+static constexpr float INLIER_THRESH = 80.0f;
+static constexpr float CONF_THRESHOLD = 0.35f;
+static constexpr int PARTICLE_COUNT = 1000;
+static constexpr int MIN_OBSERVATION_COUNT = 30;
+static constexpr int MIN_HIT_COUNT = 8;
+static constexpr int ANGLE_BIN_COUNT = 180;  // 2° bins over 360°
+static constexpr float ANGLE_BIN_DEG = 360.0f / ANGLE_BIN_COUNT;
+static constexpr float TRANS_NOISE_MM = 8.0f;
+static constexpr float YAW_NOISE_DEG = 2.0f;
+static constexpr float YAW_PRIOR_SIGMA_DEG = 45.0f;
+static constexpr float RECOVERY_FRACTION = 0.05f;
+static constexpr float RECOVERY_WEIGHT_THRESHOLD = 1e-12f;
+static constexpr float ESS_RESAMPLE_FRACTION = 0.5f;
+static constexpr float OMEGA_PAUSE_DEG_S = 50.0f;
+static constexpr float OMEGA_RESUME_DEG_S = 25.0f;
+static constexpr float OMEGA_SETTLE_S = 0.15f;
+
+// Incidence model: |cos| below this is treated as fully grazing / expected miss.
+static constexpr float GRAZING_COS = 0.25f;       // ~75.5° from normal
+static constexpr float HEADON_COS = 0.70f;        // ~45.5° from normal
+static constexpr float INCIDENCE_SIGMA_FLOOR = 0.20f;
+static constexpr float OUTLIER_MIX = 0.05f;
+static constexpr float MISS_EXPECTED_P = 0.85f;
+static constexpr float MISS_UNEXPECTED_P = 0.08f;
+static constexpr float RELIABLE_HIT_RANGE_MM = 3500.0f;
+static constexpr float SPREAD_X_SCALE_MM = 120.0f;
+static constexpr float SPREAD_Y_SCALE_MM = 120.0f;
+static constexpr float SPREAD_YAW_SCALE_DEG = 15.0f;
+
+// Physical goal walls
+static constexpr float GOAL_LEFT_BACK_X = 226.0f;
+static constexpr float GOAL_RIGHT_BACK_X = 2204.0f;
+static constexpr float GOAL_LEFT_FRONT_X = 300.0f;
+static constexpr float GOAL_RIGHT_FRONT_X = 2130.0f;
+static constexpr float GOAL_TOP_Y = 685.0f;
+static constexpr float GOAL_BOTTOM_Y = 1135.0f;
+static constexpr float GOAL_BACK_BOTTOM_Y = 1140.0f;
 
 static float wrap_angle_deg(float angle) {
     while (angle >= 180.0f) angle -= 360.0f;
     while (angle < -180.0f) angle += 360.0f;
+    return angle;
+}
+
+static float normalize_angle_360(float angle) {
+    angle = std::fmod(angle, 360.0f);
+    if (angle < 0.0f) angle += 360.0f;
     return angle;
 }
 
@@ -69,15 +112,31 @@ static float rand_normal(float stddev) {
     return dist(g_rng);
 }
 
-static inline float ray_segment_intersection_distance(float px, float py,
-                                                      float ux, float uy,
-                                                      const Segment& seg) {
+static inline float clamp01(float v) {
+    return std::max(0.0f, std::min(1.0f, v));
+}
+
+// Visibility in [0,1]: 1 = expect a reliable return, 0 = expect a miss.
+static inline float wall_visibility(float abs_cos_inc, float range_mm) {
+    float incidence = clamp01((abs_cos_inc - GRAZING_COS) / (HEADON_COS - GRAZING_COS));
+    float range_factor = 1.0f;
+    if (range_mm > RELIABLE_HIT_RANGE_MM) {
+        range_factor = clamp01(
+            1.0f - (range_mm - RELIABLE_HIT_RANGE_MM) / RELIABLE_HIT_RANGE_MM);
+    }
+    return incidence * range_factor;
+}
+
+static inline bool ray_segment_intersection(float px, float py,
+                                            float ux, float uy,
+                                            const Segment& seg,
+                                            float* out_t) {
     float sx = seg.x2 - seg.x1;
     float sy = seg.y2 - seg.y1;
 
     float denom = ux * sy - uy * sx;
     if (std::fabs(denom) <= COORD_EPS) {
-        return 1e30f;
+        return false;
     }
 
     float qpx = seg.x1 - px;
@@ -87,51 +146,97 @@ static inline float ray_segment_intersection_distance(float px, float py,
     float u = (qpx * uy - qpy * ux) / denom;
 
     if (t > COORD_EPS && u >= -COORD_EPS && u <= 1.0f + COORD_EPS) {
-        return t;
+        *out_t = t;
+        return true;
     }
-    return 1e30f;
+    return false;
 }
 
-static inline float predict_range(float x, float y, float ux, float uy, float Lx, float Ly) {
-    float t_min = 1e30f;
-    if (ux < -COORD_EPS) {
-        float t = -x / ux;
-        if (t > 0 && t < t_min) t_min = t;
-    } else if (ux > COORD_EPS) {
-        float t = (Lx - x) / ux;
-        if (t > 0 && t < t_min) t_min = t;
-    }
+static inline PredictedHit predict_hit(float x, float y, float ux, float uy,
+                                       float Lx, float Ly) {
+    PredictedHit best;
+    best.range_mm = 1e30f;
+    best.nx = 0.0f;
+    best.ny = 0.0f;
 
+    auto consider = [&](float t, float nx, float ny) {
+        if (t > COORD_EPS && t < best.range_mm) {
+            best.range_mm = t;
+            // Prefer the inward-facing normal (toward the robot).
+            float toward_robot_x = -ux;
+            float toward_robot_y = -uy;
+            if (nx * toward_robot_x + ny * toward_robot_y < 0.0f) {
+                nx = -nx;
+                ny = -ny;
+            }
+            best.nx = nx;
+            best.ny = ny;
+        }
+    };
+
+    // Outer pitch walls (axis-aligned), normals pointing into the field.
+    if (ux < -COORD_EPS) {
+        consider(-x / ux, 1.0f, 0.0f);
+    } else if (ux > COORD_EPS) {
+        consider((Lx - x) / ux, -1.0f, 0.0f);
+    }
     if (uy < -COORD_EPS) {
-        float t = -y / uy;
-        if (t > 0 && t < t_min) t_min = t;
+        consider(-y / uy, 0.0f, 1.0f);
     } else if (uy > COORD_EPS) {
-        float t = (Ly - y) / uy;
-        if (t > 0 && t < t_min) t_min = t;
+        consider((Ly - y) / uy, 0.0f, -1.0f);
     }
 
     for (const auto& seg : g_static_segments) {
-        float t = ray_segment_intersection_distance(x, y, ux, uy, seg);
-        if (t < t_min) t_min = t;
+        float t = 0.0f;
+        if (!ray_segment_intersection(x, y, ux, uy, seg, &t)) {
+            continue;
+        }
+        float sx = seg.x2 - seg.x1;
+        float sy = seg.y2 - seg.y1;
+        float len = std::sqrt(sx * sx + sy * sy);
+        if (len <= COORD_EPS) {
+            continue;
+        }
+        // Segment normal candidates; orientation fixed inside consider().
+        consider(t, -sy / len, sx / len);
     }
 
-    return t_min;
+    return best;
 }
 
 static float score_pose(float x, float y, float yaw_deg,
-                        const float* angle_deg, const float* r_meas,
-                        const float* weights, int n, float Lx, float Ly) {
+                        const Observation* obs, int n,
+                        float Lx, float Ly, float max_range_mm) {
     float psi = yaw_deg * (float)(M_PI / 180.0);
     float log_lik = 0.0f;
+    const float inv_max_range = 1.0f / std::max(max_range_mm, 1.0f);
 
     for (int i = 0; i < n; i++) {
-        float theta = psi + angle_deg[i] * (float)(M_PI / 180.0);
+        float theta = psi + obs[i].angle_deg * (float)(M_PI / 180.0);
         float ux = std::cos(theta);
         float uy = std::sin(theta);
-        float r_pred = predict_range(x, y, ux, uy, Lx, Ly);
-        float e = (r_meas[i] - r_pred) / COORD_SIGMA;
-        e = std::max(-3.0f, std::min(3.0f, e));
-        log_lik += weights[i] * (-0.5f * e * e);
+        PredictedHit pred = predict_hit(x, y, ux, uy, Lx, Ly);
+        float abs_cos = 0.0f;
+        if (pred.range_mm < 1e29f) {
+            abs_cos = std::fabs(ux * pred.nx + uy * pred.ny);
+        }
+        float visibility = wall_visibility(abs_cos, pred.range_mm);
+
+        if (obs[i].hit) {
+            float sigma = COORD_SIGMA / std::max(abs_cos, INCIDENCE_SIGMA_FLOOR);
+            float e = (obs[i].distance_mm - pred.range_mm) / sigma;
+            // Soft-cap extreme residuals via mixture rather than hard clamp alone.
+            float p_hit = std::exp(-0.5f * e * e);
+            float p = (1.0f - OUTLIER_MIX) * p_hit + OUTLIER_MIX * inv_max_range;
+            // Grazing returns are down-weighted: they are often noisy or wrong-surface.
+            float beam_w = obs[i].weight * (0.25f + 0.75f * visibility);
+            log_lik += beam_w * std::log(std::max(p, 1e-12f));
+        } else {
+            // Explicit miss: expected when grazing or far; suspicious when close/head-on.
+            float p_miss = MISS_EXPECTED_P * (1.0f - visibility)
+                           + MISS_UNEXPECTED_P * visibility;
+            log_lik += obs[i].weight * std::log(std::max(p_miss, 1e-12f));
+        }
     }
     return log_lik;
 }
@@ -139,30 +244,51 @@ static float score_pose(float x, float y, float yaw_deg,
 struct PoseStats {
     float inlier_ratio;
     float mad_mm;
+    float normal_x_energy;
+    float normal_y_energy;
+    int hit_count;
 };
 
 static PoseStats compute_stats(float x, float y, float yaw_deg,
-                               const float* angle_deg, const float* r_meas,
-                               int n, float Lx, float Ly) {
+                               const Observation* obs, int n,
+                               float Lx, float Ly) {
     float psi = yaw_deg * (float)(M_PI / 180.0);
     std::vector<float> inlier_errors;
     inlier_errors.reserve(n);
     int inlier_count = 0;
+    int hit_count = 0;
+    float normal_x_energy = 0.0f;
+    float normal_y_energy = 0.0f;
+    float weight_sum = 0.0f;
 
     for (int i = 0; i < n; i++) {
-        float theta = psi + angle_deg[i] * (float)(M_PI / 180.0);
+        if (!obs[i].hit) {
+            continue;
+        }
+        hit_count++;
+        float theta = psi + obs[i].angle_deg * (float)(M_PI / 180.0);
         float ux = std::cos(theta);
         float uy = std::sin(theta);
-        float r_pred = predict_range(x, y, ux, uy, Lx, Ly);
-        float e = std::fabs(r_meas[i] - r_pred);
+        PredictedHit pred = predict_hit(x, y, ux, uy, Lx, Ly);
+        float e = std::fabs(obs[i].distance_mm - pred.range_mm);
+        float abs_cos = std::fabs(ux * pred.nx + uy * pred.ny);
+        float visibility = wall_visibility(abs_cos, pred.range_mm);
+        float w = obs[i].weight * visibility;
+        weight_sum += w;
         if (e < INLIER_THRESH) {
             inlier_count++;
             inlier_errors.push_back(e);
+            // Accumulate visible geometry axes (inlier + non-grazing only).
+            normal_x_energy += w * std::fabs(pred.nx);
+            normal_y_energy += w * std::fabs(pred.ny);
         }
     }
 
     PoseStats stats;
-    stats.inlier_ratio = (float)inlier_count / std::max(n, 1);
+    stats.hit_count = hit_count;
+    stats.inlier_ratio = (float)inlier_count / std::max(hit_count, 1);
+    stats.normal_x_energy = normal_x_energy;
+    stats.normal_y_energy = normal_y_energy;
 
     if (inlier_errors.empty()) {
         stats.mad_mm = 1e9f;
@@ -170,11 +296,84 @@ static PoseStats compute_stats(float x, float y, float yaw_deg,
         std::sort(inlier_errors.begin(), inlier_errors.end());
         stats.mad_mm = 1.4826f * inlier_errors[inlier_errors.size() / 2];
     }
+
+    // Normalize normal energies so geometry score is scale-free.
+    float denom = std::max(weight_sum, 1e-6f);
+    stats.normal_x_energy /= denom;
+    stats.normal_y_energy /= denom;
     return stats;
 }
 
-static float compute_confidence(const PoseStats& s) {
-    return 0.7f * s.inlier_ratio + 0.3f * std::exp(-s.mad_mm / 80.0f);
+struct ParticleSpread {
+    float std_x;
+    float std_y;
+    float std_yaw_deg;
+};
+
+static ParticleSpread compute_particle_spread() {
+    float sum_w = 0.0f;
+    float mean_x = 0.0f;
+    float mean_y = 0.0f;
+    float sin_sum = 0.0f;
+    float cos_sum = 0.0f;
+
+    for (const auto& particle : g_particles) {
+        sum_w += particle.weight;
+        mean_x += particle.weight * particle.x;
+        mean_y += particle.weight * particle.y;
+        float yaw_rad = particle.yaw_deg * (float)(M_PI / 180.0);
+        sin_sum += particle.weight * std::sin(yaw_rad);
+        cos_sum += particle.weight * std::cos(yaw_rad);
+    }
+
+    ParticleSpread spread = {1e9f, 1e9f, 1e9f};
+    if (sum_w <= 0.0f) {
+        return spread;
+    }
+
+    mean_x /= sum_w;
+    mean_y /= sum_w;
+    float mean_yaw = std::atan2(sin_sum, cos_sum) * (180.0f / (float)M_PI);
+
+    float var_x = 0.0f;
+    float var_y = 0.0f;
+    float var_yaw = 0.0f;
+    for (const auto& particle : g_particles) {
+        float w = particle.weight / sum_w;
+        float dx = particle.x - mean_x;
+        float dy = particle.y - mean_y;
+        float dyaw = wrap_angle_deg(particle.yaw_deg - mean_yaw);
+        var_x += w * dx * dx;
+        var_y += w * dy * dy;
+        var_yaw += w * dyaw * dyaw;
+    }
+
+    spread.std_x = std::sqrt(var_x);
+    spread.std_y = std::sqrt(var_y);
+    spread.std_yaw_deg = std::sqrt(var_yaw);
+    return spread;
+}
+
+static float compute_confidence(const PoseStats& s, const ParticleSpread& spread) {
+    float inlier_conf = 0.7f * s.inlier_ratio + 0.3f * std::exp(-s.mad_mm / 80.0f);
+
+    // One visible wall constrains only the normal axis; require diversity.
+    float axis_x = clamp01(s.normal_x_energy * 2.0f);
+    float axis_y = clamp01(s.normal_y_energy * 2.0f);
+    float geometry_conf = std::sqrt(std::max(axis_x * axis_y, 0.0f));
+    // Partial scans still get some credit if one strong axis + tight yaw.
+    geometry_conf = std::max(geometry_conf, 0.35f * std::max(axis_x, axis_y));
+
+    float spread_conf =
+        std::exp(-spread.std_x / SPREAD_X_SCALE_MM)
+        * std::exp(-spread.std_y / SPREAD_Y_SCALE_MM)
+        * std::exp(-spread.std_yaw_deg / SPREAD_YAW_SCALE_DEG);
+
+    float conf = 0.45f * inlier_conf + 0.35f * geometry_conf + 0.20f * spread_conf;
+    if (s.hit_count < MIN_HIT_COUNT) {
+        conf *= 0.5f;
+    }
+    return clamp01(conf);
 }
 
 // Sample init/recovery yaw: IMU-centered when available, else full circle.
@@ -206,6 +405,17 @@ static void inject_random_particles(float fraction) {
     }
 }
 
+static float effective_sample_size() {
+    float sum_sq = 0.0f;
+    for (const auto& particle : g_particles) {
+        sum_sq += particle.weight * particle.weight;
+    }
+    if (sum_sq <= 0.0f) {
+        return 0.0f;
+    }
+    return 1.0f / sum_sq;
+}
+
 static void resample_particles() {
     std::vector<Particle> new_particles(PARTICLE_COUNT);
     std::uniform_real_distribution<float> dist(0.0f, 1.0f / PARTICLE_COUNT);
@@ -226,9 +436,7 @@ static void resample_particles() {
     g_particles.swap(new_particles);
 }
 
-static LocPose estimate_pose_from_particles(const float* angle_deg,
-                                            const float* r_meas,
-                                            int n) {
+static LocPose estimate_pose_from_particles(const Observation* obs, int n) {
     float sum_w = 0.0f;
     float mean_x = 0.0f;
     float mean_y = 0.0f;
@@ -257,10 +465,11 @@ static LocPose estimate_pose_from_particles(const float* angle_deg,
     pose.y = mean_y;
     pose.yaw_deg = wrap_angle_deg(std::atan2(sin_sum, cos_sum) * (180.0f / (float)M_PI));
 
-    if (angle_deg != nullptr && r_meas != nullptr && n > 0) {
+    if (obs != nullptr && n > 0) {
         PoseStats stats = compute_stats(mean_x, mean_y, pose.yaw_deg,
-                                        angle_deg, r_meas, n, g_pitch_x, g_pitch_y);
-        pose.confidence = compute_confidence(stats);
+                                        obs, n, g_pitch_x, g_pitch_y);
+        ParticleSpread spread = compute_particle_spread();
+        pose.confidence = compute_confidence(stats, spread);
         pose.ok = pose.confidence >= CONF_THRESHOLD;
     } else {
         pose.confidence = g_pose.confidence;
@@ -301,17 +510,100 @@ static void update_rotation_gate(float omega_deg_s, float dt_s) {
     }
 }
 
+static std::vector<Observation> bin_observations(const LocScanPoint* points, int count,
+                                                 float min_range_mm, float max_range_mm,
+                                                 int min_quality) {
+    struct BinAccum {
+        bool observed = false;
+        bool hit = false;
+        float distance_mm = 0.0f;
+        int quality = 0;
+    };
+
+    std::vector<BinAccum> bins(ANGLE_BIN_COUNT);
+    for (int i = 0; i < count; i++) {
+        const LocScanPoint& pt = points[i];
+        int bin = (int)(normalize_angle_360(pt.angle_deg) / ANGLE_BIN_DEG);
+        if (bin < 0) bin = 0;
+        if (bin >= ANGLE_BIN_COUNT) bin = ANGLE_BIN_COUNT - 1;
+
+        BinAccum& b = bins[bin];
+        b.observed = true;
+
+        bool is_hit = pt.hit
+                      && pt.quality >= min_quality
+                      && pt.distance_mm >= min_range_mm
+                      && pt.distance_mm <= max_range_mm;
+        if (!is_hit) {
+            // Explicit miss only sticks if this bin has no valid hit yet.
+            continue;
+        }
+
+        if (!b.hit || pt.quality > b.quality
+            || (pt.quality == b.quality && pt.distance_mm < b.distance_mm)) {
+            b.hit = true;
+            b.distance_mm = pt.distance_mm;
+            b.quality = pt.quality;
+        }
+    }
+
+    // Second pass: mark bins that were observed only via misses.
+    for (int i = 0; i < count; i++) {
+        const LocScanPoint& pt = points[i];
+        int bin = (int)(normalize_angle_360(pt.angle_deg) / ANGLE_BIN_DEG);
+        if (bin < 0) bin = 0;
+        if (bin >= ANGLE_BIN_COUNT) bin = ANGLE_BIN_COUNT - 1;
+        BinAccum& b = bins[bin];
+        if (b.hit) {
+            continue;
+        }
+        bool is_hit = pt.hit
+                      && pt.quality >= min_quality
+                      && pt.distance_mm >= min_range_mm
+                      && pt.distance_mm <= max_range_mm;
+        if (!is_hit) {
+            b.observed = true;
+            b.hit = false;
+        }
+    }
+
+    std::vector<Observation> obs;
+    obs.reserve(ANGLE_BIN_COUNT);
+    for (int bin = 0; bin < ANGLE_BIN_COUNT; bin++) {
+        const BinAccum& b = bins[bin];
+        if (!b.observed) {
+            continue;
+        }
+        Observation o;
+        o.angle_deg = (bin + 0.5f) * ANGLE_BIN_DEG;
+        o.hit = b.hit;
+        o.distance_mm = b.distance_mm;
+        if (b.hit) {
+            float w = (float)(b.quality - min_quality) / 30.0f;
+            if (w > 1.0f) w = 1.0f;
+            if (w < 0.05f) w = 0.05f;
+            o.weight = w;
+        } else {
+            o.weight = 0.6f;  // miss observations are slightly softer than strong hits
+        }
+        obs.push_back(o);
+    }
+    return obs;
+}
+
 void loc_init_map(float pitch_x, float pitch_y) {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     g_pitch_x = pitch_x;
     g_pitch_y = pitch_y;
     g_static_segments.clear();
 
-    // Outer pitch walls only (no goal hardware).
-    g_static_segments.push_back({0.0f, 0.0f, pitch_x, 0.0f});
-    g_static_segments.push_back({pitch_x, 0.0f, pitch_x, pitch_y});
-    g_static_segments.push_back({pitch_x, pitch_y, 0.0f, pitch_y});
-    g_static_segments.push_back({0.0f, pitch_y, 0.0f, 0.0f});
+    // Outer walls are handled analytically in predict_hit(); only goal hardware here.
+    g_static_segments.push_back({GOAL_LEFT_FRONT_X, GOAL_TOP_Y, 0.0f, GOAL_TOP_Y});
+    g_static_segments.push_back({GOAL_LEFT_BACK_X, GOAL_TOP_Y, GOAL_LEFT_BACK_X, GOAL_BACK_BOTTOM_Y});
+    g_static_segments.push_back({0.0f, GOAL_BOTTOM_Y, GOAL_LEFT_FRONT_X, GOAL_BOTTOM_Y});
+    g_static_segments.push_back({GOAL_RIGHT_FRONT_X, GOAL_TOP_Y, pitch_x, GOAL_TOP_Y});
+    g_static_segments.push_back({GOAL_RIGHT_BACK_X, GOAL_TOP_Y, GOAL_RIGHT_BACK_X, GOAL_BACK_BOTTOM_Y});
+    g_static_segments.push_back({pitch_x, GOAL_BOTTOM_Y, GOAL_RIGHT_FRONT_X, GOAL_BOTTOM_Y});
 }
 
 void loc_set_imu_yaw(float yaw_deg) {
@@ -379,7 +671,7 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
     }
 
     if (g_ready) {
-        LocPose updated = estimate_pose_from_particles(nullptr, nullptr, 0);
+        LocPose updated = estimate_pose_from_particles(nullptr, 0);
         g_pose.x = updated.x;
         g_pose.y = updated.y;
         g_pose.yaw_deg = updated.yaw_deg;
@@ -395,32 +687,16 @@ void loc_update_scan(const LocScanPoint* points, int count,
         }
     }
 
-    std::vector<float> angle_deg;
-    std::vector<float> r_meas;
-    std::vector<float> weights;
-    angle_deg.reserve(count / RAY_STRIDE + 1);
-    r_meas.reserve(count / RAY_STRIDE + 1);
-    weights.reserve(count / RAY_STRIDE + 1);
+    std::vector<Observation> obs = bin_observations(
+        points, count, min_range_mm, max_range_mm, min_quality);
 
-    for (int i = 0; i < count; i += RAY_STRIDE) {
-        const LocScanPoint& pt = points[i];
-        if (pt.distance_mm < min_range_mm || pt.distance_mm > max_range_mm) {
-            continue;
-        }
-        if (pt.quality < min_quality) {
-            continue;
-        }
-
-        angle_deg.push_back(pt.angle_deg);
-        r_meas.push_back(pt.distance_mm);
-
-        float w = (float)(pt.quality - min_quality) / 30.0f;
-        if (w > 1.0f) w = 1.0f;
-        weights.push_back(w);
+    int hit_count = 0;
+    for (const auto& o : obs) {
+        if (o.hit) hit_count++;
     }
 
-    const int n = (int)angle_deg.size();
-    if (n < MIN_BEAM_COUNT) {
+    const int n = (int)obs.size();
+    if (n < MIN_OBSERVATION_COUNT || hit_count < MIN_HIT_COUNT) {
         return;
     }
 
@@ -438,8 +714,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
     float max_log = -1e30f;
     for (auto& particle : g_particles) {
         float log_lik = score_pose(particle.x, particle.y, particle.yaw_deg,
-                                   angle_deg.data(), r_meas.data(), weights.data(),
-                                   n, g_pitch_x, g_pitch_y);
+                                   obs.data(), n, g_pitch_x, g_pitch_y, max_range_mm);
         if (g_imu_yaw_valid) {
             float yaw_err = wrap_angle_deg(particle.yaw_deg - g_imu_yaw_deg);
             float e = yaw_err / YAW_PRIOR_SIGMA_DEG;
@@ -472,7 +747,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
         particle.weight /= weight_sum;
     }
 
-    g_pose = estimate_pose_from_particles(angle_deg.data(), r_meas.data(), n);
+    g_pose = estimate_pose_from_particles(obs.data(), n);
     if (g_pose.ok) {
         g_ready = true;
         if (had_prior_pose) {
@@ -492,7 +767,10 @@ void loc_update_scan(const LocScanPoint* points, int count,
         }
     }
 
-    resample_particles();
+    // Preserve particle diversity on under-constrained (partial) scans.
+    if (effective_sample_size() < ESS_RESAMPLE_FRACTION * PARTICLE_COUNT) {
+        resample_particles();
+    }
 }
 
 bool loc_scan_updates_allowed() {

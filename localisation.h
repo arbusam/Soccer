@@ -5,8 +5,9 @@
 
 struct LocScanPoint {
     float angle_deg;
-    float distance_mm;
+    float distance_mm;  // valid only when hit is true
     int quality;
+    bool hit;           // false = explicit no-return / miss at this bearing
 };
 
 struct LocPose {

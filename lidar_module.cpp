@@ -37,6 +37,7 @@ struct ScanPoint {
     float angle_deg;
     float distance_mm;
     int quality;
+    bool hit;
 };
 
 static std::vector<ScanPoint> g_latest_scan;
@@ -75,16 +76,20 @@ static void scan_thread_func() {
             new_scan.reserve(count);
 
             for (size_t i = 0; i < count; i++) {
-                if (nodes[i].dist_mm_q2 == 0) continue;
-
-                int quality = nodes[i].quality
-                              >> SL_LIDAR_RESP_MEASUREMENT_QUALITY_SHIFT;
-                if (quality < MIN_BEAM_QUALITY) continue;
-
                 ScanPoint pt;
                 pt.angle_deg = (nodes[i].angle_z_q14 * 90.0f) / 16384.0f;
                 pt.distance_mm = nodes[i].dist_mm_q2 / 4.0f;
-                pt.quality = quality;
+                pt.quality = nodes[i].quality
+                             >> SL_LIDAR_RESP_MEASUREMENT_QUALITY_SHIFT;
+
+                // Keep explicit no-return bearings so MCL can model grazing misses.
+                if (nodes[i].dist_mm_q2 == 0 || pt.quality < MIN_BEAM_QUALITY) {
+                    pt.hit = false;
+                    pt.distance_mm = 0.0f;
+                    pt.quality = 0;
+                } else {
+                    pt.hit = true;
+                }
                 new_scan.push_back(pt);
             }
 
@@ -132,6 +137,7 @@ static void localization_thread_func() {
             loc_scan[i].angle_deg = scan_copy[i].angle_deg;
             loc_scan[i].distance_mm = scan_copy[i].distance_mm;
             loc_scan[i].quality = scan_copy[i].quality;
+            loc_scan[i].hit = scan_copy[i].hit;
         }
 
         loc_update_scan(loc_scan.data(), (int)loc_scan.size(),
@@ -237,20 +243,27 @@ static bool is_scan_ready() {
 static py::array_t<float> get_scan_numpy() {
     std::lock_guard<std::mutex> lock(g_data_mutex);
 
-    if (g_latest_scan.empty()) {
+    size_t hit_count = 0;
+    for (const auto& pt : g_latest_scan) {
+        if (pt.hit) hit_count++;
+    }
+
+    if (hit_count == 0) {
         std::vector<ssize_t> empty_shape = {0, 3};
         return py::array_t<float>(empty_shape);
     }
 
-    size_t n = g_latest_scan.size();
-    std::vector<ssize_t> shape = {(ssize_t)n, 3};
+    std::vector<ssize_t> shape = {(ssize_t)hit_count, 3};
     py::array_t<float> result(shape);
     auto buf = result.mutable_unchecked<2>();
 
-    for (size_t i = 0; i < n; i++) {
-        buf(i, 0) = g_latest_scan[i].angle_deg;
-        buf(i, 1) = g_latest_scan[i].distance_mm;
-        buf(i, 2) = (float)g_latest_scan[i].quality;
+    size_t out = 0;
+    for (const auto& pt : g_latest_scan) {
+        if (!pt.hit) continue;
+        buf(out, 0) = pt.angle_deg;
+        buf(out, 1) = pt.distance_mm;
+        buf(out, 2) = (float)pt.quality;
+        out++;
     }
 
     return result;
@@ -261,6 +274,7 @@ static py::list get_scan_list() {
 
     py::list result;
     for (const auto& pt : g_latest_scan) {
+        if (!pt.hit) continue;
         result.append(
             py::make_tuple(pt.angle_deg, pt.distance_mm, pt.quality));
     }
@@ -270,7 +284,14 @@ static py::list get_scan_list() {
 static float get_distance_at_angle(float target_angle) {
     std::lock_guard<std::mutex> lock(g_data_mutex);
 
-    if (g_latest_scan.empty()) return -1.0f;
+    bool any_hit = false;
+    for (const auto& pt : g_latest_scan) {
+        if (pt.hit) {
+            any_hit = true;
+            break;
+        }
+    }
+    if (!any_hit) return -1.0f;
 
     target_angle = std::fmod(target_angle, 360.0f);
     if (target_angle < 0) target_angle += 360.0f;
@@ -279,6 +300,8 @@ static float get_distance_at_angle(float target_angle) {
     float min_angle_diff = 360.0f;
 
     for (const auto& pt : g_latest_scan) {
+        if (!pt.hit) continue;
+
         float angle = std::fmod(pt.angle_deg, 360.0f);
         if (angle < 0) angle += 360.0f;
 
@@ -304,6 +327,8 @@ static py::list get_sector_distances(int num_sectors) {
     std::vector<float> min_distances(num_sectors, -1.0f);
 
     for (const auto& pt : g_latest_scan) {
+        if (!pt.hit) continue;
+
         float angle = std::fmod(pt.angle_deg, 360.0f);
         if (angle < 0) angle += 360.0f;
 
@@ -326,7 +351,11 @@ static py::list get_sector_distances(int num_sectors) {
 
 static int get_scan_count() {
     std::lock_guard<std::mutex> lock(g_data_mutex);
-    return (int)g_latest_scan.size();
+    int hit_count = 0;
+    for (const auto& pt : g_latest_scan) {
+        if (pt.hit) hit_count++;
+    }
+    return hit_count;
 }
 
 static std::uint64_t get_scan_generation() {
@@ -409,6 +438,54 @@ static py::tuple get_last_scan_correction_py() {
         true);
 }
 
+// Offline / synthetic MCL helpers (no hardware required).
+static void test_mcl_start(float pitch_x, float pitch_y) {
+    if (g_loc_running.load()) {
+        throw std::runtime_error(
+            "Live localization thread is running; shut it down before test_mcl_start.");
+    }
+    loc_stop();
+    loc_init_map(pitch_x, pitch_y);
+    loc_start();
+}
+
+static void test_mcl_stop() {
+    loc_stop();
+}
+
+static void test_mcl_set_imu_yaw(float yaw_deg) {
+    loc_set_imu_yaw(yaw_deg);
+}
+
+static void test_mcl_predict(float vx_mm_s, float vy_mm_s,
+                             float omega_deg_s, float dt_s) {
+    loc_predict_odometry(vx_mm_s, vy_mm_s, omega_deg_s, dt_s);
+}
+
+static void test_mcl_update_scan(const py::list& points) {
+    std::vector<LocScanPoint> scan;
+    scan.reserve(py::len(points));
+    for (const auto& item : points) {
+        py::tuple t = item.cast<py::tuple>();
+        if (py::len(t) < 4) {
+            throw std::invalid_argument(
+                "Each scan point must be (angle_deg, distance_mm, quality, hit)");
+        }
+        LocScanPoint pt;
+        pt.angle_deg = t[0].cast<float>();
+        pt.distance_mm = t[1].cast<float>();
+        pt.quality = t[2].cast<int>();
+        pt.hit = t[3].cast<bool>();
+        scan.push_back(pt);
+    }
+    loc_update_scan(scan.data(), (int)scan.size(),
+                    MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY);
+}
+
+static void test_mcl_reset() {
+    loc_reset();
+}
+
 PYBIND11_MODULE(lidar, m) {
     m.doc() = "RPLidar C1 Python module — scan data and MCL localization";
 
@@ -482,4 +559,22 @@ PYBIND11_MODULE(lidar, m) {
           "error_mm, yaw_error_deg, valid) for the last LIDAR scan update. "
           "error_mm is how far the odometry-interpolated pose was from the "
           "LIDAR-corrected pose.");
+
+    m.def("test_mcl_start", &test_mcl_start,
+          py::arg("pitch_x"), py::arg("pitch_y"),
+          "Start MCL without LIDAR hardware (for synthetic tests).");
+    m.def("test_mcl_stop", &test_mcl_stop,
+          "Stop synthetic MCL session.");
+    m.def("test_mcl_reset", &test_mcl_reset,
+          "Reset synthetic MCL particles.");
+    m.def("test_mcl_set_imu_yaw", &test_mcl_set_imu_yaw,
+          py::arg("yaw_deg"),
+          "Set IMU yaw prior for synthetic MCL.");
+    m.def("test_mcl_predict", &test_mcl_predict,
+          py::arg("vx_mm_s"), py::arg("vy_mm_s"),
+          py::arg("omega_deg_s"), py::arg("dt_s"),
+          "Propagate synthetic MCL with odometry.");
+    m.def("test_mcl_update_scan", &test_mcl_update_scan,
+          py::arg("points"),
+          "Feed synthetic scan points: list of (angle_deg, distance_mm, quality, hit).");
 }
