@@ -74,7 +74,13 @@ def main():
                 time.sleep(0.01)
                 continue
             yaw_relative = imu_yaw_to_relative_yaw(yaw, startup_yaw)
-            print(f"Yaw: {yaw:.6f} deg (relative {yaw_relative:.6f} deg)")
+            vx, vy = movement_controller.get_measured_body_velocity_mm_s(yaw_relative)
+            measured_speed = math.hypot(vx, vy)
+            print(
+                f"Yaw: {yaw:.6f} deg (relative {yaw_relative:.6f} deg) | "
+                f"measured {measured_speed:.1f} mm/s "
+                f"(vx={vx:.1f} forward, vy={vy:.1f} left)"
+            )
             movement_controller.move(
                 TEST_DIRECTION,
                 TEST_SPEED,

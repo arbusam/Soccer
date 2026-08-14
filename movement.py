@@ -15,9 +15,6 @@ i2c = busio.I2C(board.SCL, board.SDA)
 # Conversion factor from RPM to motor speed units.
 # Formula: rpm * 7 (pole pairs) * 36 (36:1 gear ratio) / 60 (seconds per minute) / 2^-16 (electrical revolutions per second)
 RPM_TO_MOTOR_SPEED = 275251.2
-# Installed drive motors have opposite electrical polarity on the two diagonals.
-# Convert only at the hardware boundary so kinematics remain in one wheel frame.
-DRIVE_MOTOR_DIRECTION_SIGNS = (1, -1, 1, -1)
 MAX_VELOCITY_CHANGE_PER_SEC = 8000.0 # Max change in movement vector per second (mm/s/s)
 # Fixed-rate drive loop so control-loop stalls do not inflate accel dt or pause yaw correction.
 DRIVE_LOOP_HZ = 50.0
@@ -378,10 +375,10 @@ class MovementController:
                 self.yaw_correct_threshold,
             )
 
-            a_val = int(a_speed * RPM_TO_MOTOR_SPEED * DRIVE_MOTOR_DIRECTION_SIGNS[0])
-            b_val = int(b_speed * RPM_TO_MOTOR_SPEED * DRIVE_MOTOR_DIRECTION_SIGNS[1])
-            c_val = int(c_speed * RPM_TO_MOTOR_SPEED * DRIVE_MOTOR_DIRECTION_SIGNS[2])
-            d_val = int(d_speed * RPM_TO_MOTOR_SPEED * DRIVE_MOTOR_DIRECTION_SIGNS[3])
+            a_val = int(a_speed * RPM_TO_MOTOR_SPEED)
+            b_val = int(b_speed * RPM_TO_MOTOR_SPEED)
+            c_val = int(c_speed * RPM_TO_MOTOR_SPEED)
+            d_val = int(d_speed * RPM_TO_MOTOR_SPEED)
             drive_motors = self.motors[:4]
 
             try:
@@ -508,9 +505,9 @@ def _calculate_drive_rpms(
     local_direction_rad = math.radians(local_direction)
     wheel_multipliers = (
         -math.sin(local_direction_rad),  # Back left wheel
-        -math.cos(local_direction_rad),  # Back right wheel
+        math.cos(local_direction_rad),  # Back right wheel
         math.sin(local_direction_rad),   # Front right wheel
-        math.cos(local_direction_rad),   # Front left wheel
+        -math.cos(local_direction_rad),   # Front left wheel
     )
 
     mmps_to_rpm = 60.0 / (diameter * math.pi)
@@ -548,7 +545,6 @@ def read_wheel_rpms(motors):
         rpms.append(
             speed_units
             / RPM_TO_MOTOR_SPEED
-            * DRIVE_MOTOR_DIRECTION_SIGNS[motor_index]
         )
     return rpms
 
@@ -569,10 +565,13 @@ def measured_wheel_speeds_to_body_velocity_mm_s(wheel_mm_s, yaw_deg):
     if len(wheel_mm_s) < 4:
         return 0.0, 0.0
 
+    # If the bot is only translating, without rotation, the average wheel speed will be 0
+    # This is because opposite wheels spin in opposite directions
+    # However, if on average the wheels are spinning in a direction, then the bot is spinning in that direction
     rotation_mm_s = sum(wheel_mm_s[:4]) / 4.0
-    corrected = [speed - rotation_mm_s for speed in wheel_mm_s[:4]]
-    sin_term = (corrected[2] - corrected[0]) * 0.5
-    cos_term = (corrected[3] - corrected[1]) * 0.5
+    corrected = [speed - rotation_mm_s for speed in wheel_mm_s[:4]] # This is the speed of the bot relative to the ground
+    sin_term = (corrected[2] - corrected[0]) * 0.5 # This is the speed of the bot relative to the ground in the y direction
+    cos_term = (corrected[1] - corrected[3]) * 0.5 # This is the speed of the bot relative to the ground in the x direction
     translation_speed = math.hypot(sin_term, cos_term)
     if translation_speed < 1e-3:
         return 0.0, 0.0
