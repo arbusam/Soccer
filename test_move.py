@@ -13,7 +13,7 @@ MAX_YAW_RPM = 100
 MAX_MOTOR_RPM = 400
 YAW_CORRECT_THRESHOLD = 3
 
-I2C_ADDRESSES = [28, 32, 31, 30]
+I2C_ADDRESSES = [31,29,32,28,27]
 TEST_DIRECTION = 0
 TEST_SPEED = 100
 TEST_ROTATION = 0
@@ -87,6 +87,7 @@ def main():
                 TEST_ROTATION,
                 TEST_ROTATION_SPEED,
                 yaw_relative,
+                True
             )
             time.sleep(COMMAND_INTERVAL)
     except KeyboardInterrupt:
