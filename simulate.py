@@ -1010,7 +1010,8 @@ def build_frame(ball_x, ball_y, bots):
         for start, end in connector_lines:
             pygame.draw.line(frame_pitch, black, start, end, CAPTURE_LINE_WIDTH)
 
-    pygame.draw.circle(frame_pitch, orange, (int(ball_x), int(ball_y)), BALL_RADIUS)
+    if ball_x is not None and ball_y is not None:
+        pygame.draw.circle(frame_pitch, orange, (int(ball_x), int(ball_y)), BALL_RADIUS)
     return frame_pitch
 
 
@@ -1808,13 +1809,20 @@ else:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 waiting = False
-            if event.type == pygame.MOUSEBUTTONDOWN:
+            elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                # Hide the ball the same way a missed camera detection does.
+                ball_x = None
+                ball_y = None
+                ball_vx = 0.0
+                ball_vy = 0.0
+            elif event.type == pygame.MOUSEBUTTONDOWN:
                 ball_position = window_to_frame_point(event.pos[0], event.pos[1], pitch)
                 if ball_position is not None:
                     ball_x, ball_y = ball_position
                     ball_vx = 0.0
                     ball_vy = 0.0
 
+        ball_on_field = ball_x is not None and ball_y is not None
         manual_keys = pygame.key.get_pressed() if any(bot.manual for bot in bots) else None
 
         bot_states = []
@@ -1822,7 +1830,7 @@ else:
         for bot in bots:
             prev_x = bot.x
             prev_y = bot.y
-            ball_captured = is_ball_touching_capture_zone(
+            ball_captured = ball_on_field and is_ball_touching_capture_zone(
                 ball_x, ball_y, get_capture_geometry(bot.x, bot.y, bot.yaw)
             )
             kick_state = False
@@ -1838,7 +1846,11 @@ else:
                 controller_yaw = bot.yaw
                 controller_ball_x = ball_x
                 controller_ball_y = ball_y
-                if args.vision and not ball_visible_from(bot, ball_x, ball_y, bots):
+                if (
+                    args.vision
+                    and ball_on_field
+                    and not ball_visible_from(bot, ball_x, ball_y, bots)
+                ):
                     controller_ball_x = None
                     controller_ball_y = None
                 controller_friendly_bot_positions = [
@@ -2004,136 +2016,137 @@ else:
             bot_ref.push_speed = math.hypot(bot_actual_dx, bot_actual_dy)
             state["delta"] = (bot_actual_dx, bot_actual_dy)
 
-        # Sub-step the ball movement so it cannot tunnel through thin walls/backboards
-        ball_speed_pixels = mmps_to_pixels(math.hypot(ball_vx, ball_vy), 1.0)
-        max_ball_step = max(BALL_RADIUS, 1.0)
-        substeps = max(1, math.ceil((ball_speed_pixels * dt_seconds) / max_ball_step))
-        sub_dt = dt_seconds / substeps if substeps > 0 else dt_seconds
+        if ball_on_field:
+            # Sub-step the ball movement so it cannot tunnel through thin walls/backboards
+            ball_speed_pixels = mmps_to_pixels(math.hypot(ball_vx, ball_vy), 1.0)
+            max_ball_step = max(BALL_RADIUS, 1.0)
+            substeps = max(1, math.ceil((ball_speed_pixels * dt_seconds) / max_ball_step))
+            sub_dt = dt_seconds / substeps if substeps > 0 else dt_seconds
 
-        boundary_collision = False
-        goal_line_collision = False
+            boundary_collision = False
+            goal_line_collision = False
 
-        for _ in range(substeps):
-            ball_x += mmps_to_pixels(ball_vx, sub_dt)
-            ball_y += mmps_to_pixels(ball_vy, sub_dt)
+            for _ in range(substeps):
+                ball_x += mmps_to_pixels(ball_vx, sub_dt)
+                ball_y += mmps_to_pixels(ball_vy, sub_dt)
 
-            ball_x, ball_y, ball_vx, ball_vy, boundary_hit = keep_ball_in_pitch_bounds(
-                ball_x, ball_y, ball_vx, ball_vy
-            )
-            ball_x, ball_y, ball_vx, ball_vy, goal_hit = resolve_ball_goal_line_collisions(
-                ball_x, ball_y, ball_vx, ball_vy, GOAL_LINES
-            )
+                ball_x, ball_y, ball_vx, ball_vy, boundary_hit = keep_ball_in_pitch_bounds(
+                    ball_x, ball_y, ball_vx, ball_vy
+                )
+                ball_x, ball_y, ball_vx, ball_vy, goal_hit = resolve_ball_goal_line_collisions(
+                    ball_x, ball_y, ball_vx, ball_vy, GOAL_LINES
+                )
 
-            boundary_collision = boundary_collision or boundary_hit
-            goal_line_collision = goal_line_collision or goal_hit
+                boundary_collision = boundary_collision or boundary_hit
+                goal_line_collision = goal_line_collision or goal_hit
 
-        ball_being_pushed = False
-        pushing_states = []
-        for idx, state in enumerate(bot_states):
-            geometry = get_capture_geometry(state["bot"].x, state["bot"].y, state["bot"].yaw)
-            ball_x, ball_y, ball_vx, ball_vy, bot_pushing = resolve_ball_capture_collisions(
-                ball_x,
-                ball_y,
-                ball_vx,
-                ball_vy,
-                geometry,
-                (state["bot"].velocity_x, state["bot"].velocity_y),
-            )
-            if bot_pushing:
-                pushing_states.append({"state": state, "geometry": geometry})
-                ball_being_pushed = True
+            ball_being_pushed = False
+            pushing_states = []
+            for idx, state in enumerate(bot_states):
+                geometry = get_capture_geometry(state["bot"].x, state["bot"].y, state["bot"].yaw)
+                ball_x, ball_y, ball_vx, ball_vy, bot_pushing = resolve_ball_capture_collisions(
+                    ball_x,
+                    ball_y,
+                    ball_vx,
+                    ball_vy,
+                    geometry,
+                    (state["bot"].velocity_x, state["bot"].velocity_y),
+                )
+                if bot_pushing:
+                    pushing_states.append({"state": state, "geometry": geometry})
+                    ball_being_pushed = True
 
-        # Determine if ball is pinched between bots (normals roughly opposing)
-        ball_pinched_between_bots = False
-        if len(pushing_states) >= 2:
-            normals = []
-            for entry in pushing_states:
-                bot = entry["state"]["bot"]
-                geometry = entry["geometry"]
-                # Approximate outward normal from bot to ball
-                diff_x = ball_x - bot.x
-                diff_y = ball_y - bot.y
-                norm = math.hypot(diff_x, diff_y)
-                if norm > EPSILON:
-                    normals.append((diff_x / norm, diff_y / norm))
-            for i in range(len(normals)):
-                for j in range(i + 1, len(normals)):
-                    dot = normals[i][0] * normals[j][0] + normals[i][1] * normals[j][1]
-                    if dot <= -0.3:  # roughly opposing
-                        ball_pinched_between_bots = True
+            # Determine if ball is pinched between bots (normals roughly opposing)
+            ball_pinched_between_bots = False
+            if len(pushing_states) >= 2:
+                normals = []
+                for entry in pushing_states:
+                    bot = entry["state"]["bot"]
+                    geometry = entry["geometry"]
+                    # Approximate outward normal from bot to ball
+                    diff_x = ball_x - bot.x
+                    diff_y = ball_y - bot.y
+                    norm = math.hypot(diff_x, diff_y)
+                    if norm > EPSILON:
+                        normals.append((diff_x / norm, diff_y / norm))
+                for i in range(len(normals)):
+                    for j in range(i + 1, len(normals)):
+                        dot = normals[i][0] * normals[j][0] + normals[i][1] * normals[j][1]
+                        if dot <= -0.3:  # roughly opposing
+                            ball_pinched_between_bots = True
+                            break
+                    if ball_pinched_between_bots:
                         break
-                if ball_pinched_between_bots:
+
+            ball_against_surface = (
+                boundary_collision
+                or goal_line_collision
+                or is_ball_touching_pitch_bounds(ball_x, ball_y)
+                or is_ball_touching_goal_lines(ball_x, ball_y, GOAL_LINES)
+            )
+
+            pushing_with_motion = any(
+                abs(entry["state"]["delta"][0]) > EPSILON or abs(entry["state"]["delta"][1]) > EPSILON
+                for entry in pushing_states
+            )
+
+            if (ball_against_surface or ball_pinched_between_bots) and pushing_states and pushing_with_motion:
+                for entry in pushing_states:
+                    bot_ref = entry["state"]["bot"]
+                    prev_x, prev_y = entry["state"]["prev"]
+                    bot_ref.x = prev_x
+                    bot_ref.y = prev_y
+                    entry["state"]["delta"] = (0.0, 0.0)
+                ball_vx = 0.0
+                ball_vy = 0.0
+                for bot in bots:
+                    geometry = get_capture_geometry(bot.x, bot.y, bot.yaw)
+                    ball_x, ball_y, ball_vx, ball_vy, _ = resolve_ball_capture_collisions(
+                        ball_x, ball_y, ball_vx, ball_vy, geometry, (0.0, 0.0)
+                    )
+                ball_being_pushed = False
+
+            if not ball_being_pushed:
+                ball_speed = math.hypot(ball_vx, ball_vy)
+                ball_deceleration = BALL_DECELERATION_SPEED * dt_seconds
+                if ball_speed > ball_deceleration:
+                    scale = (ball_speed - ball_deceleration) / ball_speed
+                    ball_vx *= scale
+                    ball_vy *= scale
+                else:
+                    ball_vx = 0.0
+                    ball_vy = 0.0
+
+            for bot in bots:
+                if is_ball_inside_bot_body(ball_x, ball_y, bot):
+                    diff_x = ball_x - bot.x
+                    diff_y = ball_y - bot.y
+                    norm = math.hypot(diff_x, diff_y)
+                    if norm < EPSILON:
+                        diff_x, diff_y, norm = 1.0, 0.0, 1.0
+                    normal_x = diff_x / norm
+                    normal_y = diff_y / norm
+                    push_dist = ROBOT_RADIUS + BALL_RADIUS + CAPTURE_LINE_HALF_WIDTH
+                    ball_x = bot.x + normal_x * push_dist
+                    ball_y = bot.y + normal_y * push_dist
+            for bot in bots:
+                if is_ball_inside_bot_body(ball_x, ball_y, bot):
+                    reset_point = find_nearest_free_black_point(ball_x, ball_y, bots)
+                    if reset_point is not None:
+                        ball_x, ball_y = reset_point
+                    ball_vx = 0.0
+                    ball_vy = 0.0
                     break
 
-        ball_against_surface = (
-            boundary_collision
-            or goal_line_collision
-            or is_ball_touching_pitch_bounds(ball_x, ball_y)
-            or is_ball_touching_goal_lines(ball_x, ball_y, GOAL_LINES)
-        )
-
-        pushing_with_motion = any(
-            abs(entry["state"]["delta"][0]) > EPSILON or abs(entry["state"]["delta"][1]) > EPSILON
-            for entry in pushing_states
-        )
-
-        if (ball_against_surface or ball_pinched_between_bots) and pushing_states and pushing_with_motion:
-            for entry in pushing_states:
-                bot_ref = entry["state"]["bot"]
-                prev_x, prev_y = entry["state"]["prev"]
-                bot_ref.x = prev_x
-                bot_ref.y = prev_y
-                entry["state"]["delta"] = (0.0, 0.0)
-            ball_vx = 0.0
-            ball_vy = 0.0
-            for bot in bots:
-                geometry = get_capture_geometry(bot.x, bot.y, bot.yaw)
-                ball_x, ball_y, ball_vx, ball_vy, _ = resolve_ball_capture_collisions(
-                    ball_x, ball_y, ball_vx, ball_vy, geometry, (0.0, 0.0)
-                )
-            ball_being_pushed = False
-
-        if not ball_being_pushed:
-            ball_speed = math.hypot(ball_vx, ball_vy)
-            ball_deceleration = BALL_DECELERATION_SPEED * dt_seconds
-            if ball_speed > ball_deceleration:
-                scale = (ball_speed - ball_deceleration) / ball_speed
-                ball_vx *= scale
-                ball_vy *= scale
-            else:
-                ball_vx = 0.0
-                ball_vy = 0.0
-
-        for bot in bots:
-            if is_ball_inside_bot_body(ball_x, ball_y, bot):
-                diff_x = ball_x - bot.x
-                diff_y = ball_y - bot.y
-                norm = math.hypot(diff_x, diff_y)
-                if norm < EPSILON:
-                    diff_x, diff_y, norm = 1.0, 0.0, 1.0
-                normal_x = diff_x / norm
-                normal_y = diff_y / norm
-                push_dist = ROBOT_RADIUS + BALL_RADIUS + CAPTURE_LINE_HALF_WIDTH
-                ball_x = bot.x + normal_x * push_dist
-                ball_y = bot.y + normal_y * push_dist
-        for bot in bots:
-            if is_ball_inside_bot_body(ball_x, ball_y, bot):
-                reset_point = find_nearest_free_black_point(ball_x, ball_y, bots)
-                if reset_point is not None:
-                    ball_x, ball_y = reset_point
-                ball_vx = 0.0
-                ball_vy = 0.0
+            # While the dribbler is on and the ball was in the capture zone, keep it fixed there.
+            for state in bot_states:
+                if not state["dribbler"] or not state["ball_captured"]:
+                    continue
+                bot = state["bot"]
+                ball_x, ball_y = get_dribbled_ball_position(bot)
+                ball_vx = bot.velocity_x
+                ball_vy = bot.velocity_y
                 break
-
-        # While the dribbler is on and the ball was in the capture zone, keep it fixed there.
-        for state in bot_states:
-            if not state["dribbler"] or not state["ball_captured"]:
-                continue
-            bot = state["bot"]
-            ball_x, ball_y = get_dribbled_ball_position(bot)
-            ball_vx = bot.velocity_x
-            ball_vy = bot.velocity_y
-            break
 
         frame_pitch = build_frame(ball_x, ball_y, bots)
         blit_frame(frame_pitch)
