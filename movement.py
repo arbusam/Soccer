@@ -588,7 +588,7 @@ def global_velocity_to_body_mm_s(global_vx, global_vy, yaw_deg):
     """Convert a global-frame velocity into body-frame (vx forward, vy left)."""
     yaw_rad = math.radians(yaw_deg)
     body_vx = global_vx * math.cos(yaw_rad) + global_vy * math.sin(yaw_rad)
-    body_vy = -global_vx * math.sin(yaw_rad) + global_vy * math.cos(yaw_rad)
+    body_vy = global_vx * math.sin(yaw_rad) - global_vy * math.cos(yaw_rad)
     return body_vx, body_vy
 
 

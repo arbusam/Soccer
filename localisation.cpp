@@ -664,8 +664,8 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
         float yaw_rad = particle.yaw_deg * (float)(M_PI / 180.0);
         float cos_yaw = std::cos(yaw_rad);
         float sin_yaw = std::sin(yaw_rad);
-        float dx = (vx_mm_s * cos_yaw - vy_mm_s * sin_yaw) * dt_s;
-        float dy = (vx_mm_s * sin_yaw + vy_mm_s * cos_yaw) * dt_s;
+        float dx = (vx_mm_s * cos_yaw + vy_mm_s * sin_yaw) * dt_s;
+        float dy = (vx_mm_s * sin_yaw - vy_mm_s * cos_yaw) * dt_s;
 
         particle.x = std::min(std::max(
             particle.x + dx + rand_normal(TRANS_NOISE_MM * noise_dt_scale),

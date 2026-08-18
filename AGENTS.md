@@ -33,6 +33,10 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 - Yaw correction uses `yaw_error = wrap_angle_deg(rotation - yaw)`, so positive error means "turn clockwise to match the target heading". The requested yaw RPM is limited to `max_yaw_rpm`, then the translation RPMs are scaled down if needed to leave headroom for that yaw correction while preserving the requested movement direction.
 - With diameter 50 mm: `mmps_to_rpm ≈ 0.382`. Example: speed 500, `direction = yaw = 0` gives `local_direction = 45°`, which corresponds to local forward in the current wheel basis.
 
+**Problem:** QDR wheel odometry had the correct forward speed (`vx`) but the opposite sign on `vy`.
+
+**Solution:** This project's yaw is clockwise-positive and field `+y` is right (`90°`). Body `vy` is defined as **left**, so convert global velocity with `body_vy = gx * sin(yaw) - gy * cos(yaw)` (the left axis is `(sin yaw, -cos yaw)`). The ROS/CCW formula `−gx sin + gy cos` is the **right** axis here and will flip `vy`. `loc_predict_odometry` uses the same left-positive body frame; rebuild the C++ extension after changing it.
+
 ## LIDAR localization (`lidar_module.cpp` + `localisation.cpp`)
 
 **Solution — 3-DOF Monte Carlo localization (MCL) in C++:**
@@ -41,7 +45,7 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 - Scan thread keeps explicit no-return bearings (`hit=false`) as well as valid hits. MCL bins them into 2° angular bins before scoring.
 - Likelihood is incidence-aware: ray casting returns range + wall normal; near-normal walls are expected to return, grazing walls (`|cos θ|` ≲ 0.25) are expected to miss. Hits use a Gaussian+outlier mixture with incidence-scaled σ; misses get a soft expected/unexpected miss probability instead of free-space penalties.
 - Confidence combines inlier quality, particle spread, and visible wall-normal diversity (one wall alone cannot claim a strong along-wall pose). Resample only when ESS drops below 50% of the particle count so partial scans keep diversity.
-- `predict_odometry(vx, vy, omega, dt)` propagates particles between scans (call from Python each control loop). Pass IMU gyro z as `omega_deg_s` (clockwise positive); leave `vx`/`vy` at 0 until wheel odometry exists.
+- `predict_odometry(vx, vy, omega, dt)` propagates particles between scans (call from Python each control loop). Pass IMU gyro z as `omega_deg_s` (clockwise positive). `vx`/`vy` are body-frame mm/s with **vx = forward** and **vy = left**.
 - Estimation runs in a background thread; Python reads the latest pose.
 - Fast rotation gate: when `|omega|` exceeds 50 deg/s, MCL skips LIDAR scan updates and dead-reckons via predict only. Scan updates resume after `|omega|` stays below 25 deg/s for 150 ms. `lidar.scan_updates_enabled()` reports whether scans are currently accepted.
 
