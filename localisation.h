@@ -41,7 +41,8 @@ void loc_set_imu_yaw(float yaw_deg);
 void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s);
 
 void loc_update_scan(const LocScanPoint* points, int count,
-                     float min_range_mm, float max_range_mm, int min_quality);
+                     float min_range_mm, float max_range_mm, int min_quality,
+                     double scan_time_s = -1.0);
 
 bool loc_scan_updates_allowed();
 bool loc_is_ready();

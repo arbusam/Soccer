@@ -9,6 +9,7 @@
 #include <pybind11/stl.h>
 
 #include <cstdio>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <atomic>
@@ -41,6 +42,7 @@ struct ScanPoint {
 };
 
 static std::vector<ScanPoint> g_latest_scan;
+static double g_latest_scan_time_s = 0.0;
 static std::atomic<bool> g_scan_ready{false};
 static std::atomic<std::uint64_t> g_scan_generation{0};
 
@@ -50,6 +52,11 @@ static std::thread g_loc_thread;
 static constexpr float MIN_RANGE_MM = 80.0f;
 static constexpr float MAX_RANGE_MM = 6000.0f;
 static constexpr int MIN_BEAM_QUALITY = 5;
+
+static double monotonic_time_s() {
+    return std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 static void release_driver_resources() {
     if (g_driver) {
@@ -67,7 +74,9 @@ static void scan_thread_func() {
 
     while (g_running.load()) {
         size_t count = _countof(nodes);
+        const double scan_start_time_s = monotonic_time_s();
         sl_result op_result = g_driver->grabScanDataHq(nodes, count, 0);
+        const double scan_end_time_s = monotonic_time_s();
 
         if (SL_IS_OK(op_result)) {
             g_driver->ascendScanData(nodes, count);
@@ -96,6 +105,8 @@ static void scan_thread_func() {
             {
                 std::lock_guard<std::mutex> lock(g_data_mutex);
                 g_latest_scan = std::move(new_scan);
+                g_latest_scan_time_s =
+                    0.5 * (scan_start_time_s + scan_end_time_s);
                 g_scan_ready.store(true);
                 g_scan_generation.fetch_add(1);
             }
@@ -120,9 +131,11 @@ static void localization_thread_func() {
         }
 
         std::vector<ScanPoint> scan_copy;
+        double scan_time_s = 0.0;
         {
             std::lock_guard<std::mutex> lock(g_data_mutex);
             scan_copy = g_latest_scan;
+            scan_time_s = g_latest_scan_time_s;
             generation = g_scan_generation.load();
         }
 
@@ -141,7 +154,8 @@ static void localization_thread_func() {
         }
 
         loc_update_scan(loc_scan.data(), (int)loc_scan.size(),
-                        MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY);
+                        MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY,
+                        scan_time_s);
         last_processed_generation = generation;
 
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -226,6 +240,7 @@ static void shutdown_lidar() {
     {
         std::lock_guard<std::mutex> lock(g_data_mutex);
         g_latest_scan.clear();
+        g_latest_scan_time_s = 0.0;
         g_scan_ready.store(false);
     }
 

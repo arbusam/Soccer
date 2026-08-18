@@ -1,7 +1,9 @@
 #include "localisation.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <deque>
 #include <mutex>
 #include <random>
 #include <vector>
@@ -33,8 +35,17 @@ struct Observation {
     bool hit;
 };
 
+struct OdometryStep {
+    double start_time_s;
+    double end_time_s;
+    float vx_mm_s;
+    float vy_mm_s;
+    float omega_deg_s;
+};
+
 static std::vector<Segment> g_static_segments;
 static std::vector<Particle> g_particles;
+static std::deque<OdometryStep> g_odometry_history;
 static std::mutex g_loc_mutex;
 static std::mt19937 g_rng(42);
 
@@ -68,6 +79,50 @@ static constexpr float ESS_RESAMPLE_FRACTION = 0.5f;
 static constexpr float OMEGA_PAUSE_DEG_S = 50.0f;
 static constexpr float OMEGA_RESUME_DEG_S = 25.0f;
 static constexpr float OMEGA_SETTLE_S = 0.15f;
+static constexpr double ODOMETRY_HISTORY_S = 2.0;
+
+static float wrap_angle_deg(float angle);
+static float rand_normal(float stddev);
+
+static double monotonic_time_s() {
+    return std::chrono::duration<double>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+static void propagate_particle(Particle& particle, float vx_mm_s, float vy_mm_s,
+                               float omega_deg_s, float dt_s, bool add_noise) {
+    float yaw_rad = particle.yaw_deg * (float)(M_PI / 180.0);
+    float cos_yaw = std::cos(yaw_rad);
+    float sin_yaw = std::sin(yaw_rad);
+    float dx = (vx_mm_s * cos_yaw + vy_mm_s * sin_yaw) * dt_s;
+    float dy = (vx_mm_s * sin_yaw - vy_mm_s * cos_yaw) * dt_s;
+    float noise_dt_scale = std::sqrt(std::max(dt_s, 0.0f));
+
+    particle.x = std::min(std::max(
+        particle.x + dx
+        + (add_noise ? rand_normal(TRANS_NOISE_MM * noise_dt_scale) : 0.0f),
+        0.0f), g_pitch_x);
+    particle.y = std::min(std::max(
+        particle.y + dy
+        + (add_noise ? rand_normal(TRANS_NOISE_MM * noise_dt_scale) : 0.0f),
+        0.0f), g_pitch_y);
+    particle.yaw_deg = wrap_angle_deg(
+        particle.yaw_deg + omega_deg_s * dt_s
+        + (add_noise ? rand_normal(YAW_NOISE_DEG * noise_dt_scale) : 0.0f));
+}
+
+static void rewind_particle(Particle& particle, const OdometryStep& step,
+                            float dt_s) {
+    float start_yaw = wrap_angle_deg(particle.yaw_deg - step.omega_deg_s * dt_s);
+    float yaw_rad = start_yaw * (float)(M_PI / 180.0);
+    float dx = (step.vx_mm_s * std::cos(yaw_rad)
+                + step.vy_mm_s * std::sin(yaw_rad)) * dt_s;
+    float dy = (step.vx_mm_s * std::sin(yaw_rad)
+                - step.vy_mm_s * std::cos(yaw_rad)) * dt_s;
+    particle.x = std::min(std::max(particle.x - dx, 0.0f), g_pitch_x);
+    particle.y = std::min(std::max(particle.y - dy, 0.0f), g_pitch_y);
+    particle.yaw_deg = start_yaw;
+}
 
 // Incidence model: |cos| below this is treated as fully grazing / expected miss.
 static constexpr float GRAZING_COS = 0.25f;       // ~75.5° from normal
@@ -615,6 +670,7 @@ void loc_set_imu_yaw(float yaw_deg) {
 void loc_start() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     init_particles_uniform();
+    g_odometry_history.clear();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_last_scan_correction = {};
     g_ready = false;
@@ -628,6 +684,7 @@ void loc_stop() {
     g_ready = false;
     g_imu_yaw_valid = false;
     g_particles.clear();
+    g_odometry_history.clear();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_last_scan_correction = {};
     reset_rotation_gate();
@@ -639,6 +696,7 @@ void loc_reset() {
         return;
     }
     init_particles_uniform();
+    g_odometry_history.clear();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_last_scan_correction = {};
     g_ready = false;
@@ -659,23 +717,18 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
 
     // Process noise is specified per sqrt(second), so diffusion remains
     // independent of how often predict_odometry() is called.
-    float noise_dt_scale = std::sqrt(dt_s);
     for (auto& particle : g_particles) {
-        float yaw_rad = particle.yaw_deg * (float)(M_PI / 180.0);
-        float cos_yaw = std::cos(yaw_rad);
-        float sin_yaw = std::sin(yaw_rad);
-        float dx = (vx_mm_s * cos_yaw + vy_mm_s * sin_yaw) * dt_s;
-        float dy = (vx_mm_s * sin_yaw - vy_mm_s * cos_yaw) * dt_s;
+        propagate_particle(particle, vx_mm_s, vy_mm_s, omega_deg_s, dt_s, true);
+    }
 
-        particle.x = std::min(std::max(
-            particle.x + dx + rand_normal(TRANS_NOISE_MM * noise_dt_scale),
-            0.0f), g_pitch_x);
-        particle.y = std::min(std::max(
-            particle.y + dy + rand_normal(TRANS_NOISE_MM * noise_dt_scale),
-            0.0f), g_pitch_y);
-        particle.yaw_deg = wrap_angle_deg(
-            particle.yaw_deg + omega_deg_s * dt_s
-            + rand_normal(YAW_NOISE_DEG * noise_dt_scale));
+    const double end_time_s = monotonic_time_s();
+    g_odometry_history.push_back({
+        end_time_s - dt_s, end_time_s, vx_mm_s, vy_mm_s, omega_deg_s
+    });
+    while (!g_odometry_history.empty()
+           && g_odometry_history.front().end_time_s
+                  < end_time_s - ODOMETRY_HISTORY_S) {
+        g_odometry_history.pop_front();
     }
 
     if (g_ready) {
@@ -687,7 +740,8 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
 }
 
 void loc_update_scan(const LocScanPoint* points, int count,
-                     float min_range_mm, float max_range_mm, int min_quality) {
+                     float min_range_mm, float max_range_mm, int min_quality,
+                     double scan_time_s) {
     {
         std::lock_guard<std::mutex> lock(g_loc_mutex);
         if (g_scan_updates_paused || !g_started || g_particles.empty()) {
@@ -713,9 +767,28 @@ void loc_update_scan(const LocScanPoint* points, int count,
         return;
     }
 
-    // Snapshot the odometry-interpolated pose just before LIDAR reweights particles.
+    // Score the scan at its acquisition time, not at processing time. A completed
+    // rotating scan is already old by the time this thread receives it.
     const LocPose predicted_pose = g_pose;
     const bool had_prior_pose = g_ready && g_pose.ok;
+    const bool compensate_delay =
+        scan_time_s > 0.0 && !g_odometry_history.empty();
+
+    if (compensate_delay) {
+        for (auto step_it = g_odometry_history.rbegin();
+             step_it != g_odometry_history.rend(); ++step_it) {
+            if (step_it->end_time_s <= scan_time_s) {
+                break;
+            }
+            const double overlap_start =
+                std::max(step_it->start_time_s, scan_time_s);
+            const float replay_dt =
+                (float)(step_it->end_time_s - overlap_start);
+            for (auto& particle : g_particles) {
+                rewind_particle(particle, *step_it, replay_dt);
+            }
+        }
+    }
 
     // Store log-weights first, then log-sum-exp so relative weights stay
     // usable even when absolute log-likelihoods underflow float exp().
@@ -755,29 +828,50 @@ void loc_update_scan(const LocScanPoint* points, int count,
         particle.weight /= weight_sum;
     }
 
-    g_pose = estimate_pose_from_particles(obs.data(), n);
-    if (g_pose.ok) {
+    LocPose scan_pose = estimate_pose_from_particles(obs.data(), n);
+    if (scan_pose.ok) {
         g_ready = true;
-        if (had_prior_pose) {
-            float dx = g_pose.x - predicted_pose.x;
-            float dy = g_pose.y - predicted_pose.y;
-            g_last_scan_correction.sequence += 1;
-            g_last_scan_correction.predicted_x = predicted_pose.x;
-            g_last_scan_correction.predicted_y = predicted_pose.y;
-            g_last_scan_correction.predicted_yaw_deg = predicted_pose.yaw_deg;
-            g_last_scan_correction.corrected_x = g_pose.x;
-            g_last_scan_correction.corrected_y = g_pose.y;
-            g_last_scan_correction.corrected_yaw_deg = g_pose.yaw_deg;
-            g_last_scan_correction.error_mm = std::sqrt(dx * dx + dy * dy);
-            g_last_scan_correction.yaw_error_deg =
-                wrap_angle_deg(g_pose.yaw_deg - predicted_pose.yaw_deg);
-            g_last_scan_correction.valid = true;
-        }
     }
 
     // Preserve particle diversity on under-constrained (partial) scans.
     if (effective_sample_size() < ESS_RESAMPLE_FRACTION * PARTICLE_COUNT) {
         resample_particles();
+    }
+
+    // Bring the scan-corrected particles back to the present without adding
+    // process noise a second time.
+    if (compensate_delay) {
+        for (const auto& step : g_odometry_history) {
+            if (step.end_time_s <= scan_time_s) {
+                continue;
+            }
+            const double overlap_start = std::max(step.start_time_s, scan_time_s);
+            const float replay_dt = (float)(step.end_time_s - overlap_start);
+            for (auto& particle : g_particles) {
+                propagate_particle(
+                    particle, step.vx_mm_s, step.vy_mm_s,
+                    step.omega_deg_s, replay_dt, false);
+            }
+        }
+    }
+
+    g_pose = estimate_pose_from_particles(nullptr, 0);
+    g_pose.confidence = scan_pose.confidence;
+    g_pose.ok = scan_pose.ok;
+    if (g_pose.ok && had_prior_pose) {
+        float dx = g_pose.x - predicted_pose.x;
+        float dy = g_pose.y - predicted_pose.y;
+        g_last_scan_correction.sequence += 1;
+        g_last_scan_correction.predicted_x = predicted_pose.x;
+        g_last_scan_correction.predicted_y = predicted_pose.y;
+        g_last_scan_correction.predicted_yaw_deg = predicted_pose.yaw_deg;
+        g_last_scan_correction.corrected_x = g_pose.x;
+        g_last_scan_correction.corrected_y = g_pose.y;
+        g_last_scan_correction.corrected_yaw_deg = g_pose.yaw_deg;
+        g_last_scan_correction.error_mm = std::sqrt(dx * dx + dy * dy);
+        g_last_scan_correction.yaw_error_deg =
+            wrap_angle_deg(g_pose.yaw_deg - predicted_pose.yaw_deg);
+        g_last_scan_correction.valid = true;
     }
 }
 
