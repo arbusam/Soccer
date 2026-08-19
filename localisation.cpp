@@ -60,11 +60,17 @@ static float g_last_omega_deg_s = 0.0f;
 static float g_omega_below_resume_s = 0.0f;
 static float g_imu_yaw_deg = 0.0f;
 static bool g_imu_yaw_valid = false;
+static bool g_scan_quality_baseline_valid = false;
+static float g_scan_quality_baseline = 0.0f;
+static float g_last_scan_quality = 0.0f;
+static int g_bad_scan_count = 0;
+static float g_recovery_fraction = 0.0f;
 
 static constexpr float COORD_SIGMA = 30.0f;
 static constexpr float COORD_EPS = 1e-9f;
 static constexpr float INLIER_THRESH = 80.0f;
-static constexpr float CONF_THRESHOLD = 0.35f;
+static constexpr float CONF_ACQUIRE_THRESHOLD = 0.5f;
+static constexpr float CONF_TRACK_THRESHOLD = 0.35f;
 static constexpr int PARTICLE_COUNT = 1000;
 static constexpr int MIN_OBSERVATION_COUNT = 30;
 static constexpr int MIN_HIT_COUNT = 8;
@@ -72,9 +78,20 @@ static constexpr int ANGLE_BIN_COUNT = 180;  // 2° bins over 360°
 static constexpr float ANGLE_BIN_DEG = 360.0f / ANGLE_BIN_COUNT;
 static constexpr float TRANS_NOISE_MM = 8.0f;
 static constexpr float YAW_NOISE_DEG = 2.0f;
-static constexpr float YAW_PRIOR_SIGMA_DEG = 45.0f;
-static constexpr float RECOVERY_FRACTION = 0.05f;
-static constexpr float RECOVERY_WEIGHT_THRESHOLD = 1e-12f;
+// Absolute IMU yaw is accurate enough to strongly constrain MCL heading.
+// Keep initialization especially tight so particles search position rather
+// than wasting samples across headings that the IMU has already ruled out.
+static constexpr float YAW_PRIOR_SIGMA_DEG = 8.0f;
+static constexpr float YAW_INIT_SIGMA_DEG = 5.0f;
+static constexpr float EXPLORATION_FRACTION = 0.02f;
+static constexpr float RECOVERY_FRACTION_LOW = 0.20f;
+static constexpr float RECOVERY_FRACTION_HIGH = 0.50f;
+static constexpr int RECOVERY_LOW_BAD_SCANS = 2;
+static constexpr int RECOVERY_HIGH_BAD_SCANS = 5;
+static constexpr int RECOVERY_RESET_BAD_SCANS = 10;
+static constexpr float RECOVERY_QUALITY_DROP = 1.5f;
+static constexpr float QUALITY_BASELINE_RISE_ALPHA = 0.20f;
+static constexpr float QUALITY_BASELINE_FALL_ALPHA = 0.002f;
 static constexpr float ESS_RESAMPLE_FRACTION = 0.5f;
 static constexpr float OMEGA_PAUSE_DEG_S = 50.0f;
 static constexpr float OMEGA_RESUME_DEG_S = 25.0f;
@@ -434,7 +451,7 @@ static float compute_confidence(const PoseStats& s, const ParticleSpread& spread
 // Sample init/recovery yaw: IMU-centered when available, else full circle.
 static float rand_init_yaw_deg() {
     if (g_imu_yaw_valid) {
-        return wrap_angle_deg(g_imu_yaw_deg + rand_normal(YAW_PRIOR_SIGMA_DEG));
+        return wrap_angle_deg(g_imu_yaw_deg + rand_normal(YAW_INIT_SIGMA_DEG));
     }
     return rand_uniform(-180.0f, 180.0f);
 }
@@ -452,11 +469,55 @@ static void init_particles_uniform() {
 
 static void inject_random_particles(float fraction) {
     int count = std::max(1, (int)std::round(fraction * PARTICLE_COUNT));
+    const float weight = 1.0f / PARTICLE_COUNT;
     for (int i = 0; i < count; i++) {
         int idx = (int)rand_uniform(0.0f, (float)(PARTICLE_COUNT - 1));
         g_particles[idx].x = rand_uniform(0.0f, g_pitch_x);
         g_particles[idx].y = rand_uniform(0.0f, g_pitch_y);
         g_particles[idx].yaw_deg = rand_init_yaw_deg();
+        g_particles[idx].weight = weight;
+    }
+}
+
+static void reset_recovery_state() {
+    g_scan_quality_baseline_valid = false;
+    g_scan_quality_baseline = 0.0f;
+    g_last_scan_quality = 0.0f;
+    g_bad_scan_count = 0;
+    g_recovery_fraction = 0.0f;
+}
+
+static void update_recovery_state(float scan_quality) {
+    g_last_scan_quality = scan_quality;
+    if (!g_scan_quality_baseline_valid) {
+        g_scan_quality_baseline = scan_quality;
+        g_scan_quality_baseline_valid = true;
+        g_bad_scan_count = 0;
+        g_recovery_fraction = 0.0f;
+        return;
+    }
+
+    const bool poor_match =
+        scan_quality < g_scan_quality_baseline - RECOVERY_QUALITY_DROP;
+    if (poor_match) {
+        g_bad_scan_count++;
+    } else {
+        g_bad_scan_count = 0;
+    }
+
+    const float baseline_alpha =
+        scan_quality >= g_scan_quality_baseline
+            ? QUALITY_BASELINE_RISE_ALPHA
+            : QUALITY_BASELINE_FALL_ALPHA;
+    g_scan_quality_baseline +=
+        baseline_alpha * (scan_quality - g_scan_quality_baseline);
+
+    if (g_bad_scan_count >= RECOVERY_HIGH_BAD_SCANS) {
+        g_recovery_fraction = RECOVERY_FRACTION_HIGH;
+    } else if (g_bad_scan_count >= RECOVERY_LOW_BAD_SCANS) {
+        g_recovery_fraction = RECOVERY_FRACTION_LOW;
+    } else {
+        g_recovery_fraction = 0.0f;
     }
 }
 
@@ -525,7 +586,13 @@ static LocPose estimate_pose_from_particles(const Observation* obs, int n) {
                                         obs, n, g_pitch_x, g_pitch_y);
         ParticleSpread spread = compute_particle_spread();
         pose.confidence = compute_confidence(stats, spread);
-        pose.ok = pose.confidence >= CONF_THRESHOLD;
+        // Require strong evidence for the first global fix, but tolerate a
+        // short confidence dip once tracking is established. Without this
+        // hysteresis, callers stop the robot and appear to restart global
+        // localization whenever one partial scan falls just below threshold.
+        const float threshold =
+            g_ready ? CONF_TRACK_THRESHOLD : CONF_ACQUIRE_THRESHOLD;
+        pose.ok = pose.confidence >= threshold;
     } else {
         pose.confidence = g_pose.confidence;
         pose.ok = g_pose.ok;
@@ -671,6 +738,7 @@ void loc_start() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     init_particles_uniform();
     g_odometry_history.clear();
+    reset_recovery_state();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_last_scan_correction = {};
     g_ready = false;
@@ -685,6 +753,7 @@ void loc_stop() {
     g_imu_yaw_valid = false;
     g_particles.clear();
     g_odometry_history.clear();
+    reset_recovery_state();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_last_scan_correction = {};
     reset_rotation_gate();
@@ -697,6 +766,7 @@ void loc_reset() {
     }
     init_particles_uniform();
     g_odometry_history.clear();
+    reset_recovery_state();
     g_pose = {0.0f, 0.0f, 0.0f, 0.0f, false};
     g_last_scan_correction = {};
     g_ready = false;
@@ -790,6 +860,20 @@ void loc_update_scan(const LocScanPoint* points, int count,
         }
     }
 
+    // Keep a small global exploration set even while tracking. If several
+    // scans fit every current particle substantially worse than the recent
+    // healthy baseline, increase this set aggressively. This lets LIDAR
+    // recover from slip or an unreported move without disabling odometry
+    // prediction between scans.
+    if (g_bad_scan_count >= RECOVERY_RESET_BAD_SCANS) {
+        init_particles_uniform();
+        g_ready = false;
+        reset_recovery_state();
+    } else {
+        inject_random_particles(std::max(
+            EXPLORATION_FRACTION, g_recovery_fraction));
+    }
+
     // Store log-weights first, then log-sum-exp so relative weights stay
     // usable even when absolute log-likelihoods underflow float exp().
     float max_log = -1e30f;
@@ -807,21 +891,18 @@ void loc_update_scan(const LocScanPoint* points, int count,
         }
     }
 
+    float observation_weight_sum = 0.0f;
+    for (const auto& observation : obs) {
+        observation_weight_sum += observation.weight;
+    }
+    const float scan_quality =
+        max_log / std::max(observation_weight_sum, 1e-6f);
+    update_recovery_state(scan_quality);
+
     float weight_sum = 0.0f;
     for (auto& particle : g_particles) {
         particle.weight = std::exp(particle.weight - max_log);
         weight_sum += particle.weight;
-    }
-
-    if (weight_sum < RECOVERY_WEIGHT_THRESHOLD) {
-        init_particles_uniform();
-        weight_sum = 1.0f;
-    } else if (weight_sum / PARTICLE_COUNT < RECOVERY_WEIGHT_THRESHOLD) {
-        inject_random_particles(RECOVERY_FRACTION);
-        weight_sum = 0.0f;
-        for (const auto& particle : g_particles) {
-            weight_sum += particle.weight;
-        }
     }
 
     for (auto& particle : g_particles) {
@@ -893,4 +974,27 @@ LocPose loc_get_pose() {
 LocScanCorrection loc_get_last_scan_correction() {
     std::lock_guard<std::mutex> lock(g_loc_mutex);
     return g_last_scan_correction;
+}
+
+LocRecoveryStatus loc_get_recovery_status() {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    return {
+        g_last_scan_quality,
+        g_scan_quality_baseline,
+        g_bad_scan_count,
+        std::max(EXPLORATION_FRACTION, g_recovery_fraction),
+        g_scan_quality_baseline_valid
+    };
+}
+
+std::vector<LocParticle> loc_get_particles() {
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    std::vector<LocParticle> result;
+    result.reserve(g_particles.size());
+    for (const auto& particle : g_particles) {
+        result.push_back({
+            particle.x, particle.y, particle.yaw_deg, particle.weight
+        });
+    }
+    return result;
 }

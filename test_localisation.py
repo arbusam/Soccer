@@ -151,9 +151,11 @@ def print_scan_correction_if_new(lidar_module, last_sequence):
     if not valid or sequence == last_sequence:
         return last_sequence
 
+    _x, _y, _yaw, confidence = lidar_module.get_pose()
+    confidence_s = "n/a" if confidence is None else f"{confidence:.2f}"
     print(
         f"scan#{sequence} odom_error={error_mm:.1f} mm "
-        f"yaw_error={yaw_error_deg:+.1f} deg | "
+        f"yaw_error={yaw_error_deg:+.1f} deg confidence={confidence_s} | "
         f"odom=({pred_x:.1f}, {pred_y:.1f}, {pred_yaw:.1f}) -> "
         f"lidar=({corr_x:.1f}, {corr_y:.1f}, {corr_yaw:.1f})"
     )

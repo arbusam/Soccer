@@ -453,6 +453,16 @@ static py::tuple get_last_scan_correction_py() {
         true);
 }
 
+static py::tuple get_recovery_status_py() {
+    LocRecoveryStatus status = loc_get_recovery_status();
+    return py::make_tuple(
+        status.scan_quality,
+        status.quality_baseline,
+        status.bad_scan_count,
+        status.global_particle_fraction,
+        status.baseline_valid);
+}
+
 // Offline / synthetic MCL helpers (no hardware required).
 static void test_mcl_start(float pitch_x, float pitch_y) {
     if (g_loc_running.load()) {
@@ -574,6 +584,10 @@ PYBIND11_MODULE(lidar, m) {
           "error_mm, yaw_error_deg, valid) for the last LIDAR scan update. "
           "error_mm is how far the odometry-interpolated pose was from the "
           "LIDAR-corrected pose.");
+
+    m.def("get_recovery_status", &get_recovery_status_py,
+          "Get (scan_quality, baseline, bad_scans, global_fraction, valid) "
+          "for MCL recovery diagnostics.");
 
     m.def("test_mcl_start", &test_mcl_start,
           py::arg("pitch_x"), py::arg("pitch_y"),
