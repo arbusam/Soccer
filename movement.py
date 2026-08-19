@@ -522,7 +522,7 @@ def _calculate_drive_rpms(
         translation_rpms = [rpm * scale for rpm in translation_rpms]
 
     return tuple(
-        _clamp(rpm - yaw_correction_rpm, -max_rpm, max_rpm)
+        _clamp(rpm + yaw_correction_rpm, -max_rpm, max_rpm)
         for rpm in translation_rpms
     )
 

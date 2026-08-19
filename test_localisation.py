@@ -134,6 +134,9 @@ def print_localisation_status(lidar_module):
 def print_scan_correction_if_new(lidar_module, last_sequence):
     """If a new LIDAR scan update landed, print odometry vs LIDAR correction error.
 
+    When confidence drops below the tracking threshold, MCL stops recording a
+    correction, so also print a one-line collapse notice once per scan.
+
     Returns the latest correction sequence number.
     """
     (
@@ -148,14 +151,34 @@ def print_scan_correction_if_new(lidar_module, last_sequence):
         yaw_error_deg,
         valid,
     ) = lidar_module.get_last_scan_correction()
+    _x, _y, _yaw, confidence, ok = lidar_module.get_coordinates_info()
+    generation = lidar_module.get_scan_generation()
+    last_collapse_generation = getattr(
+        print_scan_correction_if_new, "_collapse_generation", 0
+    )
+
+    if not ok and generation != last_collapse_generation:
+        recovery = lidar_module.get_recovery_status()
+        scan_quality, baseline, bad_scans, global_fraction, _valid = recovery
+        confidence_s = "n/a" if confidence is None else f"{confidence:.2f}"
+        print(
+            f"scan#{generation} confidence collapsed "
+            f"confidence={confidence_s} quality={scan_quality:.2f}/{baseline:.2f} "
+            f"bad_scans={bad_scans} global={100.0 * global_fraction:.0f}%"
+        )
+        print_scan_correction_if_new._collapse_generation = generation
+
     if not valid or sequence == last_sequence:
         return last_sequence
 
-    _x, _y, _yaw, confidence = lidar_module.get_pose()
+    recovery = lidar_module.get_recovery_status()
+    scan_quality, baseline, bad_scans, global_fraction, _valid = recovery
     confidence_s = "n/a" if confidence is None else f"{confidence:.2f}"
     print(
         f"scan#{sequence} odom_error={error_mm:.1f} mm "
-        f"yaw_error={yaw_error_deg:+.1f} deg confidence={confidence_s} | "
+        f"yaw_error={yaw_error_deg:+.1f} deg confidence={confidence_s} "
+        f"quality={scan_quality:.2f}/{baseline:.2f} "
+        f"bad_scans={bad_scans} global={100.0 * global_fraction:.0f}% | "
         f"odom=({pred_x:.1f}, {pred_y:.1f}, {pred_yaw:.1f}) -> "
         f"lidar=({corr_x:.1f}, {corr_y:.1f}, {corr_yaw:.1f})"
     )
