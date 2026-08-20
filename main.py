@@ -27,30 +27,32 @@ from movement import (
 )
 from recording_session import RecordingSession
 
-LOG_FPS = 30
-FPS_REPORT_INTERVAL_S = 1.0
+LOG_FPS = 30 # How often the bot state is written to the log file
+FPS_REPORT_INTERVAL = 1.0 # seconds, how often the FPS is printed to the console when --fps is used
 PEER_PORT = 5005
-ENABLE_COMMUNICATION = False
-USE_PAUSE = False
+ENABLE_COMMUNICATION = False # Use communication.py to communicate between bots.
+USE_PAUSE = False # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 
-WHEEL_DIAMETER = 50 # mm, used to convert mm/s to RPM
+WHEEL_DIAMETER = 50 # mm, used to convert between motor RPM and robot mm/s
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
 
-LIDAR_PORT = "/dev/ttyUSB0"
+LIDAR_PORT = "/dev/ttyUSB0" # LIDAR port. Usually "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
-MAX_MOTOR_RPM = 1000  # Max translation ~2618 mm/s at 50 mm wheels; driver hardware max ~1984 RPM (~5194 mm/s)
+MAX_MOTOR_RPM = 1000  # This converts to a maximum linear translation of ~2618 mm/s with 50 mm wheels; driver hardware max is ~1984 RPM (~5194 mm/s)
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
-CAMERA_PORT = 8000
+CAMERA_PORT = 8000 # Port used for streaming the camera feed for debugging.
 CAMERA_RESOLUTION = (640, 640)
 CAMERA_FPS = 90
 
-BALL_TIMEOUT = 1 # seconds, time to extrapolate the ball position from velocity without assuming 'lost' state.
+BALL_TIMEOUT = 0.5 # seconds, maximum time for which the ball position can be extrapolated from velocity without assuming 'lost' state.
 
-CONFIG_PATH = Path(__file__).resolve().parent / "config.txt"
+CONFIG_PATH = Path(__file__).resolve().parent / "config.txt" # Path to the config file (see example_config.txt)
 
-
+# Enum for bot mode. Depending on game state, the bot can change between these modes.
+# Each bot includes a mode switch, which can set the default mode to two of these, depending on the switch's position.
+# These default modes can be set in the config file.
 class BotMode(Enum):
     DEFENCE = 1
     GOALIE = 2
@@ -58,11 +60,17 @@ class BotMode(Enum):
 
 
 def load_config(path: Path = CONFIG_PATH) -> tuple[list[int], BotMode, BotMode]:
+    # Load all settings from the config file
+
+    # If the config file is not found, raise an error
     if not path.is_file():
         raise FileNotFoundError(
             f"Missing {path.name}. Copy example_config.txt to config.txt and edit as needed."
         )
 
+    # Parse the config file into a dictionary following these rules:
+    # - Lines starting with # are ignored as comments
+    # - Any key-value pair must be in the format "key=value"
     values: dict[str, str] = {}
     with path.open(encoding="utf-8") as config_file:
         for raw_line in config_file:
@@ -72,6 +80,8 @@ def load_config(path: Path = CONFIG_PATH) -> tuple[list[int], BotMode, BotMode]:
             key, value = line.split("=", 1)
             values[key.strip().lower()] = value.strip()
 
+    # If included in the config file, parse the motor I2C addresses as a comma-separated list of integers
+    # Motor I2C addresses follow the order: back left, back right, front right, front left, dribbler (optional)
     try:
         i2c_addresses = [int(part.strip()) for part in values["i2c_addresses"].split(",")]
     except (KeyError, ValueError) as exc:
@@ -79,9 +89,10 @@ def load_config(path: Path = CONFIG_PATH) -> tuple[list[int], BotMode, BotMode]:
             f"{path.name}: i2c_addresses must be a comma-separated list of integers"
         ) from exc
 
-    valid_modes = ", ".join(mode.name for mode in BotMode)
+    valid_modes = ", ".join(mode.name for mode in BotMode) # Generate a comma-separated string of the bot modes for error messages``
 
     def parse_mode(key: str) -> BotMode:
+        # Parse the mode from the config file for a given key into a BotMode enum value
         try:
             return BotMode[values[key].upper()]
         except KeyError as exc:
@@ -89,11 +100,13 @@ def load_config(path: Path = CONFIG_PATH) -> tuple[list[int], BotMode, BotMode]:
                 f"{path.name}: {key} must be one of: {valid_modes}"
             ) from exc
 
-    return i2c_addresses, parse_mode("mode_switch_off"), parse_mode("mode_switch_on")
+    return i2c_addresses, parse_mode("mode_switch_off"), parse_mode("mode_switch_on") # Return the motor I2C addresses and the two default modes for the mode switches
 
-
+# Load the config into the global variables
 I2C_ADDRESSES, MODE_SWITCH_OFF, MODE_SWITCH_ON = load_config()
 
+# Initialize the mode switch and pause switch
+# TODO: Make these constants at the top
 mode_switch = switch.Switch(board.D16)
 pause_switch = switch.Switch(board.D21)
 bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
@@ -140,7 +153,7 @@ if args.record_session is not None and args.camera_stream:
 class FpsMonitor:
     """Sample monotonic counters and print Hz once per reporting interval."""
 
-    def __init__(self, interval_s=FPS_REPORT_INTERVAL_S):
+    def __init__(self, interval_s=FPS_REPORT_INTERVAL):
         self._interval_s = interval_s
         self._sources: list[tuple[str, object]] = []
         self._last_counts: dict[str, int] = {}
