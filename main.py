@@ -383,7 +383,6 @@ try:
     last_ball_y = None
     last_camera_frame_id = camera.frame_id
     last_pose_time = time.monotonic()
-    last_mcl_yaw = None
     lidar_velocity = LidarVelocityEstimator()
 
     fps_monitor = None
@@ -432,14 +431,18 @@ try:
             dt_pose = now_pose - last_pose_time
             last_pose_time = now_pose
             omega = 0.0
+            yaw = None
             if imu is not None:
                 gyro_z = imu.get_gyro_z_deg_s()
                 if gyro_z is not None:
                     omega = gyro_z
-                feed_imu_yaw_prior(imu, startup_yaw)
+                imu_yaw = imu.get_yaw()
+                if imu_yaw is not None:
+                    yaw = imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)
+                    lidar.set_imu_yaw(yaw)
             vx, vy = 0.0, 0.0
             if movement_controller is not None:
-                yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
+                yaw_for_odom = yaw if yaw is not None else 0.0
                 vx_wheel, vy_wheel = movement_controller.get_measured_body_velocity_mm_s(
                     yaw_for_odom
                 )
@@ -455,11 +458,9 @@ try:
                 vy = trust * vy_wheel
             lidar.predict_odometry(vx, vy, omega, dt_pose)
 
-            x_pos, y_pos, yaw, _confidence = lidar.get_pose()
+            x_pos, y_pos, _mcl_yaw, _confidence = lidar.get_pose()
             if x_pos is not None and y_pos is not None and yaw is not None:
                 lidar_velocity.update(x_pos, y_pos, yaw, now_pose)
-            if yaw is not None:
-                last_mcl_yaw = yaw
             if x_pos is None or y_pos is None or yaw is None:
                 time.sleep(0.01)
                 continue
