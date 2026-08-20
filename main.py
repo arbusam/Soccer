@@ -273,7 +273,7 @@ def feed_imu_yaw_prior(imu_sensor, startup_yaw):
 
 
 try:
-    kicker = Kicker(board.D26, 0.1)
+    kicker = Kicker(board.D26, 0.02)
     break_beam = Breakbeam(board.D14)
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
@@ -482,8 +482,8 @@ try:
                 ball_y = None
             if break_beam.read():
                 ball_captured = True
-                ball_x = x_pos + 150 * math.cos(math.radians(yaw))
-                ball_y = y_pos + 150 * math.sin(math.radians(yaw))
+                ball_x = x_pos + 100 * math.cos(math.radians(yaw))
+                ball_y = y_pos + 100 * math.sin(math.radians(yaw))
             else:
                 ball_captured = False
 

@@ -38,6 +38,7 @@ BALL_HIDING_START_DIST = 1000
 BALL_HIDING_END_DIST = 600
 
 BALL_RADIUS = 21 # mm, radius of the ball
+ROBOT_RADIUS = 110 # mm, radius used for shot clearance around enemy bot centres
 # Minimum angular clearance (deg) from the near goal side wall when banking off the far wall.
 SIDE_WALL_CLEARANCE_DEG = 2
 # When no shot/rebound is possible, pull this far toward own goal while drifting to mid Y.
@@ -108,32 +109,81 @@ def _clears_posts(ball_x, ball_y, angle_deg, mouth_x):
     return True
 
 
-def kick_direction_scores(ball_x, ball_y, angle_deg, target_x, mouth_x):
-    """True if kicking along angle_deg clears the mouth/posts and hits back or opposite wall."""
-    near_angle, far_angle, opposite_y = _mouth_sector(ball_x, ball_y, mouth_x)
+def _point_to_segment_distance(px, py, start, end):
+    """Shortest distance from a point to a finite line segment."""
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length_sq = dx * dx + dy * dy
+    if length_sq <= 1e-9:
+        return math.hypot(px - start[0], py - start[1])
+    t = ((px - start[0]) * dx + (py - start[1]) * dy) / length_sq
+    t = max(0.0, min(1.0, t))
+    return math.hypot(px - (start[0] + t * dx), py - (start[1] + t * dy))
+
+
+def _scoring_path(ball_x, ball_y, angle_deg, target_x, mouth_x, mouth_sector):
+    """Return direct/rebound ball-path segments when angle_deg scores, otherwise None."""
+    near_angle, far_angle, opposite_y = mouth_sector
     span = wrap_angle_deg(far_angle - near_angle)
     from_near = wrap_angle_deg(angle_deg - near_angle)
     if abs(span) + 1e-9 < SIDE_WALL_CLEARANCE_DEG:
-        return False
+        return None
     if from_near * span <= 0:
-        return False
+        return None
     if abs(from_near) + 1e-9 < SIDE_WALL_CLEARANCE_DEG:
-        return False
+        return None
     if abs(from_near) > abs(span) + 1e-9:
-        return False
+        return None
     if not _clears_posts(ball_x, ball_y, angle_deg, mouth_x):
-        return False
+        return None
 
+    start = (ball_x, ball_y)
     back_hit = _ray_hit(ball_x, ball_y, angle_deg, wall_x=target_x)
-    if back_hit is not None and GOAL_BACK_Y_MIN <= back_hit[1] <= GOAL_BACK_Y_MAX:
-        return True
     side_hit = _ray_hit(ball_x, ball_y, angle_deg, wall_y=opposite_y)
-    if side_hit is None:
+    hits_side_first = (
+        side_hit is not None
+        and min(mouth_x, target_x) <= side_hit[0] <= max(mouth_x, target_x)
+        and abs(side_hit[0] - ball_x) + 1e-9 < abs(target_x - ball_x)
+    )
+    if not hits_side_first:
+        if back_hit is not None and GOAL_BACK_Y_MIN <= back_hit[1] <= GOAL_BACK_Y_MAX:
+            return [(start, back_hit)]
+        return None
+
+    # A horizontal side-wall bounce reverses the Y component of the ball's direction.
+    rebound_hit = _ray_hit(side_hit[0], side_hit[1], -angle_deg, wall_x=target_x)
+    if rebound_hit is None or not GOAL_BACK_Y_MIN <= rebound_hit[1] <= GOAL_BACK_Y_MAX:
+        return None
+    return [(start, side_hit), (side_hit, rebound_hit)]
+
+
+def kick_direction_scores(
+    ball_x,
+    ball_y,
+    angle_deg,
+    target_x,
+    mouth_x,
+    enemy_bot_positions=None,
+    *,
+    mouth_sector=None,
+):
+    """True when the kick scores and its complete path clears every enemy bot."""
+    if mouth_sector is None:
+        mouth_sector = _mouth_sector(ball_x, ball_y, mouth_x)
+    path = _scoring_path(ball_x, ball_y, angle_deg, target_x, mouth_x, mouth_sector)
+    if path is None:
         return False
-    return min(mouth_x, target_x) <= side_hit[0] <= max(mouth_x, target_x)
+
+    clearance = ROBOT_RADIUS + BALL_RADIUS
+    for bot_x, bot_y, *_ in enemy_bot_positions or ():
+        if any(
+            _point_to_segment_distance(bot_x, bot_y, start, end) <= clearance
+            for start, end in path
+        ):
+            return False
+    return True
 
 
-def goal_shot_aim(ball_x, ball_y, target_x, mouth_x):
+def goal_shot_aim(ball_x, ball_y, target_x, mouth_x, enemy_bot_positions=None):
     """Return (aim_angle_deg, True) for a back-wall or rebound shot, or (None, False)."""
     dx_back = target_x - ball_x
     if abs(dx_back) < 1e-6:
@@ -154,12 +204,14 @@ def goal_shot_aim(ball_x, ball_y, target_x, mouth_x):
 
     candidates = []
     if aim_y_min <= aim_y_max:
-        a0 = _angle_to(ball_x, ball_y, target_x, aim_y_min)
-        a1 = _angle_to(ball_x, ball_y, target_x, aim_y_max)
-        candidates.append(wrap_angle_deg(a0 + wrap_angle_deg(a1 - a0) / 2))
+        # Prefer the centre, but try off-centre direct shots when a bot blocks it.
+        for fraction in (0.5, 0.25, 0.75, 0.0, 1.0):
+            aim_y = aim_y_min + (aim_y_max - aim_y_min) * fraction
+            candidates.append(_angle_to(ball_x, ball_y, target_x, aim_y))
 
     # Rebound: opposite inside wall, as close to the back as possible, with near-wall clearance.
-    near_angle, far_angle, opposite_y = _mouth_sector(ball_x, ball_y, mouth_x)
+    mouth_sector = _mouth_sector(ball_x, ball_y, mouth_x)
+    near_angle, far_angle, opposite_y = mouth_sector
     span = wrap_angle_deg(far_angle - near_angle)
     if abs(span) + 1e-9 >= SIDE_WALL_CLEARANCE_DEG:
         ideal = _angle_to(ball_x, ball_y, target_x, opposite_y)
@@ -171,7 +223,15 @@ def goal_shot_aim(ball_x, ball_y, target_x, mouth_x):
             candidates.append(clear)
 
     for aim in candidates:
-        if kick_direction_scores(ball_x, ball_y, aim, target_x, mouth_x):
+        if kick_direction_scores(
+            ball_x,
+            ball_y,
+            aim,
+            target_x,
+            mouth_x,
+            enemy_bot_positions,
+            mouth_sector=mouth_sector,
+        ):
             return aim, True
     return None, False
 
@@ -237,18 +297,8 @@ def striker(
         dist_to_goal = abs(target_x - ball_x)
         # Back-wall shot, or rebound off the opposite side wall; None if neither is possible.
         degrees_to_goal, shot_possible = goal_shot_aim(
-            ball_x, ball_y, target_x, CYAN_GOAL_MOUTH_X
+            ball_x, ball_y, target_x, CYAN_GOAL_MOUTH_X, enemy_bot_positions
         )
-        if shot_possible:
-            for enemy_bot in enemy_bot_positions:
-                degrees_to_enemy = math.degrees(
-                    math.atan2(enemy_bot[1] - ball_y, enemy_bot[0] - ball_x)
-                )
-                if abs(wrap_angle_deg(degrees_to_enemy - degrees_to_goal)) < 50:
-                    if 0 < degrees_to_goal < 90:
-                        offset = 80
-                    elif -90 < degrees_to_goal < 0:
-                        offset = -80
 
         # Enter hide when far; stay hidden until closer than END (no dead-zone flutter).
         if not ball_hiding and dist_to_goal >= BALL_HIDING_START_DIST:
@@ -285,7 +335,12 @@ def striker(
             if (
                 abs(wrap_angle_deg(yaw - degrees_to_goal)) <= YAW_CORRECT_THRESHOLD
                 and kick_direction_scores(
-                    ball_x, ball_y, yaw, target_x, CYAN_GOAL_MOUTH_X
+                    ball_x,
+                    ball_y,
+                    yaw,
+                    target_x,
+                    CYAN_GOAL_MOUTH_X,
+                    enemy_bot_positions,
                 )
             ):
                 kick = True

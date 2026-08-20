@@ -104,9 +104,9 @@ def defence(
         if -10 < direction < 10:
             speed = 1000
             if steering and y_pos < 850 and dist < 200:
-                offset = 20
+                offset = 40
             elif steering and y_pos > 1050 and dist < 200:
-                offset = -20
+                offset = -40
             if y_pos < 800 and ball_captured:
                 offset = 20
                 steering = True
@@ -127,6 +127,8 @@ def defence(
 
     # Only kick if the ball is captured and lined up with the goal.
     if ball_captured:
+        dribbler = True
+
         target_x = CYAN_GOAL_BACK_X
         target_y_min = GOAL_BACK_Y_MIN
         target_y_max = GOAL_BACK_Y_MAX
@@ -141,6 +143,7 @@ def defence(
             if t >= 0:
                 y_hit = ball_y + t * dir_y
                 if target_y_min <= y_hit <= target_y_max:
+                    dribbler = False
                     kick = True
 
     return direction + offset, speed, rotation, steering, kick, dribbler

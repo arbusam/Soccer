@@ -11,8 +11,7 @@ class Kicker:
         self._pulse = pulse
         self._cooldown_s = 0.5
         self._pin = digitalio.DigitalInOut(pin)
-        self._pin.direction = digitalio.Direction.OUTPUT
-        self._pin.value = False
+        self._pin.switch_to_input(pull=digitalio.Pull.DOWN)
         self._state_lock = threading.Lock()
         self._kick_thread = None
         self._last_kick_started_at = float("-inf")
@@ -20,11 +19,12 @@ class Kicker:
 
     def _run_kick(self, pin) -> None:
         try:
+            pin.direction = digitalio.Direction.OUTPUT
             pin.value = True
             time.sleep(self._pulse)
             pin.value = False
-            pin.direction = digitalio.Direction.INPUT
         finally:
+            pin.switch_to_input(pull=digitalio.Pull.DOWN)
             with self._state_lock:
                 self._kicking = False
 
@@ -37,7 +37,6 @@ class Kicker:
 
         with self._state_lock:
             if self._pin is not None:
-                self._pin.value = False
                 self._pin.deinit()
                 self._pin = None
             self._kick_thread = None
