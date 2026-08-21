@@ -37,6 +37,8 @@ BALL_HIDING_LINE_THRESHOLD = 150
 BALL_HIDING_START_DIST = 1000
 BALL_HIDING_END_DIST = 600
 
+CLOSE_SHOOTING_Y_DIST = 100
+
 BALL_RADIUS = 21 # mm, radius of the ball
 ROBOT_RADIUS = 110 # mm, radius used for shot clearance around enemy bot centres
 # Minimum angular clearance (deg) from the near goal side wall when banking off the far wall.
@@ -320,12 +322,17 @@ def striker(
             # Once tucked against the sideline, advance upfield while still facing the wall.
             direction = 0 if near_line else rotation
         elif not shot_possible:
-            # No back-wall or rebound shot: dribble toward own goal and pitch centre.
-            offset = 0
-            speed = 400
-            reposition_x = x_pos - SHOT_REPOSITION_PULL_X
-            direction = _angle_to(x_pos, y_pos, reposition_x, GOAL_CENTRE_Y)
-            rotation = direction
+            if y_pos > PITCH_WIDTH / 2 + CLOSE_SHOOTING_Y_DIST:
+                rotation = 120
+                direction = -90
+            elif y_pos < PITCH_WIDTH / 2 - CLOSE_SHOOTING_Y_DIST:
+                rotation = 240
+                direction = 90
+            elif abs(yaw) <= YAW_CORRECT_THRESHOLD:
+                kick = True
+            else:
+                rotation = 0
+                direction = 0
         elif offset == 0 and dist_to_goal < BALL_HIDING_END_DIST:
             # Stop and turn in place toward the goal, then shoot when lined up.
             # Kick along yaw, so require the actual facing direction to score — not just

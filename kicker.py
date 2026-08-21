@@ -16,6 +16,7 @@ class Kicker:
         self._kick_thread = None
         self._last_kick_started_at = float("-inf")
         self._kicking = False
+        self._closed = False
 
     def _run_kick(self, pin) -> None:
         try:
@@ -30,21 +31,32 @@ class Kicker:
 
     def deinit(self) -> None:
         with self._state_lock:
+            self._closed = True
             kick_thread = self._kick_thread
 
         if kick_thread is not None and kick_thread.is_alive():
             kick_thread.join()
 
         with self._state_lock:
-            if self._pin is not None:
-                self._pin.deinit()
-                self._pin = None
+            pin = self._pin
+            self._pin = None
             self._kick_thread = None
             self._kicking = False
 
+        if pin is None:
+            return
+
+        # After a kick the pin is an input (pull-down). Setting .value only
+        # works in OUTPUT mode ("Not an output").
+        if pin.direction == digitalio.Direction.OUTPUT:
+            pin.value = False
+        else:
+            pin.switch_to_input(pull=digitalio.Pull.DOWN)
+        pin.deinit()
+
     def kick(self) -> None:
         with self._state_lock:
-            if self._pin is None:
+            if self._pin is None or self._closed:
                 return
 
             now = time.monotonic()
