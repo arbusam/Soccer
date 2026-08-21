@@ -11,6 +11,7 @@ import shutil
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 CLASS_NAMES = ("Ball", "Bot")
 CLASS_TO_ID = {name: i for i, name in enumerate(CLASS_NAMES)}
@@ -23,12 +24,23 @@ DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "datasets" / "open-soccer-de
 def _ls_image_path(data_dir: Path, image_uri: str) -> Path:
     """Map Label Studio `/data/...` URIs to files under the data dir."""
     uri = image_uri.strip()
-    if uri.startswith("/data/"):
-        return data_dir / "media" / uri[len("/data/") :]
-    path = Path(uri)
-    if path.is_file():
-        return path
-    return data_dir / "media" / uri.lstrip("/")
+    parsed = urlparse(uri)
+    path = parsed.path
+    query = parse_qs(parsed.query)
+
+    if path.rstrip("/").endswith("/local-files") or path.rstrip("/") == "/data/local-files":
+        rel = unquote((query.get("d") or [""])[0]).strip()
+        if not rel:
+            return data_dir / "media" / "local-files"
+        candidate = Path(rel)
+        return candidate if candidate.is_absolute() else data_dir / rel.lstrip("/")
+
+    if path.startswith("/data/"):
+        return data_dir / "media" / path[len("/data/") :].lstrip("/")
+    file_path = Path(path)
+    if file_path.is_file():
+        return file_path
+    return data_dir / "media" / path.lstrip("/")
 
 
 def _rotated_corners(

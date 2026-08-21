@@ -26,7 +26,7 @@ import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = REPO_ROOT / "label-studio-data"
@@ -51,20 +51,32 @@ _STATE: dict[str, Any] = {
 
 
 def _resolve_image_path(image_uri: str, data_dir: Path) -> Path:
-    """Map Label Studio `/data/...` URIs (or plain paths) to local files."""
+    """Map Label Studio `/data/...` URIs (or plain paths) to local files.
+
+    Uploaded media lives under ``data_dir/media/...``. Local Files storage uses
+    ``/data/local-files/?d=<relpath>`` where ``d`` is relative to the Label
+    Studio data dir (document root), not ``media/``.
+    """
     uri = (image_uri or "").strip()
     if not uri:
         raise FileNotFoundError("empty image URI")
 
     parsed = urlparse(uri)
-    if parsed.scheme in ("http", "https"):
-        # Same-host Label Studio media URLs still end in /data/...
-        path = parsed.path
-    else:
-        path = uri
+    path = parsed.path
+    query = parse_qs(parsed.query)
+
+    if path.rstrip("/").endswith("/local-files") or path.rstrip("/") == "/data/local-files":
+        rel = unquote((query.get("d") or [""])[0]).strip()
+        if not rel:
+            raise FileNotFoundError(f"local-files URI missing d=: {uri}")
+        candidate = Path(rel)
+        local = candidate if candidate.is_absolute() else data_dir / rel.lstrip("/")
+        if not local.is_file():
+            raise FileNotFoundError(f"image not found: {uri} -> {local}")
+        return local
 
     if path.startswith("/data/"):
-        local = data_dir / "media" / path[len("/data/") :]
+        local = data_dir / "media" / path[len("/data/") :].lstrip("/")
     else:
         candidate = Path(path)
         local = candidate if candidate.is_file() else data_dir / "media" / path.lstrip("/")
