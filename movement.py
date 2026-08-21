@@ -521,8 +521,10 @@ def _calculate_drive_rpms(
         scale = available_translation_rpm / max_translation_rpm
         translation_rpms = [rpm * scale for rpm in translation_rpms]
 
+    # Subtract the common-mode RPM so a positive (clockwise) yaw error
+    # actually turns the robot clockwise. Adding it spun anticlockwise.
     return tuple(
-        _clamp(rpm + yaw_correction_rpm, -max_rpm, max_rpm)
+        _clamp(rpm - yaw_correction_rpm, -max_rpm, max_rpm)
         for rpm in translation_rpms
     )
 

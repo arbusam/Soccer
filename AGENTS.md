@@ -30,7 +30,7 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 - Wheel velocities in mm/s use the current code signs: `a_value = -sin(local_direction)*speed`, `b_value = +cos(local_direction)*speed`, `c_value = +sin(local_direction)*speed`, `d_value = -cos(local_direction)*speed`.
 - Conversion to RPM uses wheel diameter (e.g. `WHEEL_DIAMETER = 50` mm in `defence.py`): `mmps_to_rpm = 60 / (diameter * π)`.
 - Motor speeds in RPM: `a_speed = a_value * mmps_to_rpm`, and similarly for b, c, d.
-- Yaw correction uses `yaw_error = wrap_angle_deg(rotation - yaw)`, so positive error means "turn clockwise to match the target heading". That RPM is **added** to every wheel (`rpm + yaw_correction_rpm`). Subtracting it spun the robot the wrong way. The requested yaw RPM is limited to `max_yaw_rpm`, then the translation RPMs are scaled down if needed to leave headroom for yaw while preserving the requested movement direction.
+- Yaw correction uses `yaw_error = wrap_angle_deg(rotation - yaw)`, so positive error means "turn clockwise to match the target heading". That RPM is **subtracted** from every wheel (`rpm - yaw_correction_rpm`). Adding it spun the robot anticlockwise (`test_dribbler_rotate.py` with `rotation=90`, `yaw=0`). The requested yaw RPM is limited to `max_yaw_rpm`, then the translation RPMs are scaled down if needed to leave headroom for yaw while preserving the requested movement direction.
 - With diameter 50 mm: `mmps_to_rpm ≈ 0.382`. Example: speed 500, `direction = yaw = 0` gives `local_direction = 45°`, which corresponds to local forward in the current wheel basis.
 
 **Problem:** QDR wheel odometry had the correct forward speed (`vx`) but the opposite sign on `vy`.
