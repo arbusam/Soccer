@@ -126,6 +126,7 @@ def train_and_export(
     data_yaml: Path,
     model_name: str,
     epochs: int,
+    patience: int,
     imgsz: int,
     batch: int,
     device: str,
@@ -145,6 +146,7 @@ def train_and_export(
     results = model.train(
         data=str(data_yaml),
         epochs=epochs,
+        patience=patience,
         imgsz=imgsz,
         batch=batch,
         workers=workers,
@@ -200,6 +202,15 @@ def main() -> None:
         help="Override base checkpoint (default: yolo26{size}.pt)",
     )
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=50,
+        help=(
+            "Stop if validation fitness does not improve for this many epochs "
+            "(Ultralytics early stopping). 0 disables it."
+        ),
+    )
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument(
@@ -274,6 +285,7 @@ def main() -> None:
         data_yaml=data_yaml,
         model_name=train_model,
         epochs=args.epochs,
+        patience=args.patience,
         imgsz=args.imgsz,
         batch=args.batch,
         device=args.device,

@@ -95,6 +95,8 @@ def train_size(
         size,
         "--epochs",
         str(args.epochs),
+        "--patience",
+        str(args.patience),
         "--imgsz",
         str(args.imgsz),
         "--batch",
@@ -145,6 +147,12 @@ def main() -> None:
         description="Train nano/small/medium detect models and compile nano + small for Hailo."
     )
     parser.add_argument("--epochs", type=int, default=100)
+    parser.add_argument(
+        "--patience",
+        type=int,
+        default=50,
+        help="Epochs without val improvement before stopping (0 disables). Passed to train.py.",
+    )
     parser.add_argument("--imgsz", type=int, default=640)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--device", default="xpu")
