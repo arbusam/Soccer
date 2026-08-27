@@ -33,7 +33,7 @@ def main():
                 CLOCKWISE_ROTATION,
                 1.0,
                 0,
-                True,
+                1,
             )
             time.sleep(COMMAND_INTERVAL)
     except KeyboardInterrupt:

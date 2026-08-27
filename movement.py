@@ -182,7 +182,7 @@ class MovementController:
         self._target_rotation = 0.0
         self._target_rotation_speed = 0.0
         self._target_yaw = 0.0
-        self._target_dribbler = False
+        self._target_dribbler = 0
 
         self._current_direction = 0.0
         self._current_speed = 0.0
@@ -244,7 +244,7 @@ class MovementController:
             yaw_correct_threshold,
         )
 
-    def move(self, direction, speed, rotation, rotation_speed, yaw, dribbler=False):
+    def move(self, direction, speed, rotation, rotation_speed, yaw, dribbler=0):
         """Update drive targets; accel and yaw correction continue on the drive thread."""
         self._raise_pending_error()
         with self._command_lock:
@@ -253,7 +253,7 @@ class MovementController:
             self._target_rotation = float(rotation)
             self._target_rotation_speed = float(rotation_speed)
             self._target_yaw = float(yaw)
-            self._target_dribbler = bool(dribbler)
+            self._target_dribbler = int(dribbler)
 
     def get_measured_body_velocity_mm_s(self, yaw_deg):
         """Estimate robot-body translation speed (mm/s) from measured wheel RPMs."""
@@ -273,7 +273,7 @@ class MovementController:
         with self._command_lock:
             self._target_speed = 0.0
             self._target_rotation_speed = 0.0
-            self._target_dribbler = False
+            self._target_dribbler = 0
         with self._current_lock:
             self._current_speed = 0.0
 
@@ -388,7 +388,7 @@ class MovementController:
                     _set_motor_speed(drive_motors[2], c_val, 2)
                     _set_motor_speed(drive_motors[3], d_val, 3)
                     if len(self.motors) > 4 and self.motors[4] is not None:
-                        dribbler_speed = DRIBBLER_MOTOR_SPEED if dribbler else 0
+                        dribbler_speed = DRIBBLER_MOTOR_SPEED * dribbler 
                         _set_motor_speed(
                             self.motors[4], dribbler_speed, 4, ignore_errors=True
                         )

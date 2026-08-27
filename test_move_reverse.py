@@ -67,8 +67,12 @@ def main():
             f"direction={TEST_DIRECTION}, speed={TEST_SPEED}, rotation={TEST_ROTATION}, using live IMU yaw"
         )
         print("Press Ctrl+C to stop.")
-
+        l = 0
         while True:
+            if l < 60:
+                dir = 1
+            else:
+                dir = -1
             yaw = imu.get_yaw()
             if yaw is None:
                 time.sleep(0.01)
@@ -87,8 +91,9 @@ def main():
                 TEST_ROTATION,
                 TEST_ROTATION_SPEED,
                 yaw_relative,
-                1
+                dir
             )
+            l += 1
             time.sleep(COMMAND_INTERVAL)
     except KeyboardInterrupt:
         print("\nStopping test.")
