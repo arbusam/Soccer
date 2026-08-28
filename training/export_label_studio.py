@@ -19,6 +19,8 @@ CLASS_TO_ID = {name: i for i, name in enumerate(CLASS_NAMES)}
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = REPO_ROOT / "label-studio-data"
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "datasets" / "open-soccer-detect"
+# Nearby frames are similar; hold out contiguous blocks instead of random frames.
+VAL_BLOCK_SIZE = 20
 
 
 def _ls_image_path(data_dir: Path, image_uri: str) -> Path:
@@ -254,6 +256,55 @@ def _load_labeled_tasks(
     return list(latest.values())
 
 
+def _contiguous_val_indices(
+    n: int,
+    val_fraction: float,
+    rng: random.Random,
+    block_size: int = VAL_BLOCK_SIZE,
+) -> set[int]:
+    """Reserve ~val_fraction of 0..n-1 as non-overlapping contiguous blocks.
+
+    Blocks are placed in task-id order (the export sample order). Prefer
+    ``block_size``-long runs; the last block (or leftover gaps) may be shorter
+    so the held-out count still matches ``round(n * val_fraction)``.
+    """
+    if n <= 1:
+        return set()
+    target = min(n - 1, max(1, round(n * val_fraction)))
+    taken = [False] * n
+    chosen: set[int] = set()
+
+    def starts_for(size: int) -> list[int]:
+        starts: list[int] = []
+        run = 0
+        for i in range(n):
+            if not taken[i]:
+                run += 1
+                if run >= size:
+                    starts.append(i - size + 1)
+            else:
+                run = 0
+        return starts
+
+    remaining = target
+    while remaining > 0:
+        placed = False
+        for size in range(min(block_size, remaining), 0, -1):
+            starts = starts_for(size)
+            if not starts:
+                continue
+            start = rng.choice(starts)
+            for i in range(start, start + size):
+                taken[i] = True
+                chosen.add(i)
+            remaining -= size
+            placed = True
+            break
+        if not placed:
+            break
+    return chosen
+
+
 def _write_data_yaml(out_dir: Path) -> Path:
     yaml_path = out_dir / "data.yaml"
     names_block = "\n".join(f"  {i}: {name}" for i, name in enumerate(CLASS_NAMES))
@@ -295,10 +346,7 @@ def export_dataset(
         (out_dir / "labels" / split).mkdir(parents=True)
 
     rng = random.Random(seed)
-    indices = list(range(len(samples)))
-    rng.shuffle(indices)
-    val_count = max(1, round(len(samples) * val_fraction)) if len(samples) > 1 else 0
-    val_ids = set(indices[:val_count])
+    val_ids = _contiguous_val_indices(len(samples), val_fraction, rng)
 
     exported = 0
     skipped = 0
@@ -329,7 +377,8 @@ def export_dataset(
     print(
         f"Exported {exported} images (detect) "
         f"(skipped {skipped}) → {out_dir} "
-        f"[train/val split, val≈{val_fraction:.0%}]"
+        f"[block val split size={VAL_BLOCK_SIZE}, val≈{val_fraction:.0%}, "
+        f"{len(val_ids)} held out]"
     )
     print(f"Dataset config: {yaml_path}")
     return yaml_path
@@ -359,9 +408,17 @@ def main() -> None:
         "--val-fraction",
         type=float,
         default=0.2,
-        help="Fraction of images reserved for validation",
+        help=(
+            "Fraction of images reserved for validation (held out as "
+            f"contiguous blocks of {VAL_BLOCK_SIZE})"
+        ),
     )
-    parser.add_argument("--seed", type=int, default=42, help="Train/val shuffle seed")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Seed for choosing validation block start positions",
+    )
     parser.add_argument(
         "--update-label-studio",
         action="store_true",
