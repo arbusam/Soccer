@@ -212,7 +212,15 @@ def main() -> None:
         ),
     )
     parser.add_argument("--imgsz", type=int, default=640)
-    parser.add_argument("--batch", type=int, default=8)
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=8,
+        help=(
+            "Training batch size. -1 runs Ultralytics AutoBatch. "
+            "On Intel XPU that uses torch.xpu memory (CUDA AutoBatch is not available)."
+        ),
+    )
     parser.add_argument(
         "--device",
         default=DEFAULT_DEVICE,

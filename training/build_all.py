@@ -7,6 +7,7 @@ never reused across sizes.
 
 Example:
   python training/build_all.py --epochs 100 --hw-arch hailo8
+  python training/build_all.py --batch-n 16 --batch-s 8 --batch-m 4
   python training/build_all.py --skip-train        # only compile existing ONNX
   python training/build_all.py --skip-hailo        # only train/export ONNX
 """
@@ -85,6 +86,12 @@ def _complete_stage(state: dict[str, object], stage: str) -> None:
     _save_state(state)
 
 
+def _batch_for_size(size: str, args: argparse.Namespace) -> int:
+    """Per-size override, else the shared --batch default."""
+    override = getattr(args, f"batch_{size}", None)
+    return args.batch if override is None else override
+
+
 def train_size(
     size: str, args: argparse.Namespace, export_dataset: bool, resume: bool
 ) -> None:
@@ -100,7 +107,7 @@ def train_size(
         "--imgsz",
         str(args.imgsz),
         "--batch",
-        str(args.batch),
+        str(_batch_for_size(size, args)),
         "--device",
         args.device,
         "--workers",
@@ -154,7 +161,20 @@ def main() -> None:
         help="Epochs without val improvement before stopping (0 disables). Passed to train.py.",
     )
     parser.add_argument("--imgsz", type=int, default=640)
-    parser.add_argument("--batch", type=int, default=8)
+    parser.add_argument(
+        "--batch",
+        type=int,
+        default=8,
+        help="Default training batch size for every model size (-1 = AutoBatch)",
+    )
+    for size in TRAIN_SIZES:
+        parser.add_argument(
+            f"--batch-{size}",
+            type=int,
+            default=None,
+            dest=f"batch_{size}",
+            help=f"Batch size for YOLO26{size} (default: same as --batch)",
+        )
     parser.add_argument("--device", default="xpu")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--no-mosaic", action="store_true")

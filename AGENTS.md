@@ -91,6 +91,29 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 3. Open a task (or use Retrieve predictions) — only `Ball` / `Bot` are emitted; other model classes (e.g. goals) are skipped. Confidence defaults to `0.25` (`LS_ML_CONF`), or `model_score_threshold` on `<RectangleLabels>` if set.
 4. After retraining, `systemctl --user restart label-studio-ml` so it reloads `best.pt`. Restart the same unit after changing `ls_yolo_backend.py`.
 
+## Extract video frames into Label Studio Photos (`training/extract_video_frames.py`)
+
+**Problem:** New game recordings need to become Label Studio Local Files images with clip-stable names (`output23_000001.png`, …) so train/val can split by clip.
+
+**Solution:** Given a folder of videos, extract frames at a configurable rate (default 1 fps) into `label-studio-data/Photos/`. Each video gets the next free `output<N>` prefix (highest existing N + 1); source filenames are not used. Then sync/refresh the Label Studio Local Files storage so the new files become tasks.
+
+```bash
+python training/extract_video_frames.py /path/to/videos
+python training/extract_video_frames.py /path/to/videos --fps 0.5
+python training/extract_video_frames.py /path/to/videos --fps 2 --photos-dir label-studio-data/Photos
+```
+
+## Delete skipped Label Studio tasks (`training/delete_skipped_label_studio.py`)
+
+**Problem:** Skip in Label Studio only writes a cancelled annotation. The task stays in the DB and the PNG stays in `Photos/` (or `media/upload/`), so a later Local Files sync can recreate the task.
+
+**Solution:** Delete skip-only tasks (`cancelled_annotations > 0` and no real annotations) and image files that no remaining task still points at. Dry-run by default; stop Label Studio before `--apply`.
+
+```bash
+python training/delete_skipped_label_studio.py
+python training/delete_skipped_label_studio.py --apply
+```
+
 ## Hailo-8 AI HAT+ ball inference (`training/`)
 
 **Problem:** Ultralytics NCNN on the Pi CPU (~5 FPS) never uses the AI HAT+ (Hailo-8, 26 TOPS). Hailo only runs compiled `.hef` models. Training is axis-aligned YOLO26 detect (not OBB).
@@ -100,8 +123,8 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 1. On the Pi: `bash scripts/verify_hailo.sh` (needs `hailo-all` + `/dev/hailo*`).
 2. Optional — rewrite rotated Label Studio boxes to axis-aligned AABBs in the DB so you can review them in the UI (stop Label Studio first):  
    `python training/export_label_studio.py --update-label-studio` (dry-run), then `--update-label-studio --apply`.
-3. Export YOLO-detect dataset: `python training/export_label_studio.py` → `training/datasets/open-soccer-detect/`.
-4. Train + ONNX (project `.venv`): `python training/train.py --size n` → `training/exports/open-soccer-detect-n/model.onnx` (XPU via `training/xpu_patch.py`; AMP off on XPU; use `--no-mosaic` if XPU scatter/gather errors).
+3. Export YOLO-detect dataset: `python training/export_label_studio.py` → `training/datasets/open-soccer-detect/`. Train/val is **by clip**, not by frame: early uploads are `{hash}-output_NNNN.png` (the hash is per file) grouped by Label Studio import burst; Local Files under `Photos/` use prefixes like `output10_000001.png`. After export, `python training/check_split_overlap.py` reports leftover near-duplicates.
+4. Train + ONNX (project `.venv`): `python training/train.py --size n` → `training/exports/open-soccer-detect-n/model.onnx` (XPU via `training/xpu_patch.py`; AMP off on XPU; `batch=-1` AutoBatch uses `torch.xpu` memory, not CUDA; use `--no-mosaic` if XPU scatter/gather errors).
 5. On x86 with Hailo DFC: `python training/compile_hailo.py --hw-arch hailo8` → `open-soccer-detect-n_hailo_model/model.hef`.
 6. Copy that folder to the Pi. `test_model.py` and `camera.py` use [`hailo_ball.py`](hailo_ball.py) (HailoRT) for inference.
 

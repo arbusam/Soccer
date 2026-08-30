@@ -7,6 +7,7 @@ import argparse
 import json
 import math
 import random
+import re
 import shutil
 import sqlite3
 from datetime import datetime, timezone
@@ -19,6 +20,92 @@ CLASS_TO_ID = {name: i for i, name in enumerate(CLASS_NAMES)}
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DATA_DIR = REPO_ROOT / "label-studio-data"
 DEFAULT_OUT_DIR = Path(__file__).resolve().parent / "datasets" / "open-soccer-detect"
+# One clip's frames were uploaded in a single burst; later clips are seconds apart.
+UPLOAD_CLUSTER_GAP_S = 2.0
+_FRAME_INDEX_SUFFIX = re.compile(r"_\d+$")
+
+
+def _task_image_uri(data: dict) -> str:
+    """Image URI from task.data. Local Files storage often uses `$undefined$`."""
+    for key in ("image", "$undefined$"):
+        value = data.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _image_filename(image_uri: str) -> str:
+    parsed = urlparse(image_uri)
+    query = parse_qs(parsed.query)
+    rel = unquote((query.get("d") or [""])[0]).strip()
+    if rel:
+        return Path(rel).name
+    return Path(unquote(parsed.path)).name
+
+
+def _is_upload_uri(image_uri: str) -> bool:
+    return "/upload/" in urlparse(image_uri).path
+
+
+def _local_clip_id(image_uri: str) -> str:
+    """`Photos/output10_000001.png` → `output10` (one extracted clip)."""
+    return _FRAME_INDEX_SUFFIX.sub("", Path(_image_filename(image_uri)).stem)
+
+
+def _parse_ls_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("T", " "))
+
+
+def _upload_cluster_ids(rows: list[tuple[int, str, str]]) -> dict[int, str]:
+    """Group HASH-output_NNNN uploads by import burst. The hash is per file, not per clip."""
+    upload = [
+        (_parse_ls_datetime(created_at), task_id)
+        for task_id, created_at, image_uri in rows
+        if _is_upload_uri(image_uri)
+    ]
+    upload.sort()
+    clusters: dict[int, str] = {}
+    prev: datetime | None = None
+    cluster = 0
+    for created_at, task_id in upload:
+        if prev is None or (created_at - prev).total_seconds() > UPLOAD_CLUSTER_GAP_S:
+            cluster += 1
+        clusters[task_id] = f"upload-{cluster}"
+        prev = created_at
+    return clusters
+
+
+def _clip_id(task_id: int, image_uri: str, upload_clusters: dict[int, str]) -> str:
+    if _is_upload_uri(image_uri):
+        return upload_clusters.get(task_id, f"upload-task-{task_id}")
+    return _local_clip_id(image_uri)
+
+
+def _val_indices_by_clip(
+    clip_ids: list[str],
+    val_fraction: float,
+    seed: int,
+) -> set[int]:
+    """Hold out whole clips until about val_fraction of images are in val."""
+    by_clip: dict[str, list[int]] = {}
+    for index, clip_id in enumerate(clip_ids):
+        by_clip.setdefault(clip_id, []).append(index)
+
+    clips = list(by_clip)
+    rng = random.Random(seed)
+    rng.shuffle(clips)
+
+    n_images = len(clip_ids)
+    if n_images <= 1 or val_fraction <= 0:
+        return set()
+
+    target = max(1, round(n_images * val_fraction))
+    val_ids: set[int] = set()
+    for clip_id in clips:
+        if val_ids and len(val_ids) >= target:
+            break
+        val_ids.update(by_clip[clip_id])
+    return val_ids
 
 
 def _ls_image_path(data_dir: Path, image_uri: str) -> Path:
@@ -225,13 +312,13 @@ def update_label_studio_to_detect(
 def _load_labeled_tasks(
     db_path: Path,
     project_id: int,
-) -> list[tuple[dict, str]]:
-    """Return [(task.data, annotation.result), ...] — latest non-cancelled per task."""
+) -> list[tuple[int, str, dict, str]]:
+    """Return [(task_id, created_at, task.data, annotation.result), ...] — latest non-cancelled per task."""
     conn = sqlite3.connect(db_path)
     try:
         rows = conn.execute(
             """
-            SELECT t.id, t.data, tc.result, tc.updated_at
+            SELECT t.id, t.created_at, t.data, tc.result, tc.updated_at
             FROM task AS t
             JOIN task_completion AS tc ON tc.task_id = t.id
             WHERE t.project_id = ?
@@ -243,14 +330,14 @@ def _load_labeled_tasks(
     finally:
         conn.close()
 
-    latest: dict[int, tuple[dict, str]] = {}
-    for task_id, data_json, result_json, _updated_at in rows:
+    latest: dict[int, tuple[int, str, dict, str]] = {}
+    for task_id, created_at, data_json, result_json, _updated_at in rows:
         if task_id in latest:
             continue
         data = json.loads(data_json)
-        if "image" not in data:
+        if not _task_image_uri(data):
             continue
-        latest[task_id] = (data, result_json)
+        latest[task_id] = (task_id, created_at, data, result_json)
     return list(latest.values())
 
 
@@ -288,22 +375,30 @@ def export_dataset(
     if not samples:
         raise RuntimeError(f"No labeled tasks found for project_id={project_id}")
 
+    upload_clusters = _upload_cluster_ids(
+        [
+            (task_id, created_at, _task_image_uri(data))
+            for task_id, created_at, data, _result in samples
+        ]
+    )
+    sample_clip_ids = [
+        _clip_id(task_id, _task_image_uri(data), upload_clusters)
+        for task_id, _created_at, data, _result in samples
+    ]
+    val_ids = _val_indices_by_clip(sample_clip_ids, val_fraction, seed)
+    val_clips = {sample_clip_ids[i] for i in val_ids}
+
     if out_dir.exists():
         shutil.rmtree(out_dir)
     for split in ("train", "val"):
         (out_dir / "images" / split).mkdir(parents=True)
         (out_dir / "labels" / split).mkdir(parents=True)
 
-    rng = random.Random(seed)
-    indices = list(range(len(samples)))
-    rng.shuffle(indices)
-    val_count = max(1, round(len(samples) * val_fraction)) if len(samples) > 1 else 0
-    val_ids = set(indices[:val_count])
-
     exported = 0
     skipped = 0
-    for i, (data, result_json) in enumerate(samples):
-        src = _ls_image_path(data_dir, data["image"])
+    for i, (_task_id, _created_at, data, result_json) in enumerate(samples):
+        image_uri = _task_image_uri(data)
+        src = _ls_image_path(data_dir, image_uri)
         if not src.is_file():
             skipped += 1
             print(f"skip missing image: {src}")
@@ -326,10 +421,12 @@ def export_dataset(
         raise RuntimeError("No samples exported (missing images or empty labels)")
 
     yaml_path = _write_data_yaml(out_dir)
+    n_clips = len(set(sample_clip_ids))
     print(
         f"Exported {exported} images (detect) "
         f"(skipped {skipped}) → {out_dir} "
-        f"[train/val split, val≈{val_fraction:.0%}]"
+        f"[{n_clips} clips, val={len(val_clips)} clips / {len(val_ids)} images, "
+        f"val≈{val_fraction:.0%}]"
     )
     print(f"Dataset config: {yaml_path}")
     return yaml_path
