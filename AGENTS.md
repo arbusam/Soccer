@@ -134,6 +134,8 @@ YOLO26’s end2end TopK head is unsupported on Hailo. `compile_hailo.py` cuts at
 
 **UINT8 vs FLOAT32:** Keep HailoRT output as `FormatType.FLOAT32` (`quantized=False`). Manual UINT8 + `quant_info` also drops detections when qp is wrong/missing.
 
+**Live camera channel order:** Picamera2 format `"RGB888"` exposes a BGR-ordered numpy array (and `"BGR888"` exposes RGB bytes). Ultralytics training and the HEF expect RGB, so passing an `"RGB888"` frame directly to `HailoBallDetector` swaps red and blue and can collapse Ball scores. Convert live frames with `cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)` immediately before inference. Keep BGR for existing OpenCV HSV, drawing, and preview code. `test_model.py --image` already converts OpenCV-loaded BGR images to RGB; therefore image tests and PyTorch validation do not reveal this live-camera bug.
+
 ## Striker ball-hiding hysteresis (`striker.py`)
 
 **Problem:** With separate `BALL_HIDING_START_DIST` / `BALL_HIDING_END_DIST`, a naive `if dist < END: aim elif dist >= START: hide` leaves a dead zone between them. Crossing that band (or fluttering near either threshold) snapped `rotation` between wall-facing (`120`/`240`) and `0` / goal heading, so the bot oscillated CW/CCW.

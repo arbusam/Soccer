@@ -274,7 +274,8 @@ def run_camera(conf: float) -> None:
             t1 = time.perf_counter()
 
             frame_height, frame_width = infer_frame.shape[:2]
-            detection = detector.best_ball(infer_frame)
+            rgb_frame = cv2.cvtColor(infer_frame, cv2.COLOR_BGR2RGB)
+            detection = detector.best_ball(rgb_frame)
             t2 = time.perf_counter()
 
             sum_grab_ms += (t1 - t0) * 1000.0

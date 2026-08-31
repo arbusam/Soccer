@@ -300,7 +300,8 @@ class Camera:
                 time.sleep(0.0005)
                 continue
 
-            detection = self._detect_ball(frame)
+            inference_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            detection = self._detect_ball(inference_frame)
             if detection is not None:
                 centre_x, centre_y = detection["centre"]
                 new_bearing = calculate_ball_bearing_deg(
