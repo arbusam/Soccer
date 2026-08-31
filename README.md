@@ -22,3 +22,4 @@ Generative AI tools such as GitHub Copilot and Cursor were used to assist in wri
 If you would like to contact us please use the following contact details:
 
 Arhan - Email: [arhan@arhan.tech](mailto:arhan@arhan.tech) Discord: @arbusam
+Kanishk - Email: @kansar_1
