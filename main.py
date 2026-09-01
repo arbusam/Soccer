@@ -8,29 +8,28 @@ from enum import Enum
 from pathlib import Path
 
 import board
-import lidar
 
 import defence
 import striker
-import switch
-from break_beam import Breakbeam
-from camera import Camera
-from communication import Peer
-from imu import IMU
-from kicker import Kicker
-from movement import (
+from lib import lidar, switch
+from lib.break_beam import Breakbeam
+from lib.camera import Camera
+from lib.communication import Peer
+from lib.imu import IMU
+from lib.kicker import Kicker
+from lib.movement import (
     LidarVelocityEstimator,
     MotorCommunicationError,
     MovementController,
     compute_wheel_odometry_trust,
     imu_yaw_to_relative_yaw,
 )
-from recording_session import RecordingSession
+from lib.recording_session import RecordingSession
 
 LOG_FPS = 30 # How often the bot state is written to the log file
 FPS_REPORT_INTERVAL = 1.0 # seconds, how often the FPS is printed to the console when --fps is used
-PEER_PORT = 5005
-ENABLE_COMMUNICATION = False # Use communication.py to communicate between bots.
+PEER_PORT = 5005 # Port for bot to bot communication.
+ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between bots.
 USE_PAUSE = False # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 
 WHEEL_DIAMETER = 50 # mm, used to convert between motor RPM and robot mm/s
@@ -38,6 +37,9 @@ MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel s
 
 LIDAR_PORT = "/dev/ttyUSB0" # LIDAR port. Usually "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
+
+MODE_SWITCH_PIN = 16
+PAUSE_SWITCH_PIN = 21
 
 MAX_MOTOR_RPM = 1000  # This converts to a maximum linear translation of ~2618 mm/s with 50 mm wheels; driver hardware max is ~1984 RPM (~5194 mm/s)
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
@@ -106,9 +108,8 @@ def load_config(path: Path = CONFIG_PATH) -> tuple[list[int], BotMode, BotMode]:
 I2C_ADDRESSES, MODE_SWITCH_OFF, MODE_SWITCH_ON = load_config()
 
 # Initialize the mode switch and pause switch
-# TODO: Make these constants at the top
-mode_switch = switch.Switch(board.D16)
-pause_switch = switch.Switch(board.D21)
+mode_switch = switch.Switch(MODE_SWITCH_PIN)
+pause_switch = switch.Switch(PAUSE_SWITCH_PIN)
 bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
 
 run = not USE_PAUSE
@@ -150,6 +151,7 @@ if args.record_session is not None and args.camera_stream:
     parser.error("--record-session cannot be combined with --camera-stream")
 
 
+# Used to debug speeds of various parts of the code.
 class FpsMonitor:
     """Sample monotonic counters and print Hz once per reporting interval."""
 
@@ -179,7 +181,7 @@ class FpsMonitor:
 
 
 if args.stream:
-    import send_log
+    from lib import send_log
     # Start websocket log server in the background (it runs its own asyncio loop).
     send_log.start_server_background()
     time.sleep(0.05)

@@ -3,11 +3,11 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 ## Library (motor / movement)
 
-**Movement module (`movement.py`)** – main API for driving motors:
+**Movement module (`lib/movement.py`)** – main API for driving motors:
 
 - **`init_motors(i2c_addresses, calibration_file="calibration_data.json")`** → `(motors, motor_modes)`. Creates up to 8 `PowerfulBLDCDriver` instances, sets PID/limits, loads saved calibration from the JSON file, applies `set_ELECANGLEOFFSET` / `set_SINCOSCENTRE`, and puts motors in FOC speed mode (command mode 12). Exits with an error if the calibration file is missing or has fewer motors than requested. Use this for normal operation.
-- **`get_motors_for_calibration(i2c_addresses)`** → `(motors, motor_count, normalized_addresses)`. Creates drivers and sets PID/limits only (no calibration, no FOC). Used by `calibrate.py`.
-- **`calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calibration_data.json")`**. Puts each motor in calibration mode, runs physical calibration, reads `ELECANGLEOFFSET` and `SINCOSCENTRE`, and writes them to the JSON file. Call this only when you need to (re)calibrate; use `calibrate.py` as the entry point.
+- **`get_motors_for_calibration(i2c_addresses)`** → `(motors, motor_count, normalized_addresses)`. Creates drivers and sets PID/limits only (no calibration, no FOC). Used by `calibration/motors.py`.
+- **`calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calibration_data.json")`**. Puts each motor in calibration mode, runs physical calibration, reads `ELECANGLEOFFSET` and `SINCOSCENTRE`, and writes them to the JSON file. Call this only when you need to (re)calibrate; use `calibration/motors.py` as the entry point.
 - **`MovementController.move(direction, speed, rotation, rotation_speed, yaw, dribbler=0)`**. Non-blocking: only updates command targets. A background drive thread (50 Hz) owns accel ramping, yaw correction, and I2C speed writes. `direction` / `rotation` / `yaw` use the project frame where `0` = startup-forward and `90` = startup-right (clockwise positive). `rotation_speed` is a 0.0-1.0 scalar for yaw-correction strength.
 - **`imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)`** → `float`. Convert raw IMU yaw into the project's startup-relative heading frame. The upside-down IMU reports clockwise turns as decreasing yaw, so the correct conversion is `wrap_angle_deg(startup_yaw - imu_yaw)`.
 - **`_prompt_i2c_addresses()`** → list of I2C addresses. Interactive prompt (number of motors, then each address). Used by scripts that don't hardcode addresses.
@@ -18,26 +18,26 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **External driver:** `steelbar_powerful_bldc_driver.PowerfulBLDCDriver(i2c_bus, address)` (e.g. from `git+https://github.com/Aw3someAndrew/SteelBar_CircuitPython_powerful_bldc_driver`). Driver firmware version must be 3. Important methods: `set_ELECANGLEOFFSET`, `set_SINCOSCENTRE`, `get_calibration_ELECANGLEOFFSET`, `get_calibration_SINCOSCENTRE`, `set_speed`, `get_speed_QDR`, `update_quick_data_readout`, plus PID/limits and mode config.
 
-**Calibration workflow:** Run `python calibrate.py` once (or after hardware change) to create/overwrite `calibration_data.json`. After that, `init_motors(...)` loads that file and does not run physical calibration. Calibration file format: `{"motors": [{"address": <int>, "elecangleoffset": <int>, "sincoscentre": <int>}, ...]}`.
+**Calibration workflow:** Run `python calibration/motors.py` once (or after hardware change) to create/overwrite `calibration_data.json`. After that, `init_motors(...)` loads that file and does not run physical calibration. Calibration file format: `{"motors": [{"address": <int>, "elecangleoffset": <int>, "sincoscentre": <int>}, ...]}`.
 
-## Movement: speed (mm/s) to motor RPM (`movement.py`)
+## Movement: speed (mm/s) to motor RPM (`lib/movement.py`)
 
 **Problem:** What are `a_speed`, `b_speed`, `c_speed`, `d_speed`, and `max_trans_rpm` when `speed` is a given value (e.g. 500)?
 
 **How it works:**
 - `speed` is in mm/s. `direction`, `rotation`, and `yaw` use the project heading frame where `0` = startup-forward and `90` = startup-right. The IMU does **not** natively use this sign convention; convert raw IMU yaw with `imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)` before passing it into `move()`.
-- `movement.py` converts the global translation heading into the robot's local frame with `local_direction = yaw - direction + 45` (degrees). The `+45` rotates into the wheel basis because the wheels sit on the diagonals, leaving the front edge clear.
+- `lib/movement.py` converts the global translation heading into the robot's local frame with `local_direction = yaw - direction + 45` (degrees). The `+45` rotates into the wheel basis because the wheels sit on the diagonals, leaving the front edge clear.
 - Wheel velocities in mm/s use the current code signs: `a_value = -sin(local_direction)*speed`, `b_value = +cos(local_direction)*speed`, `c_value = +sin(local_direction)*speed`, `d_value = -cos(local_direction)*speed`.
 - Conversion to RPM uses wheel diameter (e.g. `WHEEL_DIAMETER = 50` mm in `defence.py`): `mmps_to_rpm = 60 / (diameter * π)`.
 - Motor speeds in RPM: `a_speed = a_value * mmps_to_rpm`, and similarly for b, c, d.
-- Yaw correction uses `yaw_error = wrap_angle_deg(rotation - yaw)`, so positive error means "turn clockwise to match the target heading". That RPM is **subtracted** from every wheel (`rpm - yaw_correction_rpm`). Adding it spun the robot anticlockwise (`test_dribbler_rotate.py` with `rotation=90`, `yaw=0`). The requested yaw RPM is limited to `max_yaw_rpm`, then the translation RPMs are scaled down if needed to leave headroom for yaw while preserving the requested movement direction.
+- Yaw correction uses `yaw_error = wrap_angle_deg(rotation - yaw)`, so positive error means "turn clockwise to match the target heading". That RPM is **subtracted** from every wheel (`rpm - yaw_correction_rpm`). Adding it spun the robot anticlockwise (`tests/dribbler_rotate.py` with `rotation=90`, `yaw=0`). The requested yaw RPM is limited to `max_yaw_rpm`, then the translation RPMs are scaled down if needed to leave headroom for yaw while preserving the requested movement direction.
 - With diameter 50 mm: `mmps_to_rpm ≈ 0.382`. Example: speed 500, `direction = yaw = 0` gives `local_direction = 45°`, which corresponds to local forward in the current wheel basis.
 
 **Problem:** QDR wheel odometry had the correct forward speed (`vx`) but the opposite sign on `vy`.
 
 **Solution:** This project's yaw is clockwise-positive and field `+y` is right (`90°`). Body `vy` is defined as **left**, so convert global velocity with `body_vy = gx * sin(yaw) - gy * cos(yaw)` (the left axis is `(sin yaw, -cos yaw)`). The ROS/CCW formula `−gx sin + gy cos` is the **right** axis here and will flip `vy`. `loc_predict_odometry` uses the same left-positive body frame; rebuild the C++ extension after changing it.
 
-## LIDAR localization (`lidar_module.cpp` + `localisation.cpp`)
+## LIDAR localization (`lib/lidar_module.cpp` + `lib/localisation.cpp`)
 
 **Solution — 3-DOF Monte Carlo localization (MCL) in C++:**
 
@@ -53,7 +53,7 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **Solution:** Model visibility from incidence angle; score explicit misses; lower confidence when geometry is under-constrained. Offline check: `python test_grazing_localisation.py` (uses `lidar.test_mcl_*` hooks, no hardware).
 
-**Python API:**
+**Python API** (import with `from lib import lidar`):
 
 1. `lidar.init(port, baudrate)` — start scan thread.
 2. `lidar.start_coordinates(pitch_x, pitch_y)` — start MCL thread and build pitch map.
@@ -66,13 +66,13 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 9. `lidar.scan_updates_enabled()` → `bool` — false while MCL is pausing LIDAR updates during fast rotation.
 10. `lidar.shutdown()` — stops localization, scan thread, and motor.
 
-**IMU in MCL:** `imu.py` enables `BNO_REPORT_GYROSCOPE` and `BNO_REPORT_ROTATION_VECTOR`. Gyro: `get_gyro_z_deg_s()` (clockwise positive in project frame) is passed as `omega_deg_s` to `predict_odometry` each control loop. Absolute yaw: convert with `imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)` and call `lidar.set_imu_yaw(...)` each loop (and before the first pose wait). MCL applies a soft Gaussian yaw prior (σ = 45°) on every scan update so LIDAR still owns fine, drift-free heading while the IMU breaks the 180° field symmetry. Init/recovery particles sample yaw around the IMU when a reading exists, otherwise over ±180°.
+**IMU in MCL:** `lib/imu.py` enables `BNO_REPORT_GYROSCOPE` and `BNO_REPORT_ROTATION_VECTOR`. Gyro: `get_gyro_z_deg_s()` (clockwise positive in project frame) is passed as `omega_deg_s` to `predict_odometry` each control loop. Absolute yaw: convert with `imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)` and call `lidar.set_imu_yaw(...)` each loop (and before the first pose wait). MCL applies a soft Gaussian yaw prior (σ = 45°) on every scan update so LIDAR still owns fine, drift-free heading while the IMU breaks the 180° field symmetry. Init/recovery particles sample yaw around the IMU when a reading exists, otherwise over ±180°.
 
 **Stuck on "Waiting for first pose estimate...":** While waiting for `is_coordinates_ready()`, still call `predict_odometry(0, 0, omega, dt)` each loop (even when stationary). Predict applies translation/yaw process noise; without it, particles collapse after the first resample and often never reach the confidence threshold. Also print `get_coordinates_info()` / `get_scan_count()` during the wait so low confidence vs empty scans is visible.
 
-**Rebuild after changing `lidar_module.cpp` or `localisation.cpp`:** `python setup.py build_ext --inplace`
+**Rebuild after changing `lib/lidar_module.cpp` or `lib/localisation.cpp`:** `python lib/setup.py build_ext --inplace`
 
-**Build error `cannot find -lsl_lidar_sdk` / g++ exit code 1:** The Python extension links against the RPLidar SDK static library. If `rplidar_sdk/output/Linux/Release/` does not exist or has no `libsl_lidar_sdk.a`, build the SDK first: `make -C rplidar_sdk/sdk`. Then run `python setup.py build_ext --inplace` again.
+**Build error `cannot find -lsl_lidar_sdk` / g++ exit code 1:** The Python extension links against the RPLidar SDK static library. If `rplidar_sdk/output/Linux/Release/` does not exist or has no `libsl_lidar_sdk.a`, build the SDK first: `make -C rplidar_sdk/sdk`. Then run `python lib/setup.py build_ext --inplace` again.
 
 ## Team-frame convention (`defence.py` / `simulate.py`)
 
@@ -126,15 +126,15 @@ python training/delete_skipped_label_studio.py --apply
 3. Export YOLO-detect dataset: `python training/export_label_studio.py` → `training/datasets/open-soccer-detect/`. Train/val is **by clip**, not by frame: early uploads are `{hash}-output_NNNN.png` (the hash is per file) grouped by Label Studio import burst; Local Files under `Photos/` use prefixes like `output10_000001.png`. After export, `python training/check_split_overlap.py` reports leftover near-duplicates.
 4. Train + ONNX (project `.venv`): `python training/train.py --size n` → `training/exports/open-soccer-detect-n/model.onnx` (XPU via `training/xpu_patch.py`; AMP off on XPU; `batch=-1` AutoBatch uses `torch.xpu` memory, not CUDA; use `--no-mosaic` if XPU scatter/gather errors).
 5. On x86 with Hailo DFC: `python training/compile_hailo.py --hw-arch hailo8` → `open-soccer-detect-n_hailo_model/model.hef`.
-6. Copy that folder to the Pi. `test_model.py` and `camera.py` use [`hailo_ball.py`](hailo_ball.py) (HailoRT) for inference.
+6. Copy that folder to the Pi. `tests/model.py` and `lib/camera.py` use [`lib/hailo_ball.py`](lib/hailo_ball.py) (HailoRT) for inference.
 
-YOLO26’s end2end TopK head is unsupported on Hailo. `compile_hailo.py` cuts at `/model.23/Mul_2` (decoded xyxy boxes) and `/model.23/Sigmoid` (class scores) as **two** HEF outputs so each gets its own INT8 range. The HEF uses input normalization only; `hailo_ball.py` merges the streams and runs conf filter + NMS on the host.
+YOLO26’s end2end TopK head is unsupported on Hailo. `compile_hailo.py` cuts at `/model.23/Mul_2` (decoded xyxy boxes) and `/model.23/Sigmoid` (class scores) as **two** HEF outputs so each gets its own INT8 range. The HEF uses input normalization only; `lib/hailo_ball.py` merges the streams and runs conf filter + NMS on the host.
 
-**Empty detections / all class max=0.0 with float32 output:** Usually the HEF was compiled with a single end node (`/model.23/Transpose` or `Concat_3`) that concatenates pixel boxes (~0–640) with sigmoid scores (~0–1). One qp scale (~3+) cannot represent confidences, so dequantized scores collapse to ~0 even though ONNX float inference is fine. Fix: recompile with `python training/compile_hailo.py` (defaults are now `Mul_2` + `Sigmoid`), copy the new `model.hef` to the Pi. Diagnose with `python test_model.py --image model_test_image.png --debug` — you want two outputs and Ball max ≫ 0. Sanity-check the ONNX with onnxruntime if needed.
+**Empty detections / all class max=0.0 with float32 output:** Usually the HEF was compiled with a single end node (`/model.23/Transpose` or `Concat_3`) that concatenates pixel boxes (~0–640) with sigmoid scores (~0–1). One qp scale (~3+) cannot represent confidences, so dequantized scores collapse to ~0 even though ONNX float inference is fine. Fix: recompile with `python training/compile_hailo.py` (defaults are now `Mul_2` + `Sigmoid`), copy the new `model.hef` to the Pi. Diagnose with `python tests/model.py --image model_test_image.png --debug` — you want two outputs and Ball max ≫ 0. Sanity-check the ONNX with onnxruntime if needed.
 
 **UINT8 vs FLOAT32:** Keep HailoRT output as `FormatType.FLOAT32` (`quantized=False`). Manual UINT8 + `quant_info` also drops detections when qp is wrong/missing.
 
-**Live camera channel order:** Picamera2 format `"RGB888"` exposes a BGR-ordered numpy array (and `"BGR888"` exposes RGB bytes). Ultralytics training and the HEF expect RGB, so passing an `"RGB888"` frame directly to `HailoBallDetector` swaps red and blue and can collapse Ball scores. Convert live frames with `cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)` immediately before inference. Keep BGR for existing OpenCV HSV, drawing, and preview code. `test_model.py --image` already converts OpenCV-loaded BGR images to RGB; therefore image tests and PyTorch validation do not reveal this live-camera bug.
+**Live camera channel order:** Picamera2 format `"RGB888"` exposes a BGR-ordered numpy array (and `"BGR888"` exposes RGB bytes). Ultralytics training and the HEF expect RGB, so passing an `"RGB888"` frame directly to `HailoBallDetector` swaps red and blue and can collapse Ball scores. Convert live frames with `cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)` immediately before inference. Keep BGR for existing OpenCV HSV, drawing, and preview code. `tests/model.py --image` already converts OpenCV-loaded BGR images to RGB; therefore image tests and PyTorch validation do not reveal this live-camera bug.
 
 ## Striker ball-hiding hysteresis (`striker.py`)
 

@@ -1,0 +1,26 @@
+{
+  "annotation": "top-confidence Ball detection used by the controller",
+  "bot_mode_at_start": "DEFENCE",
+  "captured_frames": 591,
+  "created_utc": "2026-08-13T09:23:07Z",
+  "detection_rows": 468,
+  "detection_writer_error": null,
+  "detections_file": "detections.csv",
+  "dropped_detection_rows": 0,
+  "dropped_game_rows": 0,
+  "duration_s": 8.609475763999967,
+  "game_file": "game.csv",
+  "game_rows": 531,
+  "game_writer_error": null,
+  "inference_frames": 468,
+  "performance_note": "Use --fps with and without --record-session to compare camera_cap, camera_infer, and logic rates on this robot.",
+  "recording_error": null,
+  "requested_fps": 90.0,
+  "resolution": [
+    640,
+    640
+  ],
+  "schema_version": 1,
+  "video_file": "video.mp4",
+  "video_start_elapsed_s": 1.6987095910000107
+}

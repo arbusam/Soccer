@@ -1,3 +1,27 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = [
+    "striker_shots.py",
+    "recording_session.py",
+    "session_replay.py",
+    "camera_recording.py",
+]
+python_functions = [
+    "goal_*",
+    "enemy_*",
+    "midfield_*",
+    "close_*",
+    "hiding_*",
+    "blocked_*",
+    "after_*",
+    "writes_*",
+    "refuses_*",
+    "timeline_*",
+    "loads_*",
+    "annotation_*",
+    "inference_*",
+]
+
 [tool.ruff]
 required-version = ">=0.16.2"
 extend-exclude = []

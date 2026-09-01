@@ -15,7 +15,7 @@ import pygame
 import websockets
 
 from defence import defence, goalie
-from session_replay import (
+from lib.session_replay import (
     EventTimeline,
     VideoReader,
     annotate_video_frame,
@@ -23,7 +23,7 @@ from session_replay import (
     load_recorded_session,
 )
 from striker import striker
-from test_bot import test_bot
+from tests.bot import bot
 
 parser = argparse.ArgumentParser(
     description="Visualize a simulated match from a log file.",
@@ -141,8 +141,8 @@ ROLE_CONTROLLER_MAP = {
     "goalie": ("goalie", goalie),
     "s": ("striker", striker),
     "striker": ("striker", striker),
-    "t": ("test_bot", test_bot),
-    "test_bot": ("test_bot", test_bot),
+    "t": ("test_bot", bot),
+    "test_bot": ("test_bot", bot),
 }
 
 TEAM_DEFAULTS = {
@@ -1786,7 +1786,7 @@ else:
         elif args.striker:
             controller = striker
         elif args.test_bot:
-            controller = test_bot
+            controller = bot
         bots.append(
             Bot(
                 x=start_x,
@@ -1864,7 +1864,7 @@ else:
                     if other_bot.base_color != bot.base_color
                 ]
                 controller_inverted = (
-                    bot.controller in (defence, striker, goalie, test_bot) and bot.base_color != yellow
+                    bot.controller in (defence, striker, goalie, bot) and bot.base_color != yellow
                 )
                 if controller_inverted:
                     controller_x, controller_y = invert_pitch_point(bot.x, bot.y)
@@ -1881,7 +1881,7 @@ else:
                         for other_x, other_y in controller_enemy_bot_positions
                     ]
 
-                if bot.controller is defence or bot.controller is striker or bot.controller is test_bot:
+                if bot.controller is defence or bot.controller is striker or bot.controller is bot:
                     direction, speed, rotation, steering_state, kick_state, dribbler_state = bot.controller(
                         controller_x,
                         controller_y,

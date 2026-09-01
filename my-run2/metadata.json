@@ -1,0 +1,14 @@
+{
+  "annotation": "top-confidence Ball detection used by the controller",
+  "created_utc": "2026-08-19T00:00:00Z",
+  "detection_rows": 731,
+  "detections_file": "detections.csv",
+  "duration_s": 12.118836919000003,
+  "game_file": "game.csv",
+  "game_rows": 919,
+  "requested_fps": 90.0,
+  "resolution": [640, 640],
+  "schema_version": 1,
+  "video_file": "video.mp4",
+  "video_start_elapsed_s": 2.041813740000002
+}

@@ -7,7 +7,7 @@ description: Diagnose and fix Bus error (SIGBUS) when importing numpy/cv2/torch 
 
 ## Symptom
 
-Running Python scripts (e.g., `defence.py`, `camera.py`, or `test_model.py`) crashes with `Bus error` (SIGBUS), often before any Python traceback. With Ultralytics this can also show up as a misleading `ImportError: cannot import name 'YOLO'` / missing `__version__`, while `import torch` (or `import numpy`) actually Bus-errors.
+Running Python scripts (e.g., `defence.py`, `lib/camera.py`, or `tests/model.py`) crashes with `Bus error` (SIGBUS), often before any Python traceback. With Ultralytics this can also show up as a misleading `ImportError: cannot import name 'YOLO'` / missing `__version__`, while `import torch` (or `import numpy`) actually Bus-errors.
 
 ## Cause
 

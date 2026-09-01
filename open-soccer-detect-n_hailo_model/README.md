@@ -27,7 +27,7 @@ python training/compile_hailo.py \
 ```bash
 bash scripts/verify_hailo.sh
 # copy this folder (model.hef + metadata.yaml) onto the Pi, then:
-python test_model.py
+python tests/model.py
 ```
 
-`test_model.py` and `camera.py` load `open-soccer-detect-n_hailo_model/model.hef` via HailoRT.
+`tests/model.py` and `lib/camera.py` load `open-soccer-detect-n_hailo_model/model.hef` via HailoRT.

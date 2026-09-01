@@ -20,8 +20,6 @@ GOAL_LINE_WIDTH = 10
 MAX_MOTOR_RPM = 400 # Maximum rpm that the wheels can spin at
 LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
-#TOF_ADDRESS = 0x50
-BALL_CAPTURED_DISTANCE = 27 # mm, distance from the ToF to the ball to consider it captured
 
 # Pitch boundary coordinates. Used to keep bot within the pitch.
 WHITE_MIN_X = 250

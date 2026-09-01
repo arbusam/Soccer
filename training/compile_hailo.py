@@ -9,7 +9,7 @@ outputs (``/model.23/Mul_2``, ``/model.23/Sigmoid``), each ``(1, 4, 8400)`` for
 nc=4. Do **not** cut at ``/model.23/Transpose`` / ``Concat_3``: that concatenates
 pixel boxes with sigmoid scores into one tensor, and INT8 quantization then uses
 a box-sized qp scale (~3+) that crushes every confidence to ~0.
-``hailo_ball.py`` merges the two streams and runs conf filter + NMS on the host.
+``lib/hailo_ball.py`` merges the two streams and runs conf filter + NMS on the host.
 
 Example:
   python training/compile_hailo.py \\
@@ -126,7 +126,7 @@ def compile_hef(
     hef_path = out_dir / "model.hef"
     hef_path.write_bytes(hef)
     print(f"Compiled HEF: {hef_path}")
-    print("Copy this folder to the Pi and point test_model.py / camera.py at it.")
+    print("Copy this folder to the Pi and point tests/model.py / lib/camera.py at it.")
     return hef_path
 
 
