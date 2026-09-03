@@ -18,7 +18,7 @@ This repo was created to share our code to provide inspiration to other teams. H
 
 `legacy/` contains code that is no longer used
 
-The below files have more information about them in comments inside them.
+The below files are the most important, and have more information about them in comments inside of them.
 
 `config.txt` includes the settings that vary between bots. An example can be found in `example_config.txt`
 
