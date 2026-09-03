@@ -161,6 +161,9 @@ static constexpr float GOAL_RIGHT_FRONT_X = 2130.0f;
 static constexpr float GOAL_TOP_Y = 685.0f;
 static constexpr float GOAL_BOTTOM_Y = 1135.0f;
 static constexpr float GOAL_BACK_BOTTOM_Y = 1140.0f;
+// Goal interiors occupy only about 1.5% of the map. Pure uniform sampling
+// leaves too few particles there for reliable acquisition or recovery.
+static constexpr float GOAL_PARTICLE_FRACTION = 0.20f;
 
 static float wrap_angle_deg(float angle) {
     while (angle >= 180.0f) angle -= 360.0f;
@@ -456,12 +459,25 @@ static float rand_init_yaw_deg() {
     return rand_uniform(-180.0f, 180.0f);
 }
 
+static void sample_position(Particle& particle, float goal_fraction) {
+    float region = rand_uniform(0.0f, 1.0f);
+    if (region < goal_fraction * 0.5f) {
+        particle.x = rand_uniform(GOAL_LEFT_BACK_X, GOAL_LEFT_FRONT_X);
+        particle.y = rand_uniform(GOAL_TOP_Y, GOAL_BOTTOM_Y);
+    } else if (region < goal_fraction) {
+        particle.x = rand_uniform(GOAL_RIGHT_FRONT_X, GOAL_RIGHT_BACK_X);
+        particle.y = rand_uniform(GOAL_TOP_Y, GOAL_BOTTOM_Y);
+    } else {
+        particle.x = rand_uniform(0.0f, g_pitch_x);
+        particle.y = rand_uniform(0.0f, g_pitch_y);
+    }
+}
+
 static void init_particles_uniform() {
     g_particles.resize(PARTICLE_COUNT);
     const float weight = 1.0f / PARTICLE_COUNT;
     for (auto& particle : g_particles) {
-        particle.x = rand_uniform(0.0f, g_pitch_x);
-        particle.y = rand_uniform(0.0f, g_pitch_y);
+        sample_position(particle, GOAL_PARTICLE_FRACTION);
         particle.yaw_deg = rand_init_yaw_deg();
         particle.weight = weight;
     }
@@ -472,8 +488,7 @@ static void inject_random_particles(float fraction) {
     const float weight = 1.0f / PARTICLE_COUNT;
     for (int i = 0; i < count; i++) {
         int idx = (int)rand_uniform(0.0f, (float)(PARTICLE_COUNT - 1));
-        g_particles[idx].x = rand_uniform(0.0f, g_pitch_x);
-        g_particles[idx].y = rand_uniform(0.0f, g_pitch_y);
+        sample_position(g_particles[idx], GOAL_PARTICLE_FRACTION);
         g_particles[idx].yaw_deg = rand_init_yaw_deg();
         g_particles[idx].weight = weight;
     }
