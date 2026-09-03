@@ -9,7 +9,7 @@ import board
 
 from lib.kicker import Kicker
 
-SOLENOID_PIN = board.D4
+SOLENOID_PIN = board.D21
 PULSE_S = 0.02
 
 

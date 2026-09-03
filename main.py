@@ -39,7 +39,7 @@ LIDAR_PORT = "/dev/ttyUSB0" # LIDAR port. Usually "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
 MODE_SWITCH_PIN = board.D16
-PAUSE_SWITCH_PIN = board.D21
+PAUSE_SWITCH_PIN = board.D22
 
 MAX_MOTOR_RPM = 1000  # This converts to a maximum linear translation of ~2618 mm/s with 50 mm wheels; driver hardware max is ~1984 RPM (~5194 mm/s)
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
@@ -288,7 +288,7 @@ def feed_imu_yaw_prior(imu_sensor, startup_yaw):
 
 
 try:
-    kicker = Kicker(board.D4, 0.02)
+    kicker = Kicker(board.D21, 0.02)
     break_beam = Breakbeam(board.D17)
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
