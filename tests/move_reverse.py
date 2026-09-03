@@ -1,6 +1,8 @@
 import math
 import time
 
+import board
+
 from lib.imu import IMU
 from lib.movement import (
     MotorCommunicationError,
@@ -19,6 +21,11 @@ TEST_SPEED = 100
 TEST_ROTATION = 0
 TEST_ROTATION_SPEED = 1.0
 COMMAND_INTERVAL = 0.05
+
+from lib.kicker import Kicker
+
+SOLENOID_PIN = board.D4
+PULSE_S = 0.02
 
 
 def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02):
@@ -68,11 +75,17 @@ def main():
         )
         print("Press Ctrl+C to stop.")
         l = 0
+        kicker = Kicker(SOLENOID_PIN, PULSE_S)
         while True:
             if l < 60:
                 dir = 1
+            elif l < 120:
+                dir = -1
             else:
                 dir = -1
+                kicker.kick()
+                time.sleep(PULSE_S + 0.1)
+                kicker.deinit()
             yaw = imu.get_yaw()
             if yaw is None:
                 time.sleep(0.01)
