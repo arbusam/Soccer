@@ -254,7 +254,11 @@ def striker(
         enemy_bot_positions = []
     # If the ball is not detected, the bot should move to the centre of the pitch.
     if ball_x is None or ball_y is None:
-        target_x = 1515
+        if x_pos > 1415:
+            target_x = 1315
+            
+        else:
+            target_x = 1550
         target_y = 910
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
