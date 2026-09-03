@@ -265,7 +265,7 @@ def striker(
         speed = 0
         rotation = 0
         kick = False
-        dribbler = True
+        dribbler = 1
         return direction, speed, rotation, steering_state, kick, dribbler
     # Calculate the direction to the ball in vector form. Direction is relative to the bot's ideal heading (the direction towards the goal it should be scoring towards from the goal it is defending)
     vector = (ball_x - x_pos), (ball_y - y_pos)
@@ -288,7 +288,7 @@ def striker(
 
     # By default, the bot should not kick the ball.
     kick = False
-    dribbler = True # Whether the dribbler should be on.
+    dribbler = 1 # Whether the dribbler should be on.
 
     # steering_state persists ball-hiding across calls (hysteresis between START/END).
     ball_hiding = bool(steering_state) if ball_captured else False
@@ -353,5 +353,7 @@ def striker(
                 )
             ):
                 kick = True
+    if kick == True:
+        dribbler = -1
 
     return direction + offset, speed, rotation, ball_hiding, kick, dribbler

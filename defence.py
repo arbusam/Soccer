@@ -74,7 +74,7 @@ def defence(
     friendly_bot_positions=None,
     enemy_bot_positions=None,
 ):
-    dribbler = False # Whether the dribbler should be on.
+    dribbler = 0 # Whether the dribbler should be on.
     if friendly_bot_positions is None:
         friendly_bot_positions = []
     if enemy_bot_positions is None:
@@ -127,7 +127,7 @@ def defence(
 
     # Only kick if the ball is captured and lined up with the goal.
     if ball_captured:
-        dribbler = True
+        dribbler = 1
 
         target_x = CYAN_GOAL_BACK_X
         target_y_min = GOAL_BACK_Y_MIN
@@ -145,7 +145,8 @@ def defence(
                 if target_y_min <= y_hit <= target_y_max:
                     dribbler = False
                     kick = True
-
+    if kick == True:
+        dribbler = -1
     return direction + offset, speed, rotation, steering, kick, dribbler
 
 # Inputs: 
@@ -172,7 +173,7 @@ def goalie(
     friendly_bot_positions=None,
     enemy_bot_positions=None,
 ):
-    dribbler = False # Whether the dribbler should be on.
+    dribbler = 0 # Whether the dribbler should be on.
     if friendly_bot_positions is None:
         friendly_bot_positions = []
     if enemy_bot_positions is None:
@@ -251,5 +252,7 @@ def goalie(
             if math.hypot(dif_x, dif_y) < 10:
                 speed = 0
             direction = math.degrees(math.atan2(dif_y, dif_x))
+    if kick == True:
+        dribbler = -1
 
     return direction, speed, rotation, kick, dribbler
