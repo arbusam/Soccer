@@ -336,9 +336,7 @@ def striker(
                 rotation = 0
                 direction = 0
         elif offset == 0 and dist_to_goal < BALL_HIDING_END_DIST:
-            # Stop and turn in place toward the goal, then shoot when lined up.
-            # Kick along yaw, so require the actual facing direction to score — not just
-            # proximity to the aim angle (a 10° early kick can hit the outside near wall).
+            # Once the bot is close enough the the goal, ball hiding ends and it turns and shoots
             speed = 0
             rotation = degrees_to_goal
             if (
