@@ -17,7 +17,9 @@ WHITE_MAX_X = 2180
 WHITE_MIN_Y = 250
 WHITE_MAX_Y = 1570
 
-BALL_RADIUS = 21 # mm, radius of the ball
+BALL_RADIUS = 21  # mm, radius of the ball
+ROBOT_RADIUS = 110  # mm
+BOUNDARY_STOP_MARGIN = 40  # mm reserved for braking/localisation error
 
 # Wrap to the shortest signed angle in [-180, 180).
 def wrap_angle_deg(angle):
@@ -45,6 +47,39 @@ def is_ball_out(ball_x, ball_y):
     dy = ball_y - closest_y
     distance = math.hypot(dx, dy)
     return distance > BALL_RADIUS
+
+
+def keep_motion_inside_white_lines(x_pos, y_pos, direction, speed):
+    """Remove command components that would take the robot over a white line."""
+    if direction is None or speed <= 0:
+        return direction, speed
+
+    min_x = WHITE_MIN_X + ROBOT_RADIUS
+    max_x = WHITE_MAX_X - ROBOT_RADIUS
+    min_y = WHITE_MIN_Y + ROBOT_RADIUS
+    max_y = WHITE_MAX_Y - ROBOT_RADIUS
+    stop_min_x = min_x + BOUNDARY_STOP_MARGIN
+    stop_max_x = max_x - BOUNDARY_STOP_MARGIN
+    stop_min_y = min_y + BOUNDARY_STOP_MARGIN
+    stop_max_y = max_y - BOUNDARY_STOP_MARGIN
+
+    direction_rad = math.radians(direction)
+    velocity_x = speed * math.cos(direction_rad)
+    velocity_y = speed * math.sin(direction_rad)
+
+    if (x_pos <= stop_min_x and velocity_x < 0) or (
+        x_pos >= stop_max_x and velocity_x > 0
+    ):
+        velocity_x = 0
+    if (y_pos <= stop_min_y and velocity_y < 0) or (
+        y_pos >= stop_max_y and velocity_y > 0
+    ):
+        velocity_y = 0
+
+    guarded_speed = math.hypot(velocity_x, velocity_y)
+    if guarded_speed <= 1e-9:
+        return direction, 0
+    return math.degrees(math.atan2(velocity_y, velocity_x)), guarded_speed
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -147,7 +182,10 @@ def defence(
                     kick = True
     if kick == True:
         dribbler = -1
-    return direction + offset, speed, rotation, steering, kick, dribbler
+    direction, speed = keep_motion_inside_white_lines(
+        x_pos, y_pos, direction + offset, speed
+    )
+    return direction, speed, rotation, steering, kick, dribbler
 
 # Inputs: 
 # x_pos: x position of the robot
@@ -186,6 +224,9 @@ def goalie(
         speed = 600
         rotation = 0
         kick = False
+        direction, speed = keep_motion_inside_white_lines(
+            x_pos, y_pos, direction, speed
+        )
         return direction, speed, rotation, kick, dribbler
     vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = None
@@ -255,4 +296,7 @@ def goalie(
     if kick == True:
         dribbler = -1
 
+    direction, speed = keep_motion_inside_white_lines(
+        x_pos, y_pos, direction, speed
+    )
     return direction, speed, rotation, kick, dribbler

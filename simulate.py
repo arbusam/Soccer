@@ -234,6 +234,16 @@ RED_DURATION_MS = 1000
 BOT_DIAMETER = BOT_RADIUS * 2
 
 
+def keep_bot_inside_white_lines(bot):
+    """Clamp the whole robot body to the playable side of the white lines."""
+    min_x = WHITE_MIN_X + BOT_RADIUS
+    max_x = WHITE_MAX_X - BOT_RADIUS
+    min_y = WHITE_MIN_Y + BOT_RADIUS
+    max_y = WHITE_MAX_Y - BOT_RADIUS
+    bot.x = max(min_x, min(max_x, bot.x))
+    bot.y = max(min_y, min(max_y, bot.y))
+
+
 def parse_optional_float(token: str | None) -> float | None:
     """Return float(token) or None if token is missing/None/empty/'None'."""
     if token is None:
@@ -1972,8 +1982,7 @@ else:
                 bot.x = prev_x
                 bot.y = prev_y
 
-            bot.x = max(BOT_MIN_X, min(BOT_MAX_X, bot.x))
-            bot.y = max(BOT_MIN_Y, min(BOT_MAX_Y, bot.y))
+            keep_bot_inside_white_lines(bot)
             bot_actual_dx = bot.x - prev_x
             bot_actual_dy = bot.y - prev_y
             bot.velocity_x = (bot_actual_dx * MM_PER_PIXEL) / dt_safe
@@ -2008,6 +2017,7 @@ else:
         resolve_bot_collisions(bot_states)
         for state in bot_states:
             bot_ref = state["bot"]
+            keep_bot_inside_white_lines(bot_ref)
             prev_x, prev_y = state["prev"]
             bot_actual_dx = bot_ref.x - prev_x
             bot_actual_dy = bot_ref.y - prev_y

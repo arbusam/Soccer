@@ -36,6 +36,9 @@ MANIFEST
 pip-log.txt
 pip-delete-this-directory.txt
 
+# Runtime session recordings
+recordings/
+
 # Unit test / coverage reports
 htmlcov/
 .tox/

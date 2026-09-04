@@ -14,6 +14,7 @@ python_functions = [
     "hiding_*",
     "blocked_*",
     "after_*",
+    "boundary_*",
     "writes_*",
     "refuses_*",
     "timeline_*",

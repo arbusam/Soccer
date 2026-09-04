@@ -287,6 +287,7 @@ def striker(
             offset = -80
     elif dist > 500:
         speed = 800
+        dribbler = 0
     elif ball_captured:
         speed = 800
 
