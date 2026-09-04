@@ -8,7 +8,6 @@ import time
 from lib import lidar, send_log
 from lib.camera import Camera
 from lib.imu import IMU
-
 from striker import BALL_TIMEOUT, CAMERA_PORT, LIDAR_BAUDRATE, LIDAR_PORT
 
 PORT = send_log.PORT

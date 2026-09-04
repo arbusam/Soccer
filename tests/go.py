@@ -2,7 +2,6 @@ import math
 import time
 
 from lib import lidar
-
 from lib.imu import IMU
 from lib.movement import (
     MotorCommunicationError,

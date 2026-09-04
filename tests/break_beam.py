@@ -1,4 +1,5 @@
 import board
+
 from lib.break_beam import Breakbeam
 
 break_beam = Breakbeam(board.D17)
