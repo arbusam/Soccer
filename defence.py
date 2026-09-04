@@ -143,10 +143,10 @@ def defence(
             elif steering and y_pos > 1050 and dist < 200:
                 offset = -40
             if y_pos < 800 and ball_captured:
-                offset = 20
+                offset = 40
                 steering = True
             elif y_pos > 1000 and ball_captured:
-                offset = -20
+                offset = -40
                 steering = True
             else:
                 steering = False

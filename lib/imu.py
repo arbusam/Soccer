@@ -4,7 +4,7 @@ import time
 
 import board
 import busio
-from adafruit_bno08x import BNO_REPORT_GYROSCOPE, BNO_REPORT_ROTATION_VECTOR
+from adafruit_bno08x import BNO_REPORT_GAME_ROTATION_VECTOR, BNO_REPORT_GYROSCOPE
 from adafruit_bno08x.i2c import BNO08X_I2C
 
 
@@ -20,7 +20,7 @@ class IMU:
 
         i2c = busio.I2C(board.SCL, board.SDA)
         self._bno = BNO08X_I2C(i2c)
-        self._bno.enable_feature(BNO_REPORT_ROTATION_VECTOR)
+        self._bno.enable_feature(BNO_REPORT_GAME_ROTATION_VECTOR)
         self._bno.enable_feature(BNO_REPORT_GYROSCOPE)
 
         self._thread = threading.Thread(target=self._update_loop, daemon=True)
@@ -29,7 +29,7 @@ class IMU:
     def _update_loop(self):
         while self._running:
             try:
-                quat_i, quat_j, quat_k, quat_real = self._bno.quaternion
+                quat_i, quat_j, quat_k, quat_real = self._bno.game_quaternion
                 yaw = self._quaternion_to_yaw_degrees(quat_i, quat_j, quat_k, quat_real)
                 gyro = self._bno.gyro
                 with self._lock:
