@@ -31,6 +31,8 @@ WHITE_MAX_Y = 1570
 PITCH_WIDTH = 1820
 # How close to the white sideline before switching from wall-drive to upfield.
 BALL_HIDING_LINE_THRESHOLD = 150
+# Set to False to disable the ball-hiding strategy.
+BALL_HIDING_ENABLED = False
 # Distance to goal (mm) at which ball hiding starts / ends.
 BALL_HIDING_START_DIST = 1000
 BALL_HIDING_END_DIST = 600
@@ -272,7 +274,7 @@ def striker(
     direction = math.degrees(math.atan2(vector[1], vector[0])) # Convert the vector to a direction in degrees, relative to the ideal heading.
     dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2) # Calculate the distance to the ball.
     rotation = 0 # Sets the desired rotation. 0 is always the startup/ideal heading in this frame.
-    speed = 400 # mm/s, Default speed of the bot.
+    speed = 500 # mm/s, Default speed of the bot.
     offset = 0 # deg, Offset to the direction to the ball. Used to avoid own goals.
     # Skip approach offset while captured: ball is in front, so direction ≈ yaw and
     # ±80 would clear goal rotation and oscillate against facing forward (rotation=0).
@@ -285,13 +287,17 @@ def striker(
             offset = -80
     elif dist > 500:
         speed = 800
+    elif ball_captured:
+        speed = 800
 
     # By default, the bot should not kick the ball.
     kick = False
     dribbler = 1 # Whether the dribbler should be on.
 
     # steering_state persists ball-hiding across calls (hysteresis between START/END).
-    ball_hiding = bool(steering_state) if ball_captured else False
+    ball_hiding = (
+        BALL_HIDING_ENABLED and bool(steering_state) if ball_captured else False
+    )
 
     # Only kick if the ball is captured and lined up with the goal.
     # Kicks ball into goal when it's close to the goal
@@ -305,7 +311,11 @@ def striker(
         )
 
         # Enter hide when far; stay hidden until closer than END (no dead-zone flutter).
-        if not ball_hiding and dist_to_goal >= BALL_HIDING_START_DIST:
+        if (
+            BALL_HIDING_ENABLED
+            and not ball_hiding
+            and dist_to_goal >= BALL_HIDING_START_DIST
+        ):
             ball_hiding = True
         elif ball_hiding and offset == 0 and dist_to_goal < BALL_HIDING_END_DIST:
             ball_hiding = False
