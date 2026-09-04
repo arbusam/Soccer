@@ -5,6 +5,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+from lib.hailo_ball import HailoBallDetector
 
 from calibration.ball_distance import (
     DEFAULT_DISTANCE_CALIBRATION_FILE,
@@ -14,7 +15,6 @@ from calibration.ball_distance import (
     load_distance_calibration,
     predict_distance_from_calibration,
 )
-from lib.hailo_ball import HailoBallDetector
 
 MODEL_DIR = Path(__file__).resolve().parent / "open-soccer-detect-s_hailo_model"
 BALL_CONFIDENCE = 0.25

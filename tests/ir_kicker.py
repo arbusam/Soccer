@@ -1,6 +1,5 @@
 import board
 import digitalio
-
 from lib.kicker import Kicker
 
 # Setup the sensor on GPIO 14 (Mapped to board.D14)

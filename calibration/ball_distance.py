@@ -10,7 +10,6 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-
 from lib.hailo_ball import HailoBallDetector
 
 logger = logging.getLogger(__name__)

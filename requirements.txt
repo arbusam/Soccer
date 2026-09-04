@@ -4,7 +4,9 @@ git+https://github.com/Aw3someAndrew/SteelBar_CircuitPython_powerful_bldc_driver
 websockets
 smbus2
 adafruit-blinka
-adafruit-lgpio
+# Do not pip-install `lgpio`. PyPI has no wheels for Python 3.13+, so pip builds
+# from source and dies on missing SWIG. On the Pi: `sudo apt install python3-lgpio`
+# and create the venv with `--system-site-packages`. See AGENTS.md.
 adafruit-circuitpython-bno08x
 matplotlib
 pandas-stubs
