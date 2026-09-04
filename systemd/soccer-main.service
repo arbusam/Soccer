@@ -1,0 +1,27 @@
+# Install and start at boot:
+#   chmod +x /home/arhan/Soccer/systemd/run-main-recording.sh
+#   sudo cp systemd/soccer-main.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now soccer-main.service
+#
+# Recordings are saved under:
+#   /home/arhan/Soccer/recordings/YYYY-MM-DD_HH-MM-SS/
+
+[Unit]
+Description=Soccer controller with synchronized session recording
+After=multi-user.target
+
+[Service]
+Type=simple
+User=arhan
+Group=arhan
+WorkingDirectory=/home/arhan/Soccer
+Environment=HOME=/home/arhan
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/arhan/Soccer/systemd/run-main-recording.sh
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
