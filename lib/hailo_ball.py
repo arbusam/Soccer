@@ -9,6 +9,7 @@ import numpy as np
 import yaml
 
 BALL_CLASS_NAME = "ball"
+BOT_CLASS_NAME = "bot"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_HAIL_MODEL_DIR = _PROJECT_ROOT / "open-soccer-detect-n_hailo_model"
 DEFAULT_CLASS_NAMES = {
@@ -331,10 +332,13 @@ class HailoBallDetector:
             self.imgsz = int(imgsz)
 
         self._ball_class_id = 0
+        self._bot_class_id = 1
         for class_id, name in self.names.items():
-            if str(name).strip().lower() == BALL_CLASS_NAME:
+            name_l = str(name).strip().lower()
+            if name_l == BALL_CLASS_NAME:
                 self._ball_class_id = int(class_id)
-                break
+            elif name_l == BOT_CLASS_NAME:
+                self._bot_class_id = int(class_id)
 
         self._letterbox_canvas: np.ndarray | None = None
         self._input_batch: np.ndarray | None = None
@@ -427,6 +431,17 @@ class HailoBallDetector:
 
     def _is_ball_class(self, class_id: int) -> bool:
         return int(class_id) == self._ball_class_id
+
+    def _is_bot_class(self, class_id: int) -> bool:
+        return int(class_id) == self._bot_class_id
+
+    @property
+    def ball_class_id(self) -> int:
+        return self._ball_class_id
+
+    @property
+    def bot_class_id(self) -> int:
+        return self._bot_class_id
 
     def _preprocess(self, frame_rgb: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int]]:
         height, width = frame_rgb.shape[:2]

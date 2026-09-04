@@ -47,10 +47,43 @@ YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 CAMERA_PORT = 8000 # Port used for streaming the camera feed for debugging.
 CAMERA_RESOLUTION = (640, 640)
 CAMERA_FPS = 90
+# Camera-detected bots within this distance of self or the UDP teammate are
+# treated as self/friendly rather than enemies.
+CAMERA_BOT_MATCH_MM = 100
 
 BALL_TIMEOUT = 0.5 # seconds, maximum time for which the ball position can be extrapolated from velocity without assuming 'lost' state.
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.txt" # Path to the config file (see example_config.txt)
+
+
+def _distance_mm(ax, ay, bx, by):
+    return math.hypot(ax - bx, ay - by)
+
+
+def classify_camera_bot_positions(
+    camera_bot_positions,
+    self_xy,
+    peer_xy=None,
+    match_mm=CAMERA_BOT_MATCH_MM,
+):
+    """Split camera-projected bots into friendly matches vs enemies.
+
+    Detections within ``match_mm`` of this robot are discarded (self-view).
+    Detections within ``match_mm`` of the UDP teammate are treated as friendly
+    matches (peer position remains authoritative). Everything else is enemy.
+    """
+    friendly_matches = []
+    enemy_bot_positions = []
+    self_x, self_y = self_xy
+    for bot_x, bot_y in camera_bot_positions:
+        if _distance_mm(bot_x, bot_y, self_x, self_y) <= match_mm:
+            continue
+        if peer_xy is not None and _distance_mm(bot_x, bot_y, peer_xy[0], peer_xy[1]) <= match_mm:
+            friendly_matches.append((bot_x, bot_y))
+            continue
+        enemy_bot_positions.append((bot_x, bot_y))
+    return friendly_matches, enemy_bot_positions
+
 
 # Enum for bot mode. Depending on game state, the bot can change between these modes.
 # Each bot includes a mode switch, which can set the default mode to two of these, depending on the switch's position.
@@ -384,6 +417,7 @@ try:
     last_ball_x = None
     last_ball_y = None
     last_camera_frame_id = camera.frame_id
+    last_camera_bot_positions = []
     last_pose_time = time.monotonic()
     lidar_velocity = LidarVelocityEstimator()
 
@@ -467,15 +501,34 @@ try:
                 time.sleep(0.01)
                 continue
 
-            camera_frame_id, ball_direction, ball_distance = camera.get_measurement()
+            (
+                camera_frame_id,
+                ball_direction,
+                ball_distance,
+                bot_measurements,
+            ) = camera.get_scene_measurement()
             has_new_camera_frame = camera_frame_id != last_camera_frame_id
             last_camera_frame_id = camera_frame_id
             if has_new_camera_frame:
                 ball_x = x_pos + ball_distance * math.cos(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None else None
                 ball_y = y_pos + ball_distance * math.sin(math.radians(ball_direction)) if ball_distance is not None and ball_direction is not None else None
+                camera_bot_positions = []
+                for bot_bearing, bot_distance in bot_measurements:
+                    if bot_bearing is None or bot_distance is None:
+                        continue
+                    camera_bot_positions.append(
+                        (
+                            x_pos
+                            + bot_distance * math.cos(math.radians(bot_bearing)),
+                            y_pos
+                            + bot_distance * math.sin(math.radians(bot_bearing)),
+                        )
+                    )
+                last_camera_bot_positions = camera_bot_positions
             else:
                 ball_x = None
                 ball_y = None
+                camera_bot_positions = last_camera_bot_positions
             now = time.time()
             if ball_x is not None and ball_y is not None:
                 dt = now - last_ball_update
@@ -516,14 +569,21 @@ try:
                     }
                 )
                 peer_msg = peer.receive()
+            peer_xy = None
             if (
                 peer_msg is not None
                 and peer_msg.get("x") is not None
                 and peer_msg.get("y") is not None
             ):
-                friendly_bot_positions = [(peer_msg["x"], peer_msg["y"])]
+                peer_xy = (peer_msg["x"], peer_msg["y"])
+                friendly_bot_positions = [peer_xy]
             else:
                 friendly_bot_positions = []
+            _friendly_matches, enemy_bot_positions = classify_camera_bot_positions(
+                camera_bot_positions,
+                (x_pos, y_pos),
+                peer_xy=peer_xy,
+            )
             if (
                 ball_x is None
                 and ball_y is None
@@ -544,7 +604,7 @@ try:
                     ball_captured,
                     steering_state=steering_state,
                     friendly_bot_positions=friendly_bot_positions,
-                    enemy_bot_positions=[],
+                    enemy_bot_positions=enemy_bot_positions,
                 )
             elif bot_mode == BotMode.STRIKER:
                 direction, speed, rotation, steering_state, kick, dribbler = striker.striker(
@@ -555,6 +615,8 @@ try:
                     ball_y,
                     ball_captured,
                     steering_state=steering_state,
+                    friendly_bot_positions=friendly_bot_positions,
+                    enemy_bot_positions=enemy_bot_positions,
                 )
             elif bot_mode == BotMode.GOALIE:
                 direction, speed, rotation, kick, dribbler = defence.goalie(
@@ -565,7 +627,7 @@ try:
                     ball_y,
                     ball_captured,
                     friendly_bot_positions=friendly_bot_positions,
-                    enemy_bot_positions=[],
+                    enemy_bot_positions=enemy_bot_positions,
                 )
                 steering_state = False
             if (

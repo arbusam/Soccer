@@ -33,6 +33,39 @@ DEFAULT_BALL_MODEL_PATH = _PROJECT_ROOT / "open-soccer-detect-n_hailo_model"
 DEFAULT_RESOLUTION = (640, 640)
 
 
+def _detection_dict_from_xyxy(xyxy, confidence, frame_width, frame_height, *, point="centre"):
+    """Build the ball-style detection dict from an xyxy box.
+
+    ``point`` selects which image point feeds radial_pixels / bearing:
+    - ``"centre"``: bbox centre (ball)
+    - ``"bottom_centre"``: bottom edge midpoint (bot ground contact)
+    """
+    x1, y1, x2, y2 = xyxy
+    centre_x = (x1 + x2) / 2.0
+    centre_y = (y1 + y2) / 2.0
+    if point == "bottom_centre":
+        point_x = centre_x
+        point_y = float(y2)
+    else:
+        point_x = centre_x
+        point_y = centre_y
+    return {
+        "bbox": (
+            round(x1),
+            round(y1),
+            round(x2 - x1),
+            round(y2 - y1),
+        ),
+        "centre": (centre_x, centre_y),
+        "point": (point_x, point_y),
+        "radial_pixels": float(
+            np.hypot(point_x - frame_width / 2.0, point_y - frame_height / 2.0)
+        ),
+        "confidence": float(confidence),
+        "polygon": None,
+    }
+
+
 def _resolve_model_path(model_path):
     model_path = Path(model_path)
     if model_path.is_absolute():
@@ -88,6 +121,7 @@ class Camera:
         self.user_callback = None
         self._bearing = None
         self._distance = None
+        self._bot_measurements = []
         self._frame_id = 0
         self._measurement_lock = threading.Lock()
         self._capture_started = False
@@ -246,12 +280,78 @@ class Camera:
         with self._measurement_lock:
             return self._frame_id, self._bearing, self._distance
 
+    def get_scene_measurement(self):
+        """Atomically return frame_id, ball bearing/distance, and bot polar measurements.
+
+        Each bot entry is ``(bearing_deg, distance_mm)``. Distance may be ``None``
+        when calibration is missing; bots without a usable bearing are omitted.
+        """
+        if self._is_shutting_down:
+            with self._measurement_lock:
+                return self._frame_id, None, None, []
+        with self._measurement_lock:
+            return (
+                self._frame_id,
+                self._bearing,
+                self._distance,
+                list(self._bot_measurements),
+            )
+
     def set_callback(self, callback_function):
         self.user_callback = callback_function
         self.picam2.pre_callback = self._proxy_callback
 
+    def _detect_scene(self, frame):
+        """One multi-class inference → best ball dict + list of bot dicts."""
+        detections = self.ball_model.predict(frame)
+        frame_h, frame_w = frame.shape[:2]
+        ball_detection = None
+        bot_detections = []
+        for det in detections:
+            class_id = int(det["class_id"])
+            if class_id == self.ball_model.ball_class_id:
+                candidate = _detection_dict_from_xyxy(
+                    det["xyxy"],
+                    det["confidence"],
+                    frame_w,
+                    frame_h,
+                    point="centre",
+                )
+                if (
+                    ball_detection is None
+                    or candidate["confidence"] > ball_detection["confidence"]
+                ):
+                    ball_detection = candidate
+            elif class_id == self.ball_model.bot_class_id:
+                bot_detections.append(
+                    _detection_dict_from_xyxy(
+                        det["xyxy"],
+                        det["confidence"],
+                        frame_w,
+                        frame_h,
+                        point="bottom_centre",
+                    )
+                )
+        return ball_detection, bot_detections
+
     def _detect_ball(self, frame):
-        return self.ball_model.best_ball(frame)
+        ball_detection, _bot_detections = self._detect_scene(frame)
+        return ball_detection
+
+    def _polar_from_detection(self, detection, frame_width, frame_height):
+        point_x, point_y = detection.get("point", detection["centre"])
+        bearing = calculate_ball_bearing_deg(
+            point_x,
+            point_y,
+            frame_width,
+            frame_height,
+        )
+        bearing += 270
+        distance = predict_distance_from_calibration(
+            self.distance_calibration,
+            detection["radial_pixels"],
+        )
+        return bearing, distance
 
     def _start_infer_thread(self):
         if self._infer_thread is not None:
@@ -302,19 +402,12 @@ class Camera:
                 continue
 
             inference_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            detection = self._detect_ball(inference_frame)
+            detection, bot_detections = self._detect_scene(inference_frame)
+            frame_h, frame_w = frame.shape[:2]
+            bot_measurements = []
             if detection is not None:
-                centre_x, centre_y = detection["centre"]
-                new_bearing = calculate_ball_bearing_deg(
-                    centre_x,
-                    centre_y,
-                    frame.shape[1],
-                    frame.shape[0],
-                )
-                new_bearing += 270
-                new_distance = predict_distance_from_calibration(
-                    self.distance_calibration,
-                    detection["radial_pixels"],
+                new_bearing, new_distance = self._polar_from_detection(
+                    detection, frame_w, frame_h
                 )
                 if new_distance is None and (
                     self.distance_calibration is None
@@ -328,10 +421,19 @@ class Camera:
                 new_bearing = None
                 new_distance = None
 
+            for bot_det in bot_detections:
+                bot_bearing, bot_distance = self._polar_from_detection(
+                    bot_det, frame_w, frame_h
+                )
+                if bot_bearing is None:
+                    continue
+                bot_measurements.append((bot_bearing, bot_distance))
+
             with self._measurement_lock:
                 self._last_detection = detection
                 self._bearing = new_bearing
                 self._distance = new_distance
+                self._bot_measurements = bot_measurements
                 self._frame_id += 1
                 inference_sequence = self._frame_id
 
