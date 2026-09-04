@@ -30,7 +30,7 @@ LOG_FPS = 30 # How often the bot state is written to the log file
 FPS_REPORT_INTERVAL = 1.0 # seconds, how often the FPS is printed to the console when --fps is used
 PEER_PORT = 5005 # Port for bot to bot communication.
 ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between bots.
-USE_PAUSE = False # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
+USE_PAUSE = True # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 
 WHEEL_DIAMETER = 50 # mm, used to convert between motor RPM and robot mm/s
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
@@ -449,13 +449,13 @@ try:
         if fps_monitor is not None:
             fps_monitor.maybe_print()
         if USE_PAUSE and pause_switch.read():
-            run = not run
-            last_pose_time = time.monotonic()
             while pause_switch.read():
                 time.sleep(0.01)
-            if not run:
-                time.sleep(0.5)
-                steering_state = False
+            run = not run
+            last_pose_time = time.monotonic()
+        if not run:
+            time.sleep(0.5)
+            steering_state = False
         if run:
             if enter_pressed():
                 print("Shutdown requested, exiting.")
