@@ -4,6 +4,7 @@ import select
 import sys
 import threading
 import time
+from collections import deque
 from enum import Enum
 from pathlib import Path
 
@@ -52,6 +53,8 @@ CAMERA_FPS = 90
 CAMERA_BOT_MATCH_MM = 100
 
 BALL_TIMEOUT = 0.5 # seconds, maximum time for which the ball position can be extrapolated from velocity without assuming 'lost' state.
+STARTUP_YAW_SAMPLE_COUNT = 25
+STARTUP_YAW_SAMPLE_INTERVAL = 0.02
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.txt" # Path to the config file (see example_config.txt)
 
@@ -296,21 +299,39 @@ def enter_pressed():
     return True
 
 
-def capture_startup_yaw(imu_sensor, sample_count=25, sample_interval=0.02):
+class RollingYawSampler:
+    """Circularly average the latest complete window of yaw samples."""
+
+    def __init__(self, sample_count=STARTUP_YAW_SAMPLE_COUNT):
+        self._samples = deque(maxlen=sample_count)
+
+    def reset(self):
+        self._samples.clear()
+
+    def add(self, yaw):
+        if yaw is None:
+            return None
+        self._samples.append(float(yaw))
+        if len(self._samples) < self._samples.maxlen:
+            return None
+        sin_sum = sum(math.sin(math.radians(sample)) for sample in self._samples)
+        cos_sum = sum(math.cos(math.radians(sample)) for sample in self._samples)
+        return math.degrees(math.atan2(sin_sum, cos_sum))
+
+
+def capture_startup_yaw(
+    imu_sensor,
+    sample_count=STARTUP_YAW_SAMPLE_COUNT,
+    sample_interval=STARTUP_YAW_SAMPLE_INTERVAL,
+):
     """Average a short burst of IMU samples so startup yaw is not just the first reading."""
     print("Stabilizing IMU yaw reference...")
-    sin_sum = 0.0
-    cos_sum = 0.0
-    samples = 0
-    while samples < sample_count:
-        yaw_sample = imu_sensor.get_yaw()
-        if yaw_sample is not None:
-            yaw_rad = math.radians(yaw_sample)
-            sin_sum += math.sin(yaw_rad)
-            cos_sum += math.cos(yaw_rad)
-            samples += 1
+    sampler = RollingYawSampler(sample_count)
+    while True:
+        startup_yaw = sampler.add(imu_sensor.get_yaw())
+        if startup_yaw is not None:
+            return startup_yaw
         time.sleep(sample_interval)
-    return math.degrees(math.atan2(sin_sum, cos_sum))
 
 
 def feed_imu_yaw_prior(imu_sensor, startup_yaw):
@@ -446,9 +467,13 @@ try:
             )
         print("FPS monitoring enabled")
 
+    paused_yaw_sampler = RollingYawSampler()
+    next_paused_yaw_sample_time = time.monotonic()
+
     while True:
         if fps_monitor is not None:
             fps_monitor.maybe_print()
+        was_run = run
         if USE_PAUSE and pause_switch.read():
             if SWITCHM == 1:
                 while pause_switch.read():
@@ -459,9 +484,18 @@ try:
                 run = True
         if SWITCHM == 2 and not pause_switch.read():
             run = False
+        if was_run and not run:
+            paused_yaw_sampler.reset()
+            next_paused_yaw_sample_time = time.monotonic()
         if not run:
-            time.sleep(0.1)
             steering_state = False
+            now = time.monotonic()
+            if now >= next_paused_yaw_sample_time:
+                sampled_yaw = paused_yaw_sampler.add(imu.get_yaw())
+                next_paused_yaw_sample_time = now + STARTUP_YAW_SAMPLE_INTERVAL
+                if sampled_yaw is not None:
+                    startup_yaw = sampled_yaw
+                    feed_imu_yaw_prior(imu, startup_yaw)
         if run:
             if enter_pressed():
                 print("Shutdown requested, exiting.")
