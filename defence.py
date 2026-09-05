@@ -1,7 +1,7 @@
 import math
 
-# Coordinates of the centre of the goal zone, which the goalie uses for blocking.
-CYAN_GOAL_CENTRE_X = 400
+# Goalie's home X position, kept safely in front of the back wall.
+GOALIE_HOME_X = 500
 YELLOW_GOAL_CENTRE_X = 1980
 # Y is shared between goals because it is the same
 GOAL_CENTRE_Y = 910
@@ -217,7 +217,7 @@ def goalie(
     if enemy_bot_positions is None:
         enemy_bot_positions = []
     if ball_x is None or ball_y is None:
-        target_x = 400
+        target_x = GOALIE_HOME_X
         target_y = GOAL_CENTRE_Y
         vector = (target_x - x_pos), (target_y - y_pos)
         direction = math.degrees(math.atan2(vector[1], vector[0]))
@@ -253,7 +253,7 @@ def goalie(
         direction = 270
     elif y_pos < 460:
         direction = 90
-    elif x_pos < 420:
+    elif x_pos < 520:
         direction = 0
     elif x_pos > 600 and not ball_captured:
         direction = 180
@@ -275,15 +275,15 @@ def goalie(
             line_len_sq = goal_dx * goal_dx + goal_dy * goal_dy
             epsilon = 1e-6
             if line_len_sq < epsilon:
-                intercept_x = CYAN_GOAL_CENTRE_X
+                intercept_x = GOALIE_HOME_X
                 intercept_y = GOAL_CENTRE_Y
             else:
                 t = ((x_pos - ball_x) * goal_dx + (y_pos - ball_y) * goal_dy) / line_len_sq
                 intercept_x = ball_x + t * goal_dx
                 intercept_y = ball_y + t * goal_dy
 
-            if intercept_x < 430:
-                intercept_x = 430
+            if intercept_x < 530:
+                intercept_x = 530
                 if abs(goal_dx) > epsilon:
                     t = (intercept_x - ball_x) / goal_dx
                     intercept_y = ball_y + t * goal_dy
