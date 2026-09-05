@@ -286,10 +286,10 @@ def striker(
         else:
             offset = -80
     elif dist > 500:
-        speed = 800
+        speed = 1200
         dribbler = 0
     elif ball_captured:
-        speed = 800
+        speed = 1000
 
     # By default, the bot should not kick the ball.
     kick = False
