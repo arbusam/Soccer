@@ -10,6 +10,8 @@ Example:
   python training/build_all.py --batch-n 16 --batch-s 8 --batch-m 4
   python training/build_all.py --skip-train        # only compile existing ONNX
   python training/build_all.py --skip-hailo        # only train/export ONNX
+  python training/build_all.py --exclude m         # skip YOLO26m training
+  python training/build_all.py --exclude n --exclude s
 """
 
 from __future__ import annotations
@@ -187,6 +189,14 @@ def main() -> None:
     parser.add_argument("--hw-arch", default="hailo8", choices=("hailo8", "hailo8l"))
     parser.add_argument("--calib-images", type=int, default=64)
     parser.add_argument("--skip-train", action="store_true")
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        choices=TRAIN_SIZES,
+        default=[],
+        metavar="SIZE",
+        help="Skip training this model size (n, s, or m). Repeatable. Does not skip Hailo compile.",
+    )
     parser.add_argument("--skip-hailo", action="store_true")
     parser.add_argument(
         "--resume",
@@ -203,9 +213,14 @@ def main() -> None:
     state = _load_or_create_state(args.resume)
     failures: list[str] = []
 
-    if not args.skip_train:
+    excluded = [size for size in TRAIN_SIZES if size in args.exclude]
+    train_sizes = [size for size in TRAIN_SIZES if size not in args.exclude]
+    if excluded:
+        print(f"Excluding from training: {', '.join(excluded)}")
+
+    if not args.skip_train and train_sizes:
         _require_python(TRAIN_PYTHON, "Training")
-        for index, size in enumerate(TRAIN_SIZES):
+        for index, size in enumerate(train_sizes):
             stage = f"train:{size}"
             if _stage_completed(state, stage):
                 print(f"\nSkipping stage completed by the interrupted build: {stage}")
