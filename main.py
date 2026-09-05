@@ -676,7 +676,7 @@ try:
             bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
             time.sleep(0.01)
             if movement_controller is not None:
-                movement_controller.stop()
+                movement_controller.move(0, 0, 0, 0, 0, 0)
 
 finally:
     if log_recorder_thread is not None:
