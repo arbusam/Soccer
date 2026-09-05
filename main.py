@@ -55,7 +55,7 @@ BALL_TIMEOUT = 0.5 # seconds, maximum time for which the ball position can be ex
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.txt" # Path to the config file (see example_config.txt)
 
-SWITCHM = 1
+SWITCHM = 2
 
 def _distance_mm(ax, ay, bx, by):
     return math.hypot(ax - bx, ay - by)
