@@ -13,10 +13,10 @@ After=multi-user.target
 
 [Service]
 Type=simple
-User=arhan
-Group=arhan
+User=techsupport
+Group=techsupport
 WorkingDirectory=/home/arhan/Soccer
-Environment=HOME=/home/arhan
+Environment=HOME=/home/techsupport
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/home/arhan/Soccer/systemd/run-main-recording.sh
 Restart=on-failure
