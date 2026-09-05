@@ -55,6 +55,7 @@ BALL_TIMEOUT = 0.5 # seconds, maximum time for which the ball position can be ex
 
 CONFIG_PATH = Path(__file__).resolve().parent / "config.txt" # Path to the config file (see example_config.txt)
 
+SWITCHM = 1
 
 def _distance_mm(ax, ay, bx, by):
     return math.hypot(ax - bx, ay - by)
@@ -449,10 +450,15 @@ try:
         if fps_monitor is not None:
             fps_monitor.maybe_print()
         if USE_PAUSE and pause_switch.read():
-            while pause_switch.read():
-                time.sleep(0.01)
-            run = not run
-            last_pose_time = time.monotonic()
+            if SWITCHM == 1:
+                while pause_switch.read():
+                    time.sleep(0.01)
+                run = not run
+                last_pose_time = time.monotonic()
+            elif SWITCHM == 2:
+                run = True
+        if SWITCHM == 2 and not pause_switch.read():
+            run = False
         if not run:
             time.sleep(0.5)
             steering_state = False
