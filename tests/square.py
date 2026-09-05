@@ -4,6 +4,7 @@ import argparse
 import sys
 import time
 
+from lib.config import load_config
 from lib.movement import MotorCommunicationError, MovementController
 
 WHEEL_DIAMETER = 50  # mm
@@ -11,7 +12,6 @@ MAX_YAW_RPM = 100
 MAX_MOTOR_RPM = 400
 YAW_CORRECT_THRESHOLD = 3  # deg
 
-I2C_ADDRESSES = [28, 32, 31, 30]
 SQUARE_DIRECTIONS = (0, 90, 180, 270)
 DEFAULT_SIDE_SECONDS = 1.0
 DEFAULT_SPEED = 100  # mm/s
@@ -42,9 +42,10 @@ def main(argv: list[str]) -> int:
 
     movement_controller = None
     try:
-        print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
+        i2c_addresses = load_config().i2c_addresses
+        print(f"Initializing motors at I2C addresses: {i2c_addresses}")
         movement_controller = MovementController.from_i2c_addresses(
-            I2C_ADDRESSES,
+            i2c_addresses,
             WHEEL_DIAMETER,
             MAX_YAW_RPM,
             MAX_MOTOR_RPM,

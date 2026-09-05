@@ -1,10 +1,9 @@
 import time
 
-import board
-
 from lib import switch as switch_module
+from lib.config import load_config
 
-switch = switch_module.Switch(board.D16)
+switch = switch_module.Switch(load_config().mode_switch_pin)
 
 while True:
     if switch.read():

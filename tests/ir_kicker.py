@@ -1,22 +1,17 @@
-import board
-import digitalio
-
+from lib.break_beam import Breakbeam
+from lib.config import load_config
 from lib.kicker import Kicker
 
-# Setup the sensor on GPIO 14 (Mapped to board.D14)
-break_beam = digitalio.DigitalInOut(board.D14)
-break_beam.direction = digitalio.Direction.INPUT
-break_beam.pull = digitalio.Pull.UP # Must use pull-up resistor
+config = load_config()
+break_beam = Breakbeam(config.break_beam_pin)
+kicker = Kicker(config.kicker_pin, 0.1)
 
 print("IR Breakbeam Sensor Test Initialized.")
 print("Waiting for beam to be broken...")
-kicker = Kicker(board.D27, 0.1)
 
 try:
     while True:
-        # .value is True when the beam is unbroken (Solid)
-        # .value is False when the beam is broken (Interrupted)
-        if not break_beam.value:
+        if break_beam.read():
             print("Beam is BROKEN!")
             kicker.kick()
         else:

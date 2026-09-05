@@ -1,5 +1,6 @@
 import time
 
+from lib.config import load_config
 from lib.movement import MotorCommunicationError, MovementController
 
 WHEEL_DIAMETER = 50
@@ -7,8 +8,6 @@ MAX_YAW_RPM = 100
 MAX_MOTOR_RPM = 400
 YAW_CORRECT_THRESHOLD = 3
 
-# Drive wheels then dribbler (same slot order as MovementController).
-I2C_ADDRESSES = [31, 29, 32, 28, 27]
 COMMAND_INTERVAL = 0.05
 # Keep a clockwise yaw error so the bot spins in place instead of holding a heading.
 CLOCKWISE_ROTATION = 90.0
@@ -17,9 +16,10 @@ CLOCKWISE_ROTATION = 90.0
 def main():
     movement_controller = None
     try:
-        print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
+        i2c_addresses = load_config().i2c_addresses
+        print(f"Initializing motors at I2C addresses: {i2c_addresses}")
         movement_controller = MovementController.from_i2c_addresses(
-            I2C_ADDRESSES,
+            i2c_addresses,
             WHEEL_DIAMETER,
             MAX_YAW_RPM,
             MAX_MOTOR_RPM,

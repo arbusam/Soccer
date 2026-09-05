@@ -1,9 +1,9 @@
 import math
 import time
 
-import board
-
+from lib.config import load_config
 from lib.imu import IMU
+from lib.kicker import Kicker
 from lib.movement import (
     MotorCommunicationError,
     MovementController,
@@ -15,16 +15,12 @@ MAX_YAW_RPM = 100
 MAX_MOTOR_RPM = 400
 YAW_CORRECT_THRESHOLD = 3
 
-I2C_ADDRESSES = [27, 26, 32, 28, 25]
 TEST_DIRECTION = 0
 TEST_SPEED = 100
 TEST_ROTATION = 0
 TEST_ROTATION_SPEED = 1.0
 COMMAND_INTERVAL = 0.05
 
-from lib.kicker import Kicker
-
-SOLENOID_PIN = board.D21
 PULSE_S = 0.02
 
 
@@ -59,9 +55,10 @@ def main():
             if yaw is None:
                 time.sleep(0.01)
 
-        print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
+        config = load_config()
+        print(f"Initializing motors at I2C addresses: {config.i2c_addresses}")
         movement_controller = MovementController.from_i2c_addresses(
-            I2C_ADDRESSES,
+            config.i2c_addresses,
             WHEEL_DIAMETER,
             MAX_YAW_RPM,
             MAX_MOTOR_RPM,
@@ -75,7 +72,7 @@ def main():
         )
         print("Press Ctrl+C to stop.")
         l = 0
-        kicker = Kicker(SOLENOID_PIN, PULSE_S)
+        kicker = Kicker(config.kicker_pin, PULSE_S)
         while True:
             if l < 60:
                 dir = 1

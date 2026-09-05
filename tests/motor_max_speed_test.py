@@ -9,32 +9,13 @@ from __future__ import annotations
 import sys
 import time
 
+from lib.config import load_config
 from lib.movement import init_motors
 
 START_SPEED = 100_000
 SPEED_INCREMENT = 100_000
 SETTLE_SECONDS = 0.5
 PLATEAU_STALL_COUNT = 3
-
-
-def _prompt_i2c_addresses():
-    print("Please enter the number of motor drivers you want to control:")
-    tempuint32 = int(input())
-    if tempuint32 == 0 or tempuint32 > 8:
-        print("Error motor count out of range, please reboot microcontroller to try again.")
-        sys.exit()
-
-    addresses = []
-    setup_motor_count = 0
-    while setup_motor_count < tempuint32:
-        print(f"Please enter the i2c address of motor driver number {setup_motor_count}:")
-        address = int(input())
-        if address <= 7 or address >= 120:
-            print("Error invalid i2c address, please reboot microcontroller to try again.")
-            sys.exit()
-        addresses.append(address)
-        setup_motor_count += 1
-    return addresses
 
 
 def _prompt_motor_index(motors) -> int:
@@ -70,7 +51,9 @@ def _get_measured_speed(motor):
 
 
 def main(argv: list[str]) -> int:
-    motors, _motor_modes = init_motors(_prompt_i2c_addresses())
+    i2c_addresses = load_config().i2c_addresses
+    print(f"Initializing motors at I2C addresses: {i2c_addresses}")
+    motors, _motor_modes = init_motors(i2c_addresses)
     motor_index = _prompt_motor_index(motors)
     motor = motors[motor_index]
 

@@ -5,10 +5,6 @@ import sys
 import threading
 import time
 from collections import deque
-from enum import Enum
-from pathlib import Path
-
-import board
 
 import defence
 import striker
@@ -16,6 +12,7 @@ from lib import lidar, switch
 from lib.break_beam import Breakbeam
 from lib.camera import Camera
 from lib.communication import Peer
+from lib.config import BotMode, load_config
 from lib.imu import IMU
 from lib.kicker import Kicker
 from lib.movement import (
@@ -39,9 +36,6 @@ MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel s
 LIDAR_PORT = "/dev/ttyUSB0" # LIDAR port. Usually "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
-MODE_SWITCH_PIN = board.D16
-PAUSE_SWITCH_PIN = board.D12
-
 MAX_MOTOR_RPM = 1000  # This converts to a maximum linear translation of ~2618 mm/s with 50 mm wheels; driver hardware max is ~1984 RPM (~5194 mm/s)
 YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
 
@@ -55,8 +49,6 @@ CAMERA_BOT_MATCH_MM = 100
 BALL_TIMEOUT = 0.5 # seconds, maximum time for which the ball position can be extrapolated from velocity without assuming 'lost' state.
 STARTUP_YAW_SAMPLE_COUNT = 25
 STARTUP_YAW_SAMPLE_INTERVAL = 0.02
-
-CONFIG_PATH = Path(__file__).resolve().parent / "config.txt" # Path to the config file (see example_config.txt)
 
 SWITCHM = 2
 
@@ -89,60 +81,15 @@ def classify_camera_bot_positions(
     return friendly_matches, enemy_bot_positions
 
 
-# Enum for bot mode. Depending on game state, the bot can change between these modes.
-# Each bot includes a mode switch, which can set the default mode to two of these, depending on the switch's position.
-# These default modes can be set in the config file.
-class BotMode(Enum):
-    DEFENCE = 1
-    GOALIE = 2
-    STRIKER = 3
-
-
-def load_config(path: Path = CONFIG_PATH) -> tuple[list[int], BotMode, BotMode]:
-    # Load all settings from the config file
-
-    # If the config file is not found, raise an error
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"Missing {path.name}. Copy example_config.txt to config.txt and edit as needed."
-        )
-
-    # Parse the config file into a dictionary following these rules:
-    # - Lines starting with # are ignored as comments
-    # - Any key-value pair must be in the format "key=value"
-    values: dict[str, str] = {}
-    with path.open(encoding="utf-8") as config_file:
-        for raw_line in config_file:
-            line = raw_line.split("#", 1)[0].strip()
-            if not line or "=" not in line:
-                continue
-            key, value = line.split("=", 1)
-            values[key.strip().lower()] = value.strip()
-
-    # If included in the config file, parse the motor I2C addresses as a comma-separated list of integers
-    # Motor I2C addresses follow the order: back left, back right, front right, front left, dribbler (optional)
-    try:
-        i2c_addresses = [int(part.strip()) for part in values["i2c_addresses"].split(",")]
-    except (KeyError, ValueError) as exc:
-        raise ValueError(
-            f"{path.name}: i2c_addresses must be a comma-separated list of integers"
-        ) from exc
-
-    valid_modes = ", ".join(mode.name for mode in BotMode) # Generate a comma-separated string of the bot modes for error messages``
-
-    def parse_mode(key: str) -> BotMode:
-        # Parse the mode from the config file for a given key into a BotMode enum value
-        try:
-            return BotMode[values[key].upper()]
-        except KeyError as exc:
-            raise ValueError(
-                f"{path.name}: {key} must be one of: {valid_modes}"
-            ) from exc
-
-    return i2c_addresses, parse_mode("mode_switch_off"), parse_mode("mode_switch_on") # Return the motor I2C addresses and the two default modes for the mode switches
-
 # Load the config into the global variables
-I2C_ADDRESSES, MODE_SWITCH_OFF, MODE_SWITCH_ON = load_config()
+config = load_config()
+I2C_ADDRESSES = config.i2c_addresses
+MODE_SWITCH_OFF = config.mode_switch_off
+MODE_SWITCH_ON = config.mode_switch_on
+MODE_SWITCH_PIN = config.mode_switch_pin
+PAUSE_SWITCH_PIN = config.pause_switch_pin
+KICKER_PIN = config.kicker_pin
+BREAK_BEAM_PIN = config.break_beam_pin
 
 # Initialize the mode switch and pause switch
 mode_switch = switch.Switch(MODE_SWITCH_PIN)
@@ -343,8 +290,8 @@ def feed_imu_yaw_prior(imu_sensor, startup_yaw):
 
 
 try:
-    kicker = Kicker(board.D21, 0.02)
-    break_beam = Breakbeam(board.D17)
+    kicker = Kicker(KICKER_PIN, 0.02)
+    break_beam = Breakbeam(BREAK_BEAM_PIN)
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
         lidar.init(LIDAR_PORT, LIDAR_BAUDRATE)

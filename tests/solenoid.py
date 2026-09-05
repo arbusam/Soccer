@@ -1,20 +1,16 @@
 #!/usr/bin/env python3
-"""
-Pulse GPIO 26 high for 0.1 s, then low (e.g. solenoid kick test on Raspberry Pi).
-"""
+"""Pulse the configured kicker pin for a short kick, then release it."""
 
 import time
 
-import board
-
+from lib.config import load_config
 from lib.kicker import Kicker
 
-SOLENOID_PIN = board.D21
 PULSE_S = 0.02
 
 
 def main():
-    kicker = Kicker(SOLENOID_PIN, PULSE_S)
+    kicker = Kicker(load_config().kicker_pin, PULSE_S)
     kicker.kick()
     time.sleep(PULSE_S + 0.1)
     kicker.deinit()

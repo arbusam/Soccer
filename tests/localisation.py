@@ -18,6 +18,7 @@ import threading
 import time
 
 from lib import lidar
+from lib.config import load_config
 from lib.imu import IMU
 from lib.movement import (
     LidarVelocityEstimator,
@@ -42,7 +43,6 @@ LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 PITCH_X = 2430
 PITCH_Y = 1820
-I2C_ADDRESSES = [31,29,32,28]
 
 
 def parse_args():
@@ -510,9 +510,10 @@ def main():
                 send_log_module=send_log_module,
             )
         else:
-            print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
+            i2c_addresses = load_config().i2c_addresses
+            print(f"Initializing motors at I2C addresses: {i2c_addresses}")
             movement_controller = MovementController.from_i2c_addresses(
-                I2C_ADDRESSES,
+                i2c_addresses,
                 WHEEL_DIAMETER,
                 MAX_YAW_RPM,
                 MAX_MOTOR_RPM,

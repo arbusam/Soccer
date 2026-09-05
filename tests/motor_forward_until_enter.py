@@ -1,6 +1,6 @@
 """
-Initialise motors (same prompt/init flow as defence.py/controller_movement.py),
-run them forward at a fixed RPM until Enter is pressed, then stop and exit.
+Initialise motors from config.txt, run them forward at a fixed RPM until Enter
+is pressed, then stop and exit.
 """
 
 from __future__ import annotations
@@ -8,27 +8,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from lib.config import load_config
 from lib.movement import init_motors
-
-
-def _prompt_i2c_addresses():
-    print("Please enter the number of motor drivers you want to control:")
-    tempuint32 = int(input())
-    if tempuint32 == 0 or tempuint32 > 8:
-        print("Error motor count out of range, please reboot microcontroller to try again.")
-        sys.exit()
-
-    addresses = []
-    setup_motor_count = 0
-    while setup_motor_count < tempuint32:
-        print(f"Please enter the i2c address of motor driver number {setup_motor_count}:")
-        address = int(input())
-        if address <= 7 or address >= 120:
-            print("Error invalid i2c address, please reboot microcontroller to try again.")
-            sys.exit()
-        addresses.append(address)
-        setup_motor_count += 1
-    return addresses
 
 
 def _iter_initialized_motors(motors):
@@ -52,7 +33,9 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--rpm", type=int, default=100000, help="Motor RPM to command (default: 100).")
     args = parser.parse_args(argv)
 
-    motors, _motor_modes = init_motors(_prompt_i2c_addresses())
+    i2c_addresses = load_config().i2c_addresses
+    print(f"Initializing motors at I2C addresses: {i2c_addresses}")
+    motors, _motor_modes = init_motors(i2c_addresses)
 
     rpm = int(args.rpm)
     print(f"Commanding forward speed: {rpm} rpm")
