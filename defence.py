@@ -173,12 +173,14 @@ def defence(
         dir_y = math.sin(yaw_rad)
         epsilon = 1e-6
 
+        speed = 300
+
         if abs(dir_x) > epsilon:
             t = (target_x - ball_x) / dir_x
             if t >= 0:
                 y_hit = ball_y + t * dir_y
                 if target_y_min <= y_hit <= target_y_max:
-                    dribbler = False
+                    dribbler = -1
                     kick = True
     if kick == True:
         dribbler = -1
