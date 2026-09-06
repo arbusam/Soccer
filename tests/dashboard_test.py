@@ -14,7 +14,15 @@ import cv2
 import numpy as np
 import pytest
 
-from calibration.dashboard import Dashboard, Lease, encode, number, pixel_values, scene
+from calibration.dashboard import (
+    Dashboard,
+    Lease,
+    discover_models,
+    encode,
+    number,
+    pixel_values,
+    scene,
+)
 from calibration.dashboard_hardware import Hardware, target_command
 from calibration_dashboard import DashboardServer
 from lib.localisation_service import LocalisationSession
@@ -38,6 +46,10 @@ class FakeHardware:
 
     def stop_drive(self):
         self.stops += 1
+
+    def request_stop_localisation(self):
+        self.calls.append(("stop_localise", {}, None))
+        self.mode = "idle"
 
     def close(self):
         pass
@@ -105,6 +117,14 @@ def test_stop_available_to_viewers_cancels_queued_motion(dashboard):
     assert not dashboard.hardware.calls
     dashboard.closing.set()
     worker.join(1)
+
+
+def test_localisation_stop_requires_control_and_reaches_hardware(dashboard):
+    with pytest.raises(PermissionError):
+        dashboard.command("stop_localise", {}, None)
+    token = dashboard.command("claim", {}, None)["token"]
+    assert dashboard.command("stop_localise", {}, token) == {}
+    assert dashboard.hardware.calls[-1][0] == "stop_localise"
 
 
 @pytest.mark.parametrize("value", [0, 500, 1000, 1001, 5000])
@@ -345,6 +365,27 @@ def test_localisation_predicts_without_fix_and_flags_stale_data(movement):
     assert not session.tick()["fresh"]
 
 
+def test_stop_localisation_releases_session_and_clears_diagnostics(tmp_path):
+    notifications = []
+    hardware = Hardware(tmp_path, lambda text, **_kwargs: notifications.append(text))
+    session = types.SimpleNamespace(close_calls=0)
+    session.close = lambda: setattr(session, "close_calls", session.close_calls + 1)
+    try:
+        with hardware.lock:
+            hardware.session = session
+            hardware.status.update(mode="monitoring", localisation={"pose": [1, 2, 3]})
+            hardware.trail.append([1, 2, 3])
+        hardware.request_stop_localisation()
+        wait_until(lambda: hardware.snapshot()["mode"] == "idle")
+        snapshot = hardware.snapshot()
+        assert session.close_calls == 1
+        assert snapshot["localisation"] is None
+        assert snapshot["trajectory"] == []
+        assert "Localisation stopped" in notifications
+    finally:
+        hardware.close()
+
+
 def test_drive_abort_and_repeated_sessions(movement, tmp_path):
     logs = []
     hardware = Hardware(tmp_path, lambda text, **_kwargs: logs.append(text))
@@ -504,9 +545,64 @@ def test_camera_pipeline_shared_and_latest_buffer_bounded(tmp_path):
         assert FakeCamera.instances == 1
         assert len(app.streams) == 5
         assert app.latest["frame_id"] <= app.camera.infer_count
+        camera = app.camera
     finally:
         app.close()
-    assert app.camera.closed
+    assert camera.closed
+
+
+def test_model_discovery_and_live_switch_restart_only_camera(tmp_path):
+    for model_id, size in (("n", 640), ("s", 800)):
+        folder = tmp_path / f"open-soccer-detect-{model_id}_hailo_model"
+        folder.mkdir()
+        (folder / "model.hef").write_bytes(b"compiled")
+        (folder / "metadata.yaml").write_text(f"imgsz: [{size}, {size}]\n")
+    incomplete = tmp_path / "open-soccer-detect-m_hailo_model"
+    incomplete.mkdir()
+    (incomplete / "metadata.yaml").write_text("imgsz: 960\n")
+    assert [(model["id"], model["input_size"]) for model in discover_models(tmp_path)] == [
+        ("n", [640, 640]),
+        ("s", [800, 800]),
+    ]
+
+    camera_instances = []
+
+    class FakeCamera:
+
+        def __init__(self, **kwargs):
+            self.model_path = kwargs["ball_model_path"]
+            self.resolution = (640, 640)
+            self.inference_error = None
+            self.capture_count = self.infer_count = 0
+            self.closed = False
+            camera_instances.append(self)
+
+        def start(self):
+            pass
+
+        def get_diagnostic_snapshot(self):
+            return None
+
+        def stop(self):
+            self.closed = True
+
+    app = Dashboard(tmp_path, camera_factory=FakeCamera, hardware_factory=FakeHardware)
+    try:
+        wait_until(lambda: app.active_model == "n")
+        app.hardware.mode = "monitoring"
+        token = app.command("claim", {}, None)["token"]
+        app.command("select_model", {"model": "s"}, token)
+        wait_until(lambda: app.active_model == "s" and len(camera_instances) == 2)
+        assert camera_instances[0].closed
+        assert camera_instances[1].model_path.endswith("open-soccer-detect-s_hailo_model")
+        assert app.hardware.mode == "monitoring"
+        public_models = app.state()["camera"]["models"]
+        assert public_models[1] == {"id": "s", "label": "Small", "input_size": [800, 800]}
+        assert "path" not in public_models[1]
+        with pytest.raises(ValueError, match="not available"):
+            app._edit("select_model", {"model": "m"})
+    finally:
+        app.close()
 
 
 def test_watchdog_disarms_if_localisation_worker_stalls(dashboard):

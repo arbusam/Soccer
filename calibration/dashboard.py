@@ -25,6 +25,35 @@ from calibration.dashboard_hardware import PITCH, Hardware
 from lib.opencv import DEFAULT_THRESHOLDS, OpenCV, load_thresholds, validate_thresholds
 
 
+def discover_models(root):
+    """Return compiled Hailo model variants available in the project root."""
+    labels = {"n": "Nano", "s": "Small", "m": "Medium", "l": "Large", "x": "Extra large"}
+    models = []
+    for path in sorted(Path(root).glob("open-soccer-detect-*_hailo_model")):
+        if not (path / "model.hef").is_file():
+            continue
+        model_id = path.name.removeprefix("open-soccer-detect-").removesuffix("_hailo_model")
+        input_size = None
+        try:
+            import yaml
+
+            metadata = yaml.safe_load((path / "metadata.yaml").read_text(encoding="utf-8")) or {}
+            size = metadata.get("imgsz")
+            if isinstance(size, int):
+                input_size = [size, size]
+            elif isinstance(size, list) and len(size) == 2:
+                input_size = [int(size[0]), int(size[1])]
+        except (OSError, TypeError, ValueError):
+            pass
+        models.append({
+            "id": model_id,
+            "label": labels.get(model_id, model_id.upper()),
+            "input_size": input_size,
+            "path": str(path),
+        })
+    return models
+
+
 def number(value, low, high, label):
     if isinstance(value, bool):
         raise TypeError(f"Invalid {label}")
@@ -158,6 +187,11 @@ class Dashboard:
         self.camera = None
         self.camera_factory = camera_factory
         self.camera_status = "starting"
+        self.model_options = discover_models(self.root)
+        model_ids = {model["id"] for model in self.model_options}
+        self.requested_model = "n" if "n" in model_ids else (self.model_options[0]["id"] if self.model_options else None)
+        self.active_model = None
+        self.model_change = threading.Event()
         self.latest = None
         self.streams = {}
         self.stream_sequence = 0
@@ -223,7 +257,13 @@ class Dashboard:
             return {
                 "camera": {"status": self.camera_status, "age_s": age, "fps": self.rates,
                            "frame_id": self.latest["frame_id"] if self.latest else None,
-                           "resolution": self.sample_resolution, "detections": self.detections},
+                           "resolution": self.sample_resolution, "detections": self.detections,
+                           "models": [
+                               {key: copy.deepcopy(model[key]) for key in ("id", "label", "input_size")}
+                               for model in self.model_options
+                           ],
+                           "active_model": self.active_model,
+                           "requested_model": self.requested_model},
                 "control": {"occupied": self.lease.token is not None, "armed": self.lease.armed},
                 "hardware": self.hardware.snapshot(), "thresholds": copy.deepcopy(self.thresholds),
                 "samples": list(self.samples), "fit": self.fit, "addresses": self.default_addresses,
@@ -252,6 +292,9 @@ class Dashboard:
                     raise ValueError("Stop the current operation before arming")
                 self.lease.arm(token)
                 return {}
+            if action == "stop_localise":
+                self.hardware.request_stop_localisation()
+                return {}
             if action in ("drive", "calibrate") and not self.lease.armed:
                 raise ValueError("Arm motors first")
             if action == "drive":
@@ -268,7 +311,8 @@ class Dashboard:
                 if data.get("wheels_clear") is not True:
                     raise ValueError("Confirm that wheels are clear before calibration")
             allowed = {"drive", "calibrate", "localise", "thresholds", "save_goals", "revert_goals",
-                       "default_goals", "sample", "remove_sample", "clear_samples", "fit", "save_ball"}
+                       "default_goals", "sample", "remove_sample", "clear_samples", "fit", "save_ball",
+                       "select_model"}
             if action not in allowed:
                 raise ValueError("Unknown action")
             if action == "thresholds":
@@ -303,7 +347,16 @@ class Dashboard:
 
     def _edit(self, action, data):
         goal_path = self.root / "goal_thresholds.json"
-        if action == "thresholds":
+        if action == "select_model":
+            model_id = data.get("model")
+            if model_id not in {model["id"] for model in self.model_options}:
+                raise ValueError("Selected model is not available on this Pi")
+            if model_id != self.requested_model:
+                self.requested_model = model_id
+                self.camera_status = "switching model"
+                self.model_change.set()
+                self.notify(f"Switching detection model to {model_id}")
+        elif action == "thresholds":
             self.thresholds = data["thresholds"]
         elif action == "save_goals":
             save_json(goal_path, self.thresholds)
@@ -376,13 +429,33 @@ class Dashboard:
             return self.frozen[key]
 
     def _camera_loop(self):
+        if self.camera_factory is None:
+            from lib.camera import Camera
+            self.camera_factory = Camera
+        while not self.closing.is_set():
+            with self.lock:
+                model_id = self.requested_model
+                model = next((item for item in self.model_options if item["id"] == model_id), None)
+                self.model_change.clear()
+                self.latest = None
+                self.detections = []
+                self.streams = {}
+            self._camera_session(model_id, model)
+            if not self.closing.is_set() and not self.model_change.is_set():
+                self.model_change.wait()
+
+    def _camera_session(self, model_id, model):
         try:
-            if self.camera_factory is None:
-                from lib.camera import Camera
-                self.camera_factory = Camera
-            camera = self.camera_factory(PORT=0, diagnostics=True,
-                                         distance_calibration_file=str(self.root / "ball_distance_calibration.json"))
-            self.camera = camera
+            camera_args = {
+                "PORT": 0,
+                "diagnostics": True,
+                "distance_calibration_file": str(self.root / "ball_distance_calibration.json"),
+            }
+            if model is not None:
+                camera_args["ball_model_path"] = model["path"]
+            camera = self.camera_factory(**camera_args)
+            with self.lock:
+                self.camera = camera
             camera.start()
             with self.lock:
                 self.sample_resolution = list(camera.resolution)
@@ -390,10 +463,11 @@ class Dashboard:
                 if self.calibration is not None:
                     self.samples = self.calibration.get("samples", [])[:500]
                     self.fit = self.calibration.get("model")
+                self.active_model = model_id
                 self.camera_status = "running"
             counts = (0, 0, 0)
             last_rate = time.monotonic()
-            while not self.closing.is_set():
+            while not self.closing.is_set() and not self.model_change.is_set():
                 started = time.monotonic()
                 if camera.inference_error:
                     raise RuntimeError(camera.inference_error)
@@ -428,16 +502,21 @@ class Dashboard:
                 self.closing.wait(max(0, 1 / self.fps - (time.monotonic() - started)))
         except (Exception, SystemExit) as exc:
             with self.lock:
+                self.active_model = None
                 self.camera_status = f"unavailable: {exc}"
             self.notify(f"Camera: {exc}", error=True)
         finally:
-            if self.camera is not None:
-                self.camera.stop()
+            with self.lock:
+                camera = self.camera
+                self.camera = None
+            if camera is not None:
+                camera.stop()
 
     def close(self):
         with self.condition:
             self.lease.stop()
             self.closing.set()
+            self.model_change.set()
             self.condition.notify_all()
         self.hardware.close()
         for thread in self.threads:

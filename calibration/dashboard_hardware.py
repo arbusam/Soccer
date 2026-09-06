@@ -35,6 +35,7 @@ class Hardware:
         self.session = None
         self.pause = None
         self.active_cancel = threading.Event()
+        self.localisation_stop_requested = threading.Event()
         self.target = None
         self.speed = 500
         self.motion_cancel = threading.Event()
@@ -105,6 +106,26 @@ class Hardware:
             lidar.shutdown()
             raise
 
+    def request_stop_localisation(self):
+        """Ask the hardware thread to stop driving and release LIDAR/IMU."""
+        self.active_cancel.set()
+        self.motion_cancel.set()
+        self.localisation_stop_requested.set()
+        with self.lock:
+            self.status["mode"] = "stopping localisation"
+
+    def _stop_localisation(self):
+        self.stop_drive()
+        with self.lock:
+            session, self.session = self.session, None
+        if session is not None:
+            session.close()
+        with self.lock:
+            self.status.update(mode="idle", localisation=None, error=None)
+            self.trail.clear()
+        self.localisation_stop_requested.clear()
+        self.notify("Localisation stopped")
+
     def _drive(self, data, cancel):
         from lib.config import load_config
         from lib.movement import MovementController
@@ -165,6 +186,9 @@ class Hardware:
         try:
             while not self.closing.is_set():
                 started = time.monotonic()
+                if self.localisation_stop_requested.is_set():
+                    self._stop_localisation()
+                    continue
                 try:
                     action, data, cancel = self.jobs.get_nowait()
                 except queue.Empty:
@@ -223,10 +247,17 @@ class Hardware:
                                 else:
                                     controller.move(direction, speed, yaw, 1.0, yaw)
                 except (Exception, SystemExit) as exc:
+                    stopping_localisation = (
+                        action == "localise"
+                        and self.localisation_stop_requested.is_set()
+                    )
                     self.motion_cancel.set()
                     if action is not None:
                         cancel.set()
                     self.stop_drive()
+                    if stopping_localisation:
+                        self._stop_localisation()
+                        continue
                     with self.lock:
                         self.status["error"] = str(exc) or "Hardware initialization failed"
                         if self.status["mode"] != "stopping":
@@ -249,6 +280,7 @@ class Hardware:
     def close(self):
         self.motion_cancel.set()
         self.active_cancel.set()
+        self.localisation_stop_requested.set()
         self.closing.set()
         self.stop_drive()
         self.thread.join(timeout=6)

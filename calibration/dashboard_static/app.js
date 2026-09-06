@@ -2,6 +2,7 @@
 const $ = id => document.getElementById(id);
 let token = null, state = null, tab = 'camera', frozen = null, thresholds = null;
 let editUntil = 0, messageUntil = 0, lastEvent = '', samplesSignature = '', fitSignature = '';
+let modelsSignature = '';
 const fmt = (v, digits = 1) => v == null ? 'unavailable' : Number(v).toFixed(digits);
 const escapeHtml = value => String(value).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function message(text) { $('message').textContent = text; messageUntil = Date.now() + 10000; }
@@ -31,9 +32,16 @@ $('saveGoals').onclick = async () => {
   catch(e) { message(e.message); }
 };
 for (const [id, action] of [['revertGoals','revert_goals'],['defaultGoals','default_goals']]) $(id).onclick = async () => { try { clearTimeout(goalTimer); editUntil = 0; await api(action); } catch(e) { message(e.message); } };
-handle('localise', 'localise');
+$('localise').onclick = async () => {
+  try { await api($('localise').dataset.running === 'true' ? 'stop_localise' : 'localise'); }
+  catch (e) { message(e.message); }
+};
 handle('calibrate', 'calibrate', () => ({addresses:motorAddresses(), wheels_clear:$('wheelsClear').checked}));
 handle('drive', 'drive', () => ({addresses:motorAddresses(), speed:$('speed').value, target:[$('targetX').value,$('targetY').value]}));
+$('modelSize').onchange = async () => {
+  try { await api('select_model', {model:$('modelSize').value}); }
+  catch (e) { message(e.message); }
+};
 $('speedSlider').oninput = () => { $('speed').value = $('speedSlider').value; };
 $('speed').oninput = () => { $('speedSlider').value = Math.min(1000, Math.max(0, Number($('speed').value))); };
 function streams() {
@@ -115,6 +123,25 @@ function render(s) {
   document.querySelectorAll('.control').forEach(e => { e.disabled = !token; });
   document.querySelectorAll('.arm').forEach(e => { e.disabled = !token || s.control.armed; });
   $('calibrate').disabled = $('drive').disabled = !token || !s.control.armed;
+  const modelSignature = JSON.stringify(s.camera.models);
+  if (modelsSignature !== modelSignature) {
+    modelsSignature = modelSignature;
+    $('modelSize').replaceChildren(...s.camera.models.map(model => {
+      const option = document.createElement('option');
+      option.value = model.id;
+      const size = model.input_size ? ` · ${model.input_size.join('×')}` : '';
+      option.textContent = `${model.label} (${model.id})${size}`;
+      return option;
+    }));
+  }
+  $('modelSize').value = s.camera.requested_model ?? '';
+  $('modelSize').disabled = !token || s.camera.status === 'switching model' || s.camera.models.length < 2;
+  const localisationRunning = s.hardware.localisation != null ||
+    ['queued localise','starting localise','monitoring','driving','stopping localisation'].includes(s.hardware.mode);
+  $('localise').dataset.running = String(localisationRunning);
+  $('localise').textContent = localisationRunning ? 'Stop localisation' : 'Start localisation';
+  $('localise').classList.toggle('danger', localisationRunning);
+  $('localise').classList.toggle('primary', !localisationRunning);
   $('health').textContent = `CAMERA ${s.camera.status} | capture ${fmt(s.camera.fps.capture)} · inference ${fmt(s.camera.fps.inference)} · preview ${fmt(s.camera.fps.preview)} FPS | ${s.camera.age_s == null ? 'no frames' : 'frame age ' + fmt(s.camera.age_s) + 's' + (s.camera.age_s > .5 ? ' · STALE' : '')} | MOTORS ${s.hardware.mode}`;
   if (!$('addresses').value && s.addresses.length) $('addresses').value = s.addresses.join(',');
   syncBounds(s.thresholds);

@@ -169,6 +169,30 @@ pip install lgpio --find-links https://github.com/adafruit/lgpio-python-wheels/r
 
 Do not `pip install lgpio` from PyPI and do not `sudo apt install swig` just to make that compile. Desktop/x86 does not need `lgpio` at all.
 
+## Raspberry Pi native-library `Bus error` (SIGBUS)
+
+**Symptom:** Python scripts such as `defence.py`, `lib/camera.py`, or `tests/model.py` crash with `Bus error` before a traceback while importing `numpy`, `cv2`, or `torch`. In Ultralytics this can misleadingly surface as a missing `YOLO` or `__version__` import; confirm with `import torch` or `import numpy` directly.
+
+**Cause:** The Pi kernel is using 16 KB pages (`getconf PAGE_SIZE` prints `16384`). Some pip native wheels—especially `numpy`, `torch`, and dependencies installed through `opencv-python` or `ultralytics`—SIGBUS on this page size.
+
+**Fix for camera, NumPy, and OpenCV (without pip Torch):** use Raspberry Pi OS packages:
+
+```bash
+sudo apt-get install python3-numpy python3-opencv python3-libcamera python3-picamera2
+python3 -m venv .venv --system-site-packages  # or use system Python directly
+```
+
+Do not pip-install `numpy`, `opencv-python`, or `picamera2` into that environment.
+
+**Fix when Torch / Ultralytics is required:** switch to 4 KB pages, then reinstall. On Pi OS Bookworm, first confirm `getconf PAGE_SIZE` is `16384`, add `kernel=kernel8.img` to `/boot/firmware/config.txt`, reboot, and verify it returns `4096`. Recreate the virtual environment with `--system-site-packages` so Picamera2/Libcamera remain available, then install:
+
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install ultralytics
+```
+
+Continue to use the apt-provided NumPy, OpenCV, and Picamera2 packages rather than pip versions.
+
 ## Dashboard motor ownership and camera snapshots
 
 **Problem:** Calibration command mode 15 runs autonomously, so writing speed zero alone does not cancel physical calibration. Motor setup also indexed motor 4 unconditionally despite documenting the dribbler as optional.

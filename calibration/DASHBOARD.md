@@ -8,7 +8,7 @@ From the project root on the Pi:
 
 Open `http://<pi-ip>:8080` on a phone or computer on the same LAN. The startup message also gives the Pi's `.local` hostname; use its IP if your device does not resolve mDNS. All browser assets are served by the Pi and work without internet access.
 
-Use the project's usual Pi environment: Picamera2/libcamera, OpenCV, HailoRT and the compiled HEF, Blinka and motor drivers, and the compiled LIDAR extension. No additional web framework or Node installation is required. A missing camera/Hailo dependency is shown in the dashboard; it does not prevent the other panels opening. Start localisation separately from its panel.
+Use the project's usual Pi environment: Picamera2/libcamera, OpenCV, HailoRT and the compiled HEF, Blinka and motor drivers, and the compiled LIDAR extension. No additional web framework or Node installation is required. A missing camera/Hailo dependency is shown in the dashboard; it does not prevent the other panels opening. Start localisation separately from its panel; the same button changes to **Stop localisation** while it is starting or running and releases LIDAR and IMU when stopped.
 
 Run standalone: stop `main.py`, camera tests, motor scripts and localisation tests before launching. A lock prevents a second dashboard instance; other existing scripts do not participate in that lock. Anyone on the LAN can view and take control, so use a trusted local network.
 
@@ -24,6 +24,8 @@ Run standalone: stop `main.py`, camera tests, motor scripts and localisation tes
 ## Camera, colours and saved data
 
 The Camera panel overlays the highest-confidence ball and every detected bot on the exact inference frame. Ball distance uses the box centre; bot distance uses the bottom centre and the same radial calibration. Missing distance calibration leaves boxes/bearings available.
+
+The **Detection model** selector lists compiled `open-soccer-detect-*_hailo_model` directories that contain `model.hef`. Changing between Nano (`n`), Small (`s`), or another installed variant restarts only the camera/Hailo pipeline; motor and localisation state are unaffected. The preview briefly reports `switching model`, then shows the active model. Model input dimensions come from each directory's `metadata.yaml`.
 
 **Pick a pixel** freezes an unannotated, lossless frame. Tap it to inspect original RGB, BGR and OpenCV HSV values (H 0–179, S/V 0–255). At most eight frozen frames are retained across viewers; freeze again if an old frame expires. PNG downloads provide raw and annotated snapshots.
 
