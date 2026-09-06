@@ -43,3 +43,6 @@ If you would like to contact us please use the following contact details:
 Arhan - Email: [arhan@arhan.tech](mailto:arhan@arhan.tech) Discord: @arbusam
 
 Kanishk - Discord: @kansar_1
+## Calibration dashboard
+
+Run `.venv/bin/python calibration_dashboard.py` on the Pi and open `http://<pi-ip>:8080` from another device on the LAN. Includes live ball/bot detections, distance and motor calibration, goal masks/HSV tuning, pixel picking, and localisation/target-driving diagnostics. See [the run guide and Pi acceptance checks](calibration/DASHBOARD.md).

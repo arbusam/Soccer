@@ -1,0 +1,521 @@
+"""Dashboard regressions without Raspberry Pi devices or a Hailo runtime."""
+
+import copy
+import http.client
+import importlib.util
+import json
+import sys
+import threading
+import time
+import types
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pytest
+
+from calibration.dashboard import Dashboard, Lease, encode, number, pixel_values, scene
+from calibration.dashboard_hardware import Hardware, target_command
+from calibration_dashboard import DashboardServer
+from lib.localisation_service import LocalisationSession
+from lib.opencv import DEFAULT_THRESHOLDS, OpenCV, load_thresholds, validate_thresholds
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class FakeHardware:
+    def __init__(self, *_args, **_kwargs):
+        self.calls = []
+        self.mode = "idle"
+        self.stops = 0
+
+    def submit(self, action, data, cancel):
+        self.calls.append((action, data, cancel))
+        self.mode = "queued " + action
+
+    def snapshot(self):
+        return {"mode": self.mode, "localisation": None}
+
+    def stop_drive(self):
+        self.stops += 1
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def dashboard(tmp_path):
+    app = Dashboard(tmp_path, hardware_factory=FakeHardware, start=False)
+    yield app
+    app.close()
+
+
+def detection(radius=5):
+    return {"bbox": (2, 2, 4, 4), "centre": (4.0, 4.0), "point": (4.0, 4.0),
+            "radial_pixels": float(radius), "confidence": 0.9, "polygon": None}
+
+
+def install_snapshot(app, radius=5):
+    app.sample_resolution = [16, 16]
+    app.latest = {"frame": np.full((16, 16, 3), (15, 80, 220), dtype=np.uint8),
+                  "ball": detection(radius), "bots": [detection(8)], "frame_id": 42,
+                  "timestamp": time.monotonic()}
+
+
+def wait_until(predicate):
+    deadline = time.monotonic() + 3
+    while not predicate():
+        if time.monotonic() > deadline:
+            raise AssertionError("Worker did not reach expected state")
+        time.sleep(0.01)
+
+
+def test_lease_expiry_invalidates_old_arm_and_token():
+    now = [10.0]
+    lease = Lease(clock=lambda: now[0])
+    token = lease.claim()
+    lease.arm(token)
+    old_cancel = lease.cancel
+    with pytest.raises(ValueError, match="Another"):
+        lease.claim()
+    now[0] += 1.5
+    lease.heartbeat(token)
+    now[0] += 1.9
+    assert not lease.expire()
+    now[0] += .2
+    assert lease.expire() and old_cancel.is_set() and not lease.armed
+    with pytest.raises(PermissionError):
+        lease.heartbeat(token)
+    new_token = lease.claim()
+    assert new_token != token
+    lease.arm(new_token)
+    assert lease.cancel is not old_cancel and not lease.cancel.is_set()
+
+
+def test_stop_available_to_viewers_cancels_queued_motion(dashboard):
+    token = dashboard.command("claim", {}, None)["token"]
+    dashboard.command("arm", {}, token)
+    dashboard.command("drive", {"speed": 5000, "target": [500, 500], "addresses": [28, 32, 31, 30]}, token)
+    event = dashboard.lease.cancel
+    dashboard.command("stop", {}, None)
+    assert event.is_set() and not dashboard.lease.armed
+    worker = threading.Thread(target=dashboard._jobs)
+    worker.start()
+    wait_until(lambda: dashboard.events[-1]["message"].startswith("drive:"))
+    assert not dashboard.hardware.calls
+    dashboard.closing.set()
+    worker.join(1)
+
+
+@pytest.mark.parametrize("value", [0, 500, 1000, 1001, 5000])
+def test_drive_speed_accepts_requested_range(value, dashboard):
+    token = dashboard.command("claim", {}, None)["token"]
+    dashboard.command("arm", {}, token)
+    assert dashboard.command("drive", {"speed": value, "target": [100, 100], "addresses": [28, 32, 31, 30]}, token)["queued"]
+
+
+@pytest.mark.parametrize("value", [-1, 5001, float("nan"), float("inf"), True, "bad"])
+def test_speed_rejects_invalid_values(value):
+    with pytest.raises((ValueError, TypeError)):
+        number(value, 0, 5000, "speed")
+
+
+def test_rpm_limit_and_arrival():
+    _, requested, _, effective, arrived = target_command([0, 0, 0], [2000, 0], 5000)
+    assert requested == 5000 and effective < requested and not arrived
+    assert target_command([0, 0, 0], [2, 2], 500)[4]
+    assert target_command([0, 0, 0], [2000, 0], 0)[1] == 0
+
+
+def test_masks_pixel_picker_and_lossless_frozen_frame(dashboard):
+    hsv = np.array([[[110, 250, 200], [25, 200, 200], [0, 0, 0]]], dtype=np.uint8)
+    detector = OpenCV(DEFAULT_THRESHOLDS)
+    assert detector.mask(hsv, True).tolist() == [[255, 0, 0]]
+    assert detector.mask(hsv, False).tolist() == [[0, 255, 0]]
+    install_snapshot(dashboard)
+    original = dashboard.latest["frame"].copy()
+    frozen = dashboard.freeze()
+    dashboard.latest["frame"][:] = 0
+    frame = dashboard.frozen_frame(frozen["id"])
+    np.testing.assert_array_equal(frame, original)
+    decoded = cv2.imdecode(np.frombuffer(encode(frame, ".png"), dtype=np.uint8), cv2.IMREAD_COLOR)
+    np.testing.assert_array_equal(frame, decoded)
+    assert pixel_values(frame, 4, 4)["rgb"] == [220, 80, 15]
+    assert pixel_values(frame, 4, 4)["hsv"] == cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)[4, 4].tolist()
+    with pytest.raises(ValueError):
+        pixel_values(frame, 16, 0)
+    for _ in range(9):
+        dashboard.freeze()
+    with pytest.raises(ValueError, match="expired"):
+        dashboard.frozen_frame(frozen["id"])
+
+
+def test_scene_does_not_paint_source_frame(dashboard):
+    install_snapshot(dashboard)
+    snap = dashboard.latest
+    original = snap["frame"].copy()
+    overlay, results = scene(snap["frame"], snap["ball"], snap["bots"], None)
+    assert [d["label"] for d in results] == ["Ball", "Bot"]
+    assert all(d["distance"] is None for d in results)
+    assert not np.array_equal(overlay, original)
+    np.testing.assert_array_equal(snap["frame"], original)
+
+
+def test_goal_preview_save_revert_and_backup(dashboard):
+    saved = copy.deepcopy(DEFAULT_THRESHOLDS)
+    saved["blue"]["lower"][0] = 99
+    dashboard._edit("thresholds", {"thresholds": saved})
+    assert not (dashboard.root / "goal_thresholds.json").exists()
+    dashboard._edit("save_goals", {})
+    assert load_thresholds(dashboard.root / "goal_thresholds.json") == saved
+    dashboard._edit("default_goals", {})
+    assert dashboard.thresholds == DEFAULT_THRESHOLDS
+    dashboard._edit("revert_goals", {})
+    assert dashboard.thresholds == saved
+    dashboard._edit("save_goals", {})
+    assert len(list((dashboard.root / "calibration_backups").glob("*.json"))) == 1
+    invalid = copy.deepcopy(saved)
+    invalid["yellow"]["upper"][0] = 180
+    with pytest.raises(ValueError):
+        validate_thresholds(invalid)
+
+
+def test_ball_samples_fit_save_reload_and_stale_rejection(dashboard):
+    class Camera:
+        def reload_distance_calibration(self, path):
+            self.loaded = json.loads(Path(path).read_text())
+    dashboard.camera = Camera()
+    for radius, distance in [(2, 100), (5, 250), (8, 400)]:
+        install_snapshot(dashboard, radius)
+        dashboard._edit("sample", {"distance": distance, "captured": radius == 2})
+    dashboard._edit("fit", {})
+    assert dashboard.fit["selected_degree"] == 1
+    dashboard._edit("save_ball", {})
+    assert dashboard.camera.loaded["resolution"] == [16, 16]
+    assert dashboard.camera.loaded["capture_calibration"]["sample_count"] == 1
+    assert dashboard.calibration["samples"] == dashboard.samples
+    dashboard._edit("save_ball", {})
+    assert list((dashboard.root / "calibration_backups").glob("*.json"))
+    dashboard.latest["timestamp"] -= 1
+    with pytest.raises(ValueError, match="fresh"):
+        dashboard._edit("sample", {"distance": 500})
+    dashboard.latest["timestamp"] = time.monotonic()
+    dashboard.latest["ball"] = None
+    with pytest.raises(ValueError):
+        dashboard._edit("sample", {"distance": 500})
+    dashboard.samples.append(copy.deepcopy(dashboard.samples[0]))
+    with pytest.raises(ValueError, match="distinct"):
+        dashboard._edit("save_ball", {})
+
+
+@pytest.fixture
+def movement(monkeypatch):
+    driver = types.ModuleType("steelbar_powerful_bldc_driver")
+    driver.PowerfulBLDCDriver = FakeMotor
+    bus = types.ModuleType("lib.i2c_bus")
+    lock = threading.RLock()
+    bus.get_shared_i2c_lock = lambda: lock
+    bus.get_shared_i2c_bus = lambda: object()
+    monkeypatch.setitem(sys.modules, "steelbar_powerful_bldc_driver", driver)
+    monkeypatch.setitem(sys.modules, "lib.i2c_bus", bus)
+    spec = importlib.util.spec_from_file_location("dashboard_test_movement", ROOT / "lib/movement.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    monkeypatch.setitem(sys.modules, "lib.movement", module)
+    return module
+
+
+class FakeMotor:
+    def __init__(self, *_args):
+        self.calls = []
+        self.finished = True
+        self.fail_stop = False
+
+    def __getattr__(self, name):
+        def method(*args):
+            self.calls.append((name, args))
+            if self.fail_stop and name == "set_torque":
+                raise OSError("disconnected")
+            if name == "get_firmware_version":
+                return 3
+            if name == "is_calibration_finished":
+                return self.finished
+            if name.startswith("get_calibration_"):
+                return 1234
+            return 0
+        return method
+
+
+def test_four_motor_setup_and_controller_stop(movement):
+    motors, count, _ = movement.get_motors_for_calibration([28, 32, 31, 30])
+    assert count == 4
+    controller = movement.MovementController(motors, [12]*4, 50, 100, 400, 3)
+    controller.stop()
+    assert all(("set_speed", (0,)) in motor.calls for motor in motors)
+
+
+@pytest.mark.parametrize("mode", ["cancel", "timeout", "failure", "success"])
+def test_motor_calibration_cleanup_and_atomic_save(mode, movement, tmp_path):
+    path = tmp_path / "motors.json"
+    path.write_text('{"old":true}')
+    motors = [FakeMotor(), FakeMotor()]
+    cancel = threading.Event()
+    if mode in ("cancel", "timeout"):
+        motors[0].finished = False
+    if mode == "failure":
+        motors[0].fail_stop = True
+    def progress(_event):
+        if mode == "cancel":
+            cancel.set()
+    kwargs = {"calibration_file": str(path), "cancel_event": cancel, "progress": progress,
+              "timeout_s": 0 if mode == "timeout" else 1}
+    if mode == "success":
+        result = movement.calibrate_motors(motors, 2, [28, 32], **kwargs)
+        assert json.loads(path.read_text()) == result
+    else:
+        with pytest.raises((InterruptedError, TimeoutError, movement.MotorCommunicationError)):
+            movement.calibrate_motors(motors, 2, [28, 32], **kwargs)
+        assert json.loads(path.read_text()) == {"old": True}
+    for motor in motors:
+        assert ("configure_command_mode", (2,)) in motor.calls
+        assert ("set_torque", (0,)) in motor.calls
+
+
+class FakeLidar:
+    def __init__(self):
+        self.generation = 1
+        self.ok = True
+        self.predictions = []
+
+    def get_coordinates_info(self):
+        return (500, 600, 20, .9, self.ok)
+
+    def predict_odometry(self, *args):
+        self.predictions.append(args)
+
+    def set_imu_yaw(self, _yaw):
+        pass
+
+    def get_scan_generation(self):
+        return self.generation
+
+    get_mcl_update_count = get_scan_generation
+
+    def get_scan_count(self):
+        return 180
+
+    def scan_updates_enabled(self):
+        return True
+
+    def get_last_scan_correction(self):
+        return (1, 500, 600, 20, 501, 601, 21, 1.4, 1, True)
+
+    def get_recovery_status(self):
+        return (1, 1, 0, .1, True)
+
+    def get_scan_list(self):
+        return [(0, 500, 20)]
+
+    def shutdown(self):
+        pass
+
+
+class FakeIMU:
+    update_count = 1
+    def get_yaw(self):
+        return 10
+
+    def get_gyro_z_deg_s(self):
+        return 0
+
+    def close(self):
+        pass
+
+
+def test_localisation_predicts_without_fix_and_flags_stale_data(movement):
+    lidar, imu = FakeLidar(), FakeIMU()
+    now = [time.monotonic()]
+    session = LocalisationSession(lidar, imu, 10, movement.LidarVelocityEstimator(), clock=lambda: now[0])
+    lidar.ok = False
+    assert not session.tick()["pose"][4]
+    assert len(lidar.predictions) == 1 and lidar.predictions[0][:2] == (0, 0)
+    lidar.ok = True
+    assert session.tick()["fresh"]
+    now[0] += .6
+    assert not session.tick()["fresh"]
+
+
+def test_drive_abort_and_repeated_sessions(movement, tmp_path):
+    logs = []
+    hardware = Hardware(tmp_path, lambda text, **_kwargs: logs.append(text))
+    try:
+        lidar, imu = FakeLidar(), FakeIMU()
+        hardware.session = LocalisationSession(lidar, imu, 10, movement.LidarVelocityEstimator())
+        hardware.pause = types.SimpleNamespace(read=lambda: False, switch=types.SimpleNamespace(deinit=lambda: None))
+        for _ in range(2):
+            controller = movement.MovementController([FakeMotor() for _ in range(4)], [12]*4, 50, 100, 400, 3)
+            event = threading.Event()
+            with hardware.lock:
+                hardware.controller = controller
+                hardware.motion_cancel = event
+                hardware.target = [1500, 600]
+                hardware.status["mode"] = "driving"
+            event.set()
+            wait_until(lambda: hardware.controller is None and hardware.session is None)
+            assert not controller._running
+            # Aborted target must not resume if a new fix arrives.
+            assert hardware.target is None
+            if hardware.session is None:
+                hardware.session = LocalisationSession(lidar, imu, 10, movement.LidarVelocityEstimator())
+    finally:
+        hardware.close()
+
+
+def test_http_origin_control_and_shared_previews(dashboard):
+    install_snapshot(dashboard)
+    dashboard.streams = {"camera": encode(dashboard.latest["frame"])}
+    dashboard.stream_sequence = 1
+    server = DashboardServer(("127.0.0.1", 0), dashboard)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    origin = f"http://{host}:{port}"
+    def post(action, headers):
+        connection = http.client.HTTPConnection(host, port, timeout=2)
+        connection.request("POST", "/api/" + action, "{}", {"Content-Type":"application/json", **headers})
+        response = connection.getresponse()
+        result = response.status, json.loads(response.read())
+        connection.close()
+        return result
+    streams = []
+    try:
+        assert post("claim", {"Origin":"http://elsewhere"})[0] == 403
+        status, result = post("claim", {"Origin":origin})
+        assert status == 200
+        assert post("heartbeat", {"Origin":origin, "X-Control-Token":result["token"]})[0] == 200
+        assert post("stop", {"Origin":origin})[0] == 200
+        for _ in range(2):
+            connection = http.client.HTTPConnection(host, port, timeout=2)
+            connection.request("GET", "/stream.mjpg?view=camera")
+            response = connection.getresponse()
+            assert response.status == 200
+            assert b"FRAME" in response.read(30)
+            streams.append(connection)
+        # Neither client consumes further output; API calls still complete.
+        assert post("freeze", {"Origin":origin})[0] == 200
+        assert dashboard.stream_sequence == 1
+    finally:
+        dashboard.closing.set()
+        with dashboard.condition:
+            dashboard.condition.notify_all()
+        for connection in streams:
+            connection.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(1)
+
+
+@pytest.mark.parametrize("cause", ["pose", "pause", "stale"])
+def test_hardware_aborts_on_pose_pause_or_staleness(cause, movement, tmp_path):
+    hardware = Hardware(tmp_path, lambda *_args, **_kwargs: None)
+    try:
+        lidar, imu = FakeLidar(), FakeIMU()
+        session = LocalisationSession(lidar, imu, 10, movement.LidarVelocityEstimator())
+        session.tick()
+        if cause == "pose":
+            lidar.ok = False
+        if cause == "stale":
+            session.last_scan_time -= 2
+        hardware.pause = types.SimpleNamespace(read=lambda: cause == "pause", switch=types.SimpleNamespace(deinit=lambda: None))
+        controller = movement.MovementController([FakeMotor() for _ in range(4)], [12]*4, 50, 100, 400, 3)
+        with hardware.lock:
+            hardware.session = session
+            hardware.controller = controller
+            hardware.motion_cancel = threading.Event()
+            hardware.target = [1500, 600]
+            hardware.status["mode"] = "driving"
+        wait_until(lambda: hardware.controller is None and hardware.session is None)
+        assert hardware.motion_cancel.is_set()
+        assert not controller._running
+        assert hardware.target is None
+    finally:
+        hardware.close()
+
+
+def test_repeated_drive_initializes_new_controller(movement, monkeypatch, tmp_path):
+    config = types.ModuleType("lib.config")
+    config.load_config = lambda: types.SimpleNamespace(pause_switch_pin=None)
+    switch = types.ModuleType("lib.switch")
+    switch.Switch = lambda _pin: types.SimpleNamespace(read=lambda: False, switch=types.SimpleNamespace(deinit=lambda: None))
+    monkeypatch.setitem(sys.modules, "lib.config", config)
+    monkeypatch.setitem(sys.modules, "lib.switch", switch)
+    requested = [28, 32, 31, 30]
+    (tmp_path / "calibration_data.json").write_text(json.dumps({"motors": [
+        {"address": address, "elecangleoffset": 1, "sincoscentre": 2} for address in requested
+    ]}))
+    hardware = Hardware(tmp_path, lambda *_args, **_kwargs: None)
+    # Stop the worker so this test can exercise startup/stop deterministically.
+    hardware.closing.set()
+    hardware.thread.join(1)
+    try:
+        session = LocalisationSession(FakeLidar(), FakeIMU(), 10, movement.LidarVelocityEstimator())
+        session.tick()
+        hardware.session = session
+        controllers = []
+        for _ in range(2):
+            cancel = threading.Event()
+            hardware._drive({"addresses": requested, "target": [1500, 600], "speed": 500}, cancel)
+            controllers.append(hardware.controller)
+            hardware.stop_drive()
+            assert hardware.controller is None and hardware.target is None
+        assert controllers[0] is not controllers[1]
+        assert all(not controller._running for controller in controllers)
+    finally:
+        hardware.close()
+
+
+def test_camera_pipeline_shared_and_latest_buffer_bounded(tmp_path):
+    class FakeCamera:
+        instances = 0
+        def __init__(self, **_kwargs):
+            FakeCamera.instances += 1
+            self.resolution = (16, 16)
+            self.inference_error = None
+            self.capture_count = self.infer_count = 0
+            self.closed = False
+
+        def start(self):
+            pass
+
+        def get_diagnostic_snapshot(self):
+            self.capture_count += 1
+            self.infer_count += 1
+            return {"frame": np.zeros((16, 16, 3), dtype=np.uint8), "ball": detection(), "bots": [],
+                    "frame_id": self.infer_count, "timestamp": time.monotonic()}
+
+        def stop(self):
+            self.closed = True
+
+    app = Dashboard(tmp_path, camera_factory=FakeCamera, hardware_factory=FakeHardware)
+    try:
+        wait_until(lambda: app.stream_sequence >= 2)
+        for _ in range(20):
+            assert app.state()["camera"]["status"] == "running"
+        assert FakeCamera.instances == 1
+        assert len(app.streams) == 5
+        assert app.latest["frame_id"] <= app.camera.infer_count
+    finally:
+        app.close()
+    assert app.camera.closed
+
+
+def test_watchdog_disarms_if_localisation_worker_stalls(dashboard):
+    token = dashboard.command("claim", {}, None)["token"]
+    dashboard.command("arm", {}, token)
+    dashboard.hardware.snapshot = lambda: {"mode": "driving", "localisation": {"timestamp": time.monotonic() - 1}}
+    thread = threading.Thread(target=dashboard._watchdog)
+    thread.start()
+    wait_until(lambda: dashboard.lease.cancel.is_set())
+    assert not dashboard.lease.armed and dashboard.hardware.stops > 0
+    dashboard.closing.set()
+    thread.join(1)

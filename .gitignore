@@ -239,3 +239,7 @@ config.txt
 .vscode/
 
 logs/*
+# Local dashboard calibration settings and backups
+goal_thresholds.json
+calibration_backups/
+.calibration_dashboard.lock

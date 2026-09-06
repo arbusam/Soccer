@@ -16,17 +16,21 @@ import math
 import queue
 import threading
 import time
-from dataclasses import dataclass
 
 from lib import lidar
 from lib.config import load_config
 from lib.imu import IMU
+from lib.localisation_service import (
+    capture_startup_yaw,
+    feed_imu_yaw_prior,
+    get_position,
+    get_yaw,
+    predict_odometry,
+)
 from lib.movement import (
     LidarVelocityEstimator,
     MotorCommunicationError,
     MovementController,
-    compute_wheel_odometry_trust,
-    imu_yaw_to_relative_yaw,
 )
 
 TARGET_TOLERANCE_MM = 10
@@ -46,22 +50,6 @@ PITCH_X = 2430
 PITCH_Y = 1820
 
 
-@dataclass(frozen=True)
-class OdometryDiagnostics:
-    """Values used for the latest MCL odometry prediction."""
-
-    dt_s: float
-    omega_deg_s: float
-    yaw_deg: float
-    wheel_vx: float
-    wheel_vy: float
-    lidar_vx: float
-    lidar_vy: float
-    lidar_fresh: bool
-    trust: float
-    fed_vx: float
-    fed_vy: float
-    has_wheel_odometry: bool
 
 
 def parse_args():
@@ -98,39 +86,10 @@ def stream_pose(stream_enabled, send_log_module, x_pos, y_pos, yaw):
     send_log_module.update_latest_log(format_pose_log_line(x_pos, y_pos, yaw))
 
 
-def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02):
-    """Average a short burst of IMU samples so startup yaw is not just the first reading."""
-    print("Stabilizing IMU yaw reference...")
-    sin_sum = 0.0
-    cos_sum = 0.0
-    samples = 0
-    while samples < sample_count:
-        yaw = imu.get_yaw()
-        if yaw is not None:
-            yaw_rad = math.radians(yaw)
-            sin_sum += math.sin(yaw_rad)
-            cos_sum += math.cos(yaw_rad)
-            samples += 1
-        time.sleep(sample_interval)
-    return math.degrees(math.atan2(sin_sum, cos_sum))
 
 
-def get_yaw(imu, startup_yaw, mcl_yaw):
-    """Prefer MCL yaw when available, otherwise use startup-relative IMU yaw."""
-    if mcl_yaw is not None:
-        return mcl_yaw
-    imu_yaw = imu.get_yaw()
-    if imu_yaw is None:
-        return None
-    return imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)
 
 
-def get_position(lidar_module):
-    """Return the latest confident (x, y, yaw) pose, or None if unavailable."""
-    x_pos, y_pos, yaw, _confidence = lidar_module.get_pose()
-    if x_pos is None or y_pos is None or yaw is None:
-        return None
-    return x_pos, y_pos, yaw
 
 
 def print_localisation_status(lidar_module, odometry=None):
@@ -259,68 +218,8 @@ def print_scan_correction_if_new(lidar_module, last_sequence):
     return sequence
 
 
-def feed_imu_yaw_prior(lidar_module, imu, startup_yaw):
-    """Push startup-relative IMU yaw into MCL as a soft heading prior."""
-    imu_yaw = imu.get_yaw()
-    if imu_yaw is None:
-        return
-    lidar_module.set_imu_yaw(imu_yaw_to_relative_yaw(imu_yaw, startup_yaw))
 
 
-def predict_odometry(
-    lidar_module,
-    movement_controller,
-    imu,
-    startup_yaw,
-    lidar_velocity,
-    yaw_deg,
-    last_pose_time,
-):
-    """Feed wheel and gyro measurements into the MCL motion model."""
-    now = time.monotonic()
-    dt = now - last_pose_time
-    omega = 0.0
-    gyro_z = imu.get_gyro_z_deg_s()
-    if gyro_z is not None:
-        omega = gyro_z
-    feed_imu_yaw_prior(lidar_module, imu, startup_yaw)
-
-    vx, vy = 0.0, 0.0
-    vx_wheel, vy_wheel = 0.0, 0.0
-    lidar_vx, lidar_vy = 0.0, 0.0
-    lidar_fresh = False
-    trust = 1.0
-    has_wheel_odometry = movement_controller is not None and yaw_deg is not None
-    if movement_controller is not None and yaw_deg is not None:
-        vx_wheel, vy_wheel = movement_controller.get_measured_body_velocity_mm_s(yaw_deg)
-        lidar_vx, lidar_vy = lidar_velocity.get_body_velocity(yaw_deg)
-        lidar_fresh = lidar_velocity.is_fresh(now)
-        trust = compute_wheel_odometry_trust(
-            vx_wheel,
-            vy_wheel,
-            lidar_vx,
-            lidar_vy,
-            lidar_fresh,
-        )
-        vx = trust * vx_wheel
-        vy = trust * vy_wheel
-
-    lidar_module.predict_odometry(vx, vy, omega, dt)
-    diagnostics = OdometryDiagnostics(
-        dt_s=dt,
-        omega_deg_s=omega,
-        yaw_deg=yaw_deg,
-        wheel_vx=vx_wheel,
-        wheel_vy=vy_wheel,
-        lidar_vx=lidar_vx,
-        lidar_vy=lidar_vy,
-        lidar_fresh=lidar_fresh,
-        trust=trust,
-        fed_vx=vx,
-        fed_vy=vy,
-        has_wheel_odometry=has_wheel_odometry,
-    )
-    return now, diagnostics
 
 
 def drive_to_target(

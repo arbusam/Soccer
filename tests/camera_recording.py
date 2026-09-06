@@ -4,18 +4,12 @@ import threading
 import types
 import unittest.mock
 
+import cv2
 import numpy as np
 import pytest
 
 
 def _import_camera_without_picamera_hardware():
-    cv2 = types.ModuleType("cv2")
-    cv2.COLOR_BGR2RGB = 4
-
-    def cvt_color(frame, _code):
-        return frame
-
-    cv2.cvtColor = cvt_color
     picamera2 = types.ModuleType("picamera2")
     picamera2.Picamera2 = object
     encoders = types.ModuleType("picamera2.encoders")
@@ -219,3 +213,33 @@ def inference_classify_camera_bot_positions_filters_self_and_teammate():
     )
     assert (1395.0, 905.0) in enemies_no_peer
     assert (1005.0, 902.0) not in enemies_no_peer
+
+
+def inference_diagnostics_keep_source_pixels_and_all_boxes():
+    camera_module = _import_camera_without_picamera_hardware()
+    camera = _make_camera_for_infer(camera_module)
+    camera.diagnostics_enabled = True
+    camera._latest_capture_monotonic = 123.0
+    camera._latest_buf[:] = [10, 80, 220]
+    source = camera._latest_buf.copy()
+    ball = camera_module._detection_dict_from_xyxy((1, 1, 4, 4), .9, 8, 8)
+    bot = camera_module._detection_dict_from_xyxy((4, 4, 7, 7), .8, 8, 8, point="bottom_centre")
+
+    def detect(rgb):
+        np.testing.assert_array_equal(rgb, source[..., ::-1])
+        return ball, [bot]
+
+    camera._detect_scene = detect
+    camera.detection_callback = lambda _event: camera._infer_stop.set()
+    camera._infer_loop()
+    snapshot = camera.get_diagnostic_snapshot()
+    assert snapshot["frame_id"] == 1
+    assert snapshot["capture_sequence"] == 42
+    assert snapshot["timestamp"] == 123.0
+    assert snapshot["ball"] == ball and snapshot["bots"] == [bot]
+    np.testing.assert_array_equal(snapshot["frame"], source)
+    snapshot["frame"][:] = 0
+    snapshot["bots"].clear()
+    again = camera.get_diagnostic_snapshot()
+    np.testing.assert_array_equal(again["frame"], source)
+    assert len(again["bots"]) == 1

@@ -168,3 +168,13 @@ pip install lgpio --find-links https://github.com/adafruit/lgpio-python-wheels/r
 ```
 
 Do not `pip install lgpio` from PyPI and do not `sudo apt install swig` just to make that compile. Desktop/x86 does not need `lgpio` at all.
+
+## Dashboard motor ownership and camera snapshots
+
+**Problem:** Calibration command mode 15 runs autonomously, so writing speed zero alone does not cancel physical calibration. Motor setup also indexed motor 4 unconditionally despite documenting the dribbler as optional.
+
+**Solution:** `disable_calibration_motors()` writes zero torque, switches command mode to 2, leaves calibration operating mode for FOC, and writes zero torque again, attempting every driver and reporting failures. `calibrate_motors()` uses this cleanup on success, cancellation and timeout, and saves only after all motors and cleanup succeed. Verify the transition with the installed Pi/driver firmware before relying on remote cancellation. Setup now handles missing dribblers and cleans up partially initialized drivers. `MovementController.stop()` terminates its thread, so a new target-driving session must create a new controller.
+
+**Problem:** The existing MJPEG preview draws old inference results onto newer capture frames; its pixels are therefore unsuitable for exact distance samples or colour picking.
+
+**Solution:** `Camera(diagnostics=True)` publishes `get_diagnostic_snapshot()` containing an owned copy of the unannotated inference frame, matching ball/bot boxes, and the source capture's monotonic timestamp. The dashboard renders from that snapshot and rejects stale samples. Pixel picking uses a separately retained lossless source frame, not JPEG/overlay pixels. Diagnostic copies are disabled for ordinary camera callers.

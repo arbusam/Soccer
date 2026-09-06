@@ -1,23 +1,57 @@
+import copy
+import json
+import logging
+from pathlib import Path
+
 import cv2
+
+DEFAULT_THRESHOLDS = {
+    "blue": {"lower": [100, 240, 100], "upper": [120, 255, 255]},
+    "yellow": {"lower": [20, 100, 100], "upper": [30, 255, 255]},
+}
+THRESHOLDS_FILE = Path(__file__).resolve().parent.parent / "goal_thresholds.json"
+
+
+def validate_thresholds(bounds):
+    if not isinstance(bounds, dict) or set(bounds) != {"blue", "yellow"}:
+        raise ValueError("Expected blue and yellow HSV bounds")
+    for colour in bounds.values():
+        if not isinstance(colour, dict) or set(colour) != {"lower", "upper"}:
+            raise ValueError("Expected lower and upper HSV bounds")
+        for side in ("lower", "upper"):
+            values = colour[side]
+            if not isinstance(values, (list, tuple)) or len(values) != 3:
+                raise ValueError("HSV bounds need three integers")
+            if any(type(v) is not int or not 0 <= v <= limit
+                   for v, limit in zip(values, (179, 255, 255), strict=True)):
+                raise ValueError("HSV ranges: H 0–179, S/V 0–255")
+        if any(a > b for a, b in zip(colour["lower"], colour["upper"], strict=True)):
+            raise ValueError("Each lower bound must be <= its upper bound")
+    return copy.deepcopy(bounds)
+
+
+def load_thresholds(path=THRESHOLDS_FILE):
+    try:
+        return validate_thresholds(json.loads(Path(path).read_text()))
+    except FileNotFoundError:
+        return copy.deepcopy(DEFAULT_THRESHOLDS)
+    except (ValueError, TypeError, OSError) as exc:
+        logging.getLogger(__name__).warning("Invalid goal thresholds: %s", exc)
+        return copy.deepcopy(DEFAULT_THRESHOLDS)
 
 
 class OpenCV:
-    def __init__(self):
+    def __init__(self, thresholds=None):
         self.bounding_boxes = []
+        self.thresholds = load_thresholds() if thresholds is None else validate_thresholds(thresholds)
+
+    def mask(self, image_hsv, blue):
+        bounds = self.thresholds["blue" if blue else "yellow"]
+        return cv2.inRange(image_hsv, tuple(bounds["lower"]), tuple(bounds["upper"]))
 
     def process_image(self, image_hsv, blue):
-        blue_lower = (100, 240, 100)
-        blue_upper = (120, 255, 255)
-        yellow_lower = (20, 100, 100)
-        yellow_upper = (30, 255, 255)
-
-        if blue:
-            mask = cv2.inRange(image_hsv, blue_lower, blue_upper)
-        else:
-            mask = cv2.inRange(image_hsv, yellow_lower, yellow_upper)
-
         contours, _ = cv2.findContours(
-            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            self.mask(image_hsv, blue), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
         return contours
 

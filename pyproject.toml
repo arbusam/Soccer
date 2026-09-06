@@ -1,12 +1,14 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = [
+    "dashboard_test.py",
     "striker_shots.py",
     "recording_session.py",
     "session_replay.py",
     "camera_recording.py",
 ]
 python_functions = [
+    "test_*",
     "goal_*",
     "enemy_*",
     "midfield_*",

@@ -1,0 +1,201 @@
+"""Reusable localisation prediction and diagnostics, with lazy hardware imports."""
+
+import math
+import time
+from dataclasses import asdict, dataclass
+
+
+@dataclass(frozen=True)
+class OdometryDiagnostics:
+    """Values used for the latest MCL odometry prediction."""
+
+    dt_s: float
+    omega_deg_s: float
+    yaw_deg: float
+    wheel_vx: float
+    wheel_vy: float
+    lidar_vx: float
+    lidar_vy: float
+    lidar_fresh: bool
+    trust: float
+    fed_vx: float
+    fed_vy: float
+    has_wheel_odometry: bool
+
+
+def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02, cancel_event=None):
+    """Average a short burst of IMU samples so startup yaw is not just the first reading."""
+    print("Stabilizing IMU yaw reference...")
+    sin_sum = 0.0
+    cos_sum = 0.0
+    samples = 0
+    deadline = time.monotonic() + 5.0
+    while samples < sample_count:
+        if (cancel_event is not None and cancel_event.is_set()):
+            raise InterruptedError("IMU startup cancelled")
+        if time.monotonic() > deadline:
+            raise TimeoutError("No IMU yaw received during startup")
+        yaw = imu.get_yaw()
+        if yaw is not None:
+            yaw_rad = math.radians(yaw)
+            sin_sum += math.sin(yaw_rad)
+            cos_sum += math.cos(yaw_rad)
+            samples += 1
+        time.sleep(sample_interval)
+    return math.degrees(math.atan2(sin_sum, cos_sum))
+
+
+def get_yaw(imu, startup_yaw, mcl_yaw):
+    """Prefer MCL yaw when available, otherwise use startup-relative IMU yaw."""
+    if mcl_yaw is not None:
+        return mcl_yaw
+    imu_yaw = imu.get_yaw()
+    if imu_yaw is None:
+        return None
+    from lib.movement import imu_yaw_to_relative_yaw
+
+    return imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)
+
+
+def get_position(lidar_module):
+    """Return the latest confident (x, y, yaw) pose, or None if unavailable."""
+    x_pos, y_pos, yaw, _confidence = lidar_module.get_pose()
+    if x_pos is None or y_pos is None or yaw is None:
+        return None
+    return x_pos, y_pos, yaw
+
+
+def feed_imu_yaw_prior(lidar_module, imu, startup_yaw):
+    """Push startup-relative IMU yaw into MCL as a soft heading prior."""
+    from lib.movement import imu_yaw_to_relative_yaw
+
+    imu_yaw = imu.get_yaw()
+    if imu_yaw is None:
+        return
+    lidar_module.set_imu_yaw(imu_yaw_to_relative_yaw(imu_yaw, startup_yaw))
+
+
+def predict_odometry(
+    lidar_module,
+    movement_controller,
+    imu,
+    startup_yaw,
+    lidar_velocity,
+    yaw_deg,
+    last_pose_time,
+):
+    """Feed wheel and gyro measurements into the MCL motion model."""
+    from lib.movement import compute_wheel_odometry_trust
+
+    now = time.monotonic()
+    dt = now - last_pose_time
+    omega = 0.0
+    gyro_z = imu.get_gyro_z_deg_s()
+    if gyro_z is not None:
+        omega = gyro_z
+    feed_imu_yaw_prior(lidar_module, imu, startup_yaw)
+
+    vx, vy = 0.0, 0.0
+    vx_wheel, vy_wheel = 0.0, 0.0
+    lidar_vx, lidar_vy = 0.0, 0.0
+    lidar_fresh = False
+    trust = 1.0
+    has_wheel_odometry = movement_controller is not None and yaw_deg is not None
+    if movement_controller is not None and yaw_deg is not None:
+        vx_wheel, vy_wheel = movement_controller.get_measured_body_velocity_mm_s(yaw_deg)
+        lidar_vx, lidar_vy = lidar_velocity.get_body_velocity(yaw_deg)
+        lidar_fresh = lidar_velocity.is_fresh(now)
+        trust = compute_wheel_odometry_trust(
+            vx_wheel,
+            vy_wheel,
+            lidar_vx,
+            lidar_vy,
+            lidar_fresh,
+        )
+        vx = trust * vx_wheel
+        vy = trust * vy_wheel
+
+    lidar_module.predict_odometry(vx, vy, omega, dt)
+    diagnostics = OdometryDiagnostics(
+        dt_s=dt,
+        omega_deg_s=omega,
+        yaw_deg=yaw_deg,
+        wheel_vx=vx_wheel,
+        wheel_vy=vy_wheel,
+        lidar_vx=lidar_vx,
+        lidar_vy=lidar_vy,
+        lidar_fresh=lidar_fresh,
+        trust=trust,
+        fed_vx=vx,
+        fed_vy=vy,
+        has_wheel_odometry=has_wheel_odometry,
+    )
+    return now, diagnostics
+
+
+
+class LocalisationSession:
+    """One hardware owner calls tick at 50 Hz, even without a confident fix."""
+
+    def __init__(self, lidar, imu, startup_yaw, velocity, clock=time.monotonic):
+        self.lidar = lidar
+        self.imu = imu
+        self.startup_yaw = startup_yaw
+        self.velocity = velocity
+        self.clock = clock
+        self.last_time = clock()
+        self.last_yaw = 0.0
+        self.scan_generation = -1
+        self.last_scan_time = self.last_time
+        self.mcl_updates = -1
+        self.last_mcl_time = self.last_time
+        self.imu_count = -1
+        self.last_imu_time = self.last_time
+        self.state = {}
+
+    def tick(self, controller=None):
+        now = self.clock()
+        self.last_time, odometry = predict_odometry(
+            self.lidar, controller, self.imu, self.startup_yaw,
+            self.velocity, self.last_yaw, self.last_time,
+        )
+        pose = self.lidar.get_coordinates_info()
+        x, y, yaw, confidence, ok = pose
+        generation = self.lidar.get_scan_generation()
+        if generation != self.scan_generation:
+            self.scan_generation = generation
+            self.last_scan_time = now
+        count = self.imu.update_count
+        if count != self.imu_count:
+            self.imu_count = count
+            self.last_imu_time = now
+        if ok and all(v is not None for v in (x, y, yaw)):
+            self.last_yaw = yaw
+            self.velocity.update(x, y, yaw, now)
+        updates = self.lidar.get_mcl_update_count()
+        if updates != self.mcl_updates:
+            self.mcl_updates = updates
+            self.last_mcl_time = now
+        fresh = (now - self.last_scan_time <= 0.5 and now - self.last_imu_time <= 0.5
+                 and now - self.last_mcl_time <= 0.5)
+        self.state = {
+            "pose": [x, y, yaw, confidence, bool(ok)],
+            "fresh": fresh, "timestamp": now,
+            "scan_age_s": now - self.last_scan_time,
+            "imu_age_s": now - self.last_imu_time,
+            "scan_generation": generation,
+            "scan_count": self.lidar.get_scan_count(),
+            "mcl_updates": updates,
+            "mcl_age_s": now - self.last_mcl_time,
+            "scan_updates_enabled": self.lidar.scan_updates_enabled(),
+            "correction": list(self.lidar.get_last_scan_correction()),
+            "recovery": list(self.lidar.get_recovery_status()),
+            "odometry": asdict(odometry),
+        }
+        return self.state
+
+    def close(self):
+        try:
+            self.imu.close()
+        finally:
+            self.lidar.shutdown()

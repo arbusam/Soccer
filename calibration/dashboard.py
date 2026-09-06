@@ -1,0 +1,444 @@
+"""Dashboard state and image processing; imports Pi drivers only when requested."""
+
+import copy
+import json
+import math
+import os
+import queue
+import secrets
+import shutil
+import threading
+import time
+from collections import OrderedDict, deque
+from pathlib import Path
+
+import cv2
+
+from calibration.ball_distance import (
+    calculate_ball_bearing_deg,
+    fit_distance_calibration,
+    load_distance_calibration,
+    predict_distance_from_calibration,
+    save_distance_calibration,
+)
+from calibration.dashboard_hardware import PITCH, Hardware
+from lib.opencv import DEFAULT_THRESHOLDS, OpenCV, load_thresholds, validate_thresholds
+
+
+def number(value, low, high, label):
+    if isinstance(value, bool):
+        raise TypeError(f"Invalid {label}")
+    try:
+        value = float(value)
+    except (ValueError, TypeError) as exc:
+        raise ValueError(f"Invalid {label}") from exc
+    if not math.isfinite(value) or not low <= value <= high:
+        raise ValueError(f"{label} must be between {low} and {high}")
+    return value
+
+
+def addresses(value):
+    if not isinstance(value, list) or not 1 <= len(value) <= 8:
+        raise ValueError("Enter 1–8 ordered I2C addresses")
+    if any(type(v) is not int or not 8 <= v <= 119 for v in value) or len(set(value)) != len(value):
+        raise ValueError("I2C addresses must be unique integers between 8 and 119")
+    return value
+
+
+def backup(path):
+    path = Path(path)
+    if path.exists():
+        folder = path.parent / "calibration_backups"
+        folder.mkdir(exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S") + f"-{time.time_ns() % 1000000000:09d}"
+        shutil.copy2(path, folder / f"{path.stem}-{stamp}.json")
+
+
+def save_json(path, value):
+    backup(path)
+    temp = Path(str(path) + ".tmp")
+    with temp.open("w") as file:
+        json.dump(value, file, indent=2, allow_nan=False)
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temp, path)
+
+
+class Lease:
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.token = None
+        self.deadline = 0
+        self.cancel = threading.Event()
+        self.cancel.set()
+        self.armed = False
+
+    def expire(self):
+        if self.token and self.clock() >= self.deadline:
+            self.cancel.set()
+            self.armed = False
+            self.token = None
+            return True
+        return False
+
+    def claim(self):
+        self.expire()
+        if self.token:
+            raise ValueError("Another browser currently has control")
+        self.token = secrets.token_urlsafe(24)
+        self.deadline = self.clock() + 2
+        return self.token
+
+    def check(self, token):
+        self.expire()
+        if not token or token != self.token:
+            raise PermissionError("Take control first; previous control may have expired")
+
+    def heartbeat(self, token):
+        self.check(token)
+        self.deadline = self.clock() + 2
+
+    def arm(self, token):
+        self.check(token)
+        self.cancel = threading.Event()
+        self.armed = True
+
+    def stop(self):
+        self.cancel.set()
+        self.armed = False
+
+
+def encode(frame, extension=".jpg"):
+    ok, encoded = cv2.imencode(extension, frame)
+    if not ok:
+        raise RuntimeError("Could not encode camera frame")
+    return encoded.tobytes()
+
+
+def pixel_values(frame, x, y):
+    height, width = frame.shape[:2]
+    if type(x) is not int or type(y) is not int or not (0 <= x < width and 0 <= y < height):
+        raise ValueError("Pixel outside image")
+    bgr = frame[y, x]
+    hsv = cv2.cvtColor(frame[y:y + 1, x:x + 1], cv2.COLOR_BGR2HSV)[0, 0]
+    return {"x": x, "y": y, "bgr": bgr.tolist(), "rgb": bgr[::-1].tolist(), "hsv": hsv.tolist()}
+
+
+def scene(frame, ball, bots, calibration):
+    """Render only detections belonging to this exact source frame."""
+    overlay = frame.copy()
+    height, width = frame.shape[:2]
+    results = []
+    for label, detections, colour in (("Ball", [ball] if ball else [], (0, 165, 255)),
+                                      ("Bot", bots, (255, 180, 30))):
+        for detection in detections:
+            x, y, w, h = detection["bbox"]
+            point = detection.get("point", detection["centre"])
+            bearing = calculate_ball_bearing_deg(*point, width, height) + 270
+            distance = predict_distance_from_calibration(calibration, detection["radial_pixels"])
+            result = {**detection, "label": label, "bearing": bearing, "distance": distance}
+            results.append(result)
+            cv2.rectangle(overlay, (x, y), (x + w, y + h), colour, 2)
+            text = f"{label} {detection['confidence']:.0%} {bearing % 360:.0f}deg"
+            if distance is not None:
+                text += f" {distance:.0f}mm"
+            cv2.putText(overlay, text, (max(0, x), max(15, y - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, colour, 1)
+    return overlay, results
+
+
+class Dashboard:
+    def __init__(self, root, *, fps=15, camera_factory=None, hardware_factory=Hardware, start=True,
+                 lidar_port="/dev/ttyUSB0", lidar_baud=460800):
+        self.root = Path(root)
+        self.fps = fps
+        self.lock = threading.RLock()
+        self.condition = threading.Condition(self.lock)
+        self.lease = Lease()
+        self.closing = threading.Event()
+        self.camera = None
+        self.camera_factory = camera_factory
+        self.camera_status = "starting"
+        self.latest = None
+        self.streams = {}
+        self.stream_sequence = 0
+        self.frozen = OrderedDict()
+        self.events = deque(maxlen=300)
+        self.history = deque(maxlen=300)
+        self.thresholds = load_thresholds(self.root / "goal_thresholds.json")
+        self.samples = []
+        self.sample_resolution = None
+        self.fit = None
+        self.calibration = None
+        self.detections = []
+        self.rates = {"capture": 0, "inference": 0, "preview": 0}
+        self.jobs = queue.Queue(maxsize=8)
+        self.default_addresses = []
+        try:
+            for line in (self.root / "config.txt").read_text().splitlines():
+                key, sep, value = line.partition("=")
+                if sep and key.strip() == "i2c_addresses":
+                    self.default_addresses = addresses([int(v) for v in value.split("#")[0].split(",")])
+        except (OSError, ValueError) as exc:
+            self.notify(f"Motor configuration: {exc}", error=True)
+        self.hardware = hardware_factory(self.root, self.notify, port=lidar_port, baud=lidar_baud)
+        self.threads = []
+        if start:
+            for name, target in (("preview", self._camera_loop), ("actions", self._jobs), ("watchdog", self._watchdog)):
+                thread = threading.Thread(target=target, name="dashboard-" + name, daemon=True)
+                thread.start()
+                self.threads.append(thread)
+
+    def notify(self, message, error=False):
+        with self.lock:
+            self.events.append({"time": time.time(), "message": message, "error": error})
+
+    def _watchdog(self):
+        last_history = 0
+        while not self.closing.wait(0.05):
+            hardware_state = self.hardware.snapshot()
+            local = hardware_state.get("localisation") or {}
+            loop_stale = (hardware_state["mode"] == "driving"
+                          and time.monotonic() - local.get("timestamp", 0) > 0.5)
+            with self.lock:
+                if loop_stale:
+                    self.lease.stop()
+                    self.notify("Drive watchdog: localisation worker stalled", error=True)
+                expired = self.lease.expire()
+                stopped = self.lease.cancel.is_set()
+                if stopped:
+                    self.lease.armed = False
+            if stopped:
+                self.hardware.stop_drive()
+            if expired:
+                self.notify("Control lease expired; disarmed")
+            if time.monotonic() - last_history > 1:
+                with self.lock:
+                    self.history.append({"time": time.time(), "hardware": self.hardware.snapshot(),
+                                         "fps": dict(self.rates)})
+                last_history = time.monotonic()
+
+    def state(self):
+        with self.lock:
+            age = None if self.latest is None else time.monotonic() - self.latest["timestamp"]
+            return {
+                "camera": {"status": self.camera_status, "age_s": age, "fps": self.rates,
+                           "frame_id": self.latest["frame_id"] if self.latest else None,
+                           "resolution": self.sample_resolution, "detections": self.detections},
+                "control": {"occupied": self.lease.token is not None, "armed": self.lease.armed},
+                "hardware": self.hardware.snapshot(), "thresholds": copy.deepcopy(self.thresholds),
+                "samples": list(self.samples), "fit": self.fit, "addresses": self.default_addresses,
+                "events": list(self.events)[-20:], "pitch": PITCH,
+            }
+
+    def command(self, action, data, token):
+        with self.lock:
+            if action == "claim":
+                return {"token": self.lease.claim()}
+            if action == "stop":
+                self.lease.stop()
+                self.notify("Stop requested; disarmed")
+                return {}
+            self.lease.check(token)
+            if action == "heartbeat":
+                self.lease.heartbeat(token)
+                return {}
+            if action == "release":
+                self.lease.stop()
+                self.lease.token = None
+                return {}
+            if action == "arm":
+                mode = self.hardware.snapshot()["mode"]
+                if mode not in ("idle", "stopped", "monitoring") or self.lease.armed:
+                    raise ValueError("Stop the current operation before arming")
+                self.lease.arm(token)
+                return {}
+            if action in ("drive", "calibrate") and not self.lease.armed:
+                raise ValueError("Arm motors first")
+            if action == "drive":
+                data["speed"] = number(data.get("speed"), 0, 5000, "speed")
+                target = data.get("target")
+                if not isinstance(target, list) or len(target) != 2:
+                    raise ValueError("Expected target X and Y")
+                data["target"] = [number(target[i], 0, PITCH[i], "target") for i in range(2)]
+                data["addresses"] = addresses(data.get("addresses"))
+                if len(data["addresses"]) not in (4, 5):
+                    raise ValueError("Driving requires four wheels and an optional dribbler")
+            if action == "calibrate":
+                data["addresses"] = addresses(data.get("addresses"))
+                if data.get("wheels_clear") is not True:
+                    raise ValueError("Confirm that wheels are clear before calibration")
+            allowed = {"drive", "calibrate", "localise", "thresholds", "save_goals", "revert_goals",
+                       "default_goals", "sample", "remove_sample", "clear_samples", "fit", "save_ball"}
+            if action not in allowed:
+                raise ValueError("Unknown action")
+            if action == "thresholds":
+                data = {"thresholds": validate_thresholds(data.get("thresholds"))}
+            self.jobs.put_nowait((action, copy.deepcopy(data), token, self.lease.cancel))
+            return {"queued": True}
+
+    def _jobs(self):
+        while not self.closing.is_set():
+            try:
+                action, data, token, cancel = self.jobs.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                with self.lock:
+                    self.lease.check(token)
+                    if action in ("drive", "calibrate", "localise"):
+                        if action != "localise" and cancel.is_set():
+                            raise ValueError("Operation cancelled; arm again")
+                        if self.hardware.snapshot()["mode"] not in ("idle", "stopped", "monitoring"):
+                            raise ValueError("Hardware operation already running")
+                        if action == "calibrate":
+                            backup(self.root / "calibration_data.json")
+                        # Localisation monitoring does not require armed motors.
+                        if action == "localise":
+                            cancel = threading.Event()
+                        self.hardware.submit(action, data, cancel)
+                    else:
+                        self._edit(action, data)
+            except (Exception, SystemExit) as exc:
+                self.notify(f"{action}: {exc}", error=True)
+
+    def _edit(self, action, data):
+        goal_path = self.root / "goal_thresholds.json"
+        if action == "thresholds":
+            self.thresholds = data["thresholds"]
+        elif action == "save_goals":
+            save_json(goal_path, self.thresholds)
+            if self.camera is not None:
+                self.camera.goal_detector = OpenCV(self.thresholds)
+            self.notify("Goal thresholds saved")
+        elif action == "revert_goals":
+            self.thresholds = load_thresholds(goal_path)
+        elif action == "default_goals":
+            self.thresholds = copy.deepcopy(DEFAULT_THRESHOLDS)
+        elif action == "sample":
+            snap = self.latest
+            if snap is None or time.monotonic() - snap["timestamp"] > 0.5 or snap["ball"] is None:
+                raise ValueError("A fresh detected ball is required")
+            det = snap["ball"]
+            distance = number(data.get("distance"), 0.001, 50000, "distance (mm)")
+            x, y = det["centre"]
+            captured = data.get("captured") is True
+            sample = {"distance_mm": distance, "radial_pixels": det["radial_pixels"],
+                      "centre_x": x, "centre_y": y, "bounding_box_area": det["bbox"][2] * det["bbox"][3],
+                      "captured": captured}
+            if captured:
+                from calibration.ball_distance import apply_camera_bearing_offset
+                sample["bearing_deg"] = apply_camera_bearing_offset(
+                    calculate_ball_bearing_deg(x, y, *self.sample_resolution))
+            if len(self.samples) >= 500:
+                raise ValueError("Maximum 500 samples; remove samples before adding more")
+            self.samples.append(sample)
+            self.fit = None
+        elif action == "remove_sample":
+            index = data.get("index")
+            if type(index) is not int or not 0 <= index < len(self.samples):
+                raise ValueError("Invalid sample index")
+            self.samples.pop(index)
+            self.fit = None
+        elif action == "clear_samples":
+            self.samples = []
+            self.fit = None
+        elif action in ("fit", "save_ball"):
+            radial = [s["radial_pixels"] for s in self.samples]
+            if len(radial) < 2 or len({round(r, 5) for r in radial}) != len(radial):
+                raise ValueError("Use at least two distinct radial positions; remove duplicate positions")
+            self.fit = fit_distance_calibration(self.samples)
+            if not all(math.isfinite(v) for v in self.fit["coefficients"]):
+                raise ValueError("Degenerate fit")
+            if action == "save_ball":
+                if self.camera is None or self.sample_resolution is None:
+                    raise ValueError("Camera unavailable")
+                path = self.root / "ball_distance_calibration.json"
+                backup(path)
+                self.calibration, _ = save_distance_calibration(self.samples, self.sample_resolution, str(path))
+                self.camera.reload_distance_calibration(str(path))
+                self.notify("Ball distance calibration saved and reloaded")
+
+    def freeze(self):
+        with self.lock:
+            if self.latest is None:
+                raise ValueError("No camera frame available")
+            key = secrets.token_hex(12)
+            self.frozen[key] = self.latest["frame"].copy()
+            while len(self.frozen) > 8:
+                self.frozen.popitem(last=False)
+            height, width = self.frozen[key].shape[:2]
+            return {"id": key, "width": width, "height": height, "frame_id": self.latest["frame_id"]}
+
+    def frozen_frame(self, key):
+        with self.lock:
+            if key not in self.frozen:
+                raise ValueError("Frozen frame expired; freeze again")
+            return self.frozen[key]
+
+    def _camera_loop(self):
+        try:
+            if self.camera_factory is None:
+                from lib.camera import Camera
+                self.camera_factory = Camera
+            camera = self.camera_factory(PORT=0, diagnostics=True,
+                                         distance_calibration_file=str(self.root / "ball_distance_calibration.json"))
+            self.camera = camera
+            camera.start()
+            with self.lock:
+                self.sample_resolution = list(camera.resolution)
+                self.calibration = load_distance_calibration(camera.resolution, str(self.root / "ball_distance_calibration.json"))
+                if self.calibration is not None:
+                    self.samples = self.calibration.get("samples", [])[:500]
+                    self.fit = self.calibration.get("model")
+                self.camera_status = "running"
+            counts = (0, 0, 0)
+            last_rate = time.monotonic()
+            while not self.closing.is_set():
+                started = time.monotonic()
+                if camera.inference_error:
+                    raise RuntimeError(camera.inference_error)
+                snap = camera.get_diagnostic_snapshot()
+                if snap is not None:
+                    with self.lock:
+                        bounds = copy.deepcopy(self.thresholds)
+                        calibration = self.calibration
+                    frame = snap["frame"]
+                    overlay, detections = scene(frame, snap["ball"], snap["bots"], calibration)
+                    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+                    detector = OpenCV(bounds)
+                    blue, yellow = detector.mask(hsv, True), detector.mask(hsv, False)
+                    goals = overlay.copy()
+                    for is_blue, colour in ((True, (255, 160, 0)), (False, (0, 255, 255))):
+                        cv2.drawContours(goals, detector.process_image(hsv, is_blue), -1, colour, 2)
+                    streams = {"camera": encode(overlay), "raw": encode(frame),
+                               "blue": encode(blue), "yellow": encode(yellow), "goals": encode(goals)}
+                    with self.condition:
+                        self.latest = snap
+                        self.detections = detections
+                        self.streams = streams
+                        self.stream_sequence += 1
+                        self.condition.notify_all()
+                now = time.monotonic()
+                if now - last_rate >= 1:
+                    new_counts = (camera.capture_count, camera.infer_count, self.stream_sequence)
+                    with self.lock:
+                        self.rates = dict(zip(("capture", "inference", "preview"),
+                                              [(a - b) / (now - last_rate) for a, b in zip(new_counts, counts, strict=True)], strict=True))
+                    counts, last_rate = new_counts, now
+                self.closing.wait(max(0, 1 / self.fps - (time.monotonic() - started)))
+        except (Exception, SystemExit) as exc:
+            with self.lock:
+                self.camera_status = f"unavailable: {exc}"
+            self.notify(f"Camera: {exc}", error=True)
+        finally:
+            if self.camera is not None:
+                self.camera.stop()
+
+    def close(self):
+        with self.condition:
+            self.lease.stop()
+            self.closing.set()
+            self.condition.notify_all()
+        self.hardware.close()
+        for thread in self.threads:
+            thread.join(timeout=6)

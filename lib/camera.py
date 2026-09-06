@@ -1,4 +1,5 @@
 import asyncio
+import copy
 import io
 import logging
 import socketserver
@@ -83,87 +84,102 @@ class Camera:
         recording_path=None,
         session_epoch_monotonic=None,
         detection_callback=None,
+        diagnostics=False,
     ):
         self.ball_model_path = _resolve_model_path(ball_model_path)
+        self.diagnostics_enabled = diagnostics
+        self._diagnostic_snapshot = None
+        self.inference_error = None
+        self.goal_detector = OpenCV()
         self.ball_confidence = ball_confidence
-        self.ball_model = HailoBallDetector(
-            self.ball_model_path,
-            conf=ball_confidence,
-        )
-        calib_res = get_distance_calibration_resolution(distance_calibration_file)
-        if resolution is None:
-            resolution = calib_res or (self.ball_model.imgsz, self.ball_model.imgsz)
-        self.PORT = PORT
-        self.resolution = resolution
-        self.frame_rate = frame_rate
-        self.recording_path = Path(recording_path) if recording_path is not None else None
-        self.session_epoch_monotonic = session_epoch_monotonic
-        self.detection_callback = detection_callback
-        self.picam2 = Picamera2()
-        config_options = {
-            "main": {"size": resolution, "format": "RGB888"},
-            "buffer_count": 8 if self.recording_path is not None else 4,
-        }
-        if self.recording_path is not None:
-            # Feed the software H.264 encoder YUV directly so it does not convert
-            # the RGB inference stream on the CPU.
-            config_options["lores"] = {"size": resolution, "format": "YUV420"}
-        video_config = self.picam2.create_video_configuration(**config_options)
-        self.picam2.configure(video_config)
-        self.picam2.controls.FrameRate = frame_rate
-        self.forward_angle = 0  # Add forward angle property
-        # self.picam2.controls.ExposureTime = 30000
-        self.picam2.controls.AnalogueGain = 10.0
-        self.output = self.StreamingOutput()
-        self.server = None
-        self.server_thread = None
-        self.user_callback = None
-        self._bearing = None
-        self._distance = None
-        self._bot_measurements = []
-        self._frame_id = 0
-        self._measurement_lock = threading.Lock()
-        self._capture_started = False
-        self._recording = False
-        self._video_recording = False
-        self._video_encoder = None
-        self._video_output = None
-        self._recording_error = None
-        self._first_sensor_timestamp_ns = None
-        self._video_start_elapsed_s = None
-        self._server_started = False
-        self._is_shutting_down = False
-        # Latest-frame slot: callback only publishes; infer thread drops stale frames.
-        self._latest_lock = threading.Lock()
-        self._latest_buf = None
-        self._latest_seq = 0
-        self._latest_sensor_timestamp_ns = None
-        self._last_detection = None
-        self._infer_stop = threading.Event()
-        self._infer_thread = None
-        self.calibrated = True
-        self.upperbound = 0
-        self.lowerbound = 0
-        self.colours = []
-        self.distance_calibration = load_distance_calibration(
-            resolution=resolution,
-            calibration_file=distance_calibration_file,
-        )
-        self._distance_calibration_warning_logged = False
-        if self.distance_calibration is None:
-            logger.warning(
-                "Ball distance calibration file '%s' was not loaded; distance estimates will be unavailable.",
-                distance_calibration_file,
+        self.ball_model = None
+        self.picam2 = None
+        try:
+            self.ball_model = HailoBallDetector(
+                self.ball_model_path,
+                conf=ball_confidence,
             )
+            calib_res = get_distance_calibration_resolution(distance_calibration_file)
+            if resolution is None:
+                resolution = calib_res or (self.ball_model.imgsz, self.ball_model.imgsz)
+            self.PORT = PORT
+            self.resolution = resolution
+            self.frame_rate = frame_rate
+            self.recording_path = Path(recording_path) if recording_path is not None else None
+            self.session_epoch_monotonic = session_epoch_monotonic
+            self.detection_callback = detection_callback
+            self.picam2 = Picamera2()
+            config_options = {
+                "main": {"size": resolution, "format": "RGB888"},
+                "buffer_count": 8 if self.recording_path is not None else 4,
+            }
+            if self.recording_path is not None:
+                # Feed the software H.264 encoder YUV directly so it does not convert
+                # the RGB inference stream on the CPU.
+                config_options["lores"] = {"size": resolution, "format": "YUV420"}
+            video_config = self.picam2.create_video_configuration(**config_options)
+            self.picam2.configure(video_config)
+            self.picam2.controls.FrameRate = frame_rate
+            self.forward_angle = 0  # Add forward angle property
+            # self.picam2.controls.ExposureTime = 30000
+            self.picam2.controls.AnalogueGain = 10.0
+            self.output = self.StreamingOutput()
+            self.server = None
+            self.server_thread = None
+            self.user_callback = None
+            self._bearing = None
+            self._distance = None
+            self._bot_measurements = []
+            self._frame_id = 0
+            self._measurement_lock = threading.Lock()
+            self._capture_started = False
+            self._recording = False
+            self._video_recording = False
+            self._video_encoder = None
+            self._video_output = None
+            self._recording_error = None
+            self._first_sensor_timestamp_ns = None
+            self._video_start_elapsed_s = None
+            self._server_started = False
+            self._is_shutting_down = False
+            # Latest-frame slot: callback only publishes; infer thread drops stale frames.
+            self._latest_lock = threading.Lock()
+            self._latest_buf = None
+            self._latest_seq = 0
+            self._latest_sensor_timestamp_ns = None
+            self._latest_capture_monotonic = None
+            self._last_detection = None
+            self._infer_stop = threading.Event()
+            self._infer_thread = None
+            self.calibrated = True
+            self.upperbound = 0
+            self.lowerbound = 0
+            self.colours = []
+            self.distance_calibration = load_distance_calibration(
+                resolution=resolution,
+                calibration_file=distance_calibration_file,
+            )
+            self._distance_calibration_warning_logged = False
+            if self.distance_calibration is None:
+                logger.warning(
+                    "Ball distance calibration file '%s' was not loaded; distance estimates will be unavailable.",
+                    distance_calibration_file,
+                )
 
-        # Enable detection callback by default
-        self.picam2.pre_callback = self._proxy_callback
+            # Enable detection callback by default
+            self.picam2.pre_callback = self._proxy_callback
 
-        # # print camera modes
-        # print(self.picam2.sensor_modes)
-            
-        # Define async tasks
-        self.async_tasks = [self.run_server]
+            # # print camera modes
+            # print(self.picam2.sensor_modes)
+
+            # Define async tasks
+            self.async_tasks = [self.run_server]
+        except BaseException:
+            if self.picam2 is not None:
+                self.picam2.close()
+            if self.ball_model is not None:
+                self.ball_model.close()
+            raise
 
     @property
     def stream_enabled(self):
@@ -357,7 +373,7 @@ class Camera:
             return
         self._infer_stop.clear()
         self._infer_thread = threading.Thread(
-            target=self._infer_loop,
+            target=self._infer_worker,
             name="hailo-latest-infer",
             daemon=True,
         )
@@ -380,6 +396,26 @@ class Camera:
         self._recording_error = error
         logger.error("Video recording failed: %s", error)
 
+    def get_diagnostic_snapshot(self):
+        """Return an owned copy of the exact, unannotated inference frame and results."""
+        with self._measurement_lock:
+            return copy.deepcopy(self._diagnostic_snapshot)
+
+    def reload_distance_calibration(self, calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE):
+        calibration = load_distance_calibration(self.resolution, calibration_file)
+        if calibration is None:
+            raise ValueError("Calibration is invalid or has a different resolution")
+        with self._measurement_lock:
+            self.distance_calibration = calibration
+            self._distance_calibration_warning_logged = False
+
+    def _infer_worker(self):
+        try:
+            self._infer_loop()
+        except Exception as exc:
+            self.inference_error = str(exc)
+            logger.exception("Camera inference stopped")
+
     def _infer_loop(self):
         """Always infer the newest published frame; skip anything older."""
         last_seq = -1
@@ -396,6 +432,7 @@ class Camera:
                     frame = infer_buf
                     last_seq = seq
                     sensor_timestamp_ns = self._latest_sensor_timestamp_ns
+                    capture_time = getattr(self, "_latest_capture_monotonic", None) or time.monotonic()
             if frame is None:
                 time.sleep(0.0005)
                 continue
@@ -429,17 +466,29 @@ class Camera:
                 bot_measurements.append((bot_bearing, bot_distance))
 
             hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-            cv = OpenCV()
-            contours = cv.process_image(hsv_frame, True) # TODO: Update to match the target goal
+            cv = getattr(self, "goal_detector", None) or OpenCV()
+            contours = cv.process_image(hsv_frame, True)
+            yellow_contours = cv.process_image(hsv_frame, False)
 
             with self._measurement_lock:
                 self._last_detection = detection
                 self._bearing = new_bearing
                 self._distance = new_distance
                 self._goal_contours = contours
+                self._yellow_goal_contours = yellow_contours
                 self._bot_measurements = bot_measurements
                 self._frame_id += 1
                 inference_sequence = self._frame_id
+                if getattr(self, "diagnostics_enabled", False):
+                    self._diagnostic_snapshot = {
+                        "frame": frame.copy(),
+                        "frame_id": inference_sequence,
+                        "capture_sequence": seq,
+                        "timestamp": capture_time,
+                        "sensor_timestamp_ns": sensor_timestamp_ns,
+                        "ball": copy.deepcopy(detection),
+                        "bots": copy.deepcopy(bot_detections),
+                    }
 
             if self.detection_callback is not None:
                 if (
@@ -576,6 +625,7 @@ class Camera:
                         np.copyto(self._latest_buf, m.array)
                         self._latest_seq += 1
                         self._latest_sensor_timestamp_ns = sensor_timestamp_ns
+                        self._latest_capture_monotonic = capture_monotonic
 
                     with self._measurement_lock:
                         detection = self._last_detection
@@ -659,9 +709,6 @@ class Camera:
         self._is_shutting_down = True
         infer_stopped = self._stop_infer_thread()
 
-        if not self._capture_started and not self._server_started:
-            print("Camera stopped")
-            return
 
         try:
             self.picam2.pre_callback = None
@@ -695,6 +742,10 @@ class Camera:
                 self.ball_model.close()
             except Exception as e:
                 logger.warning("Error closing Hailo detector: %s", e)
+        try:
+            self.picam2.close()
+        except Exception as exc:
+            logger.warning("Error closing camera: %s", exc)
         print("Camera stopped")
 
 async def main():
