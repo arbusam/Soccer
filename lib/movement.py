@@ -532,7 +532,7 @@ def _set_motor_torque(motor, torque, motor_index, *, ignore_errors=False):
     """Write a torque command and optionally suppress communication failures."""
     try:
         motor.set_torque(torque)
-    except OSError as exc:
+    except OSError:
         address = _get_motor_address(motor)
         details = f"motor {motor_index}"
         if address is not None:

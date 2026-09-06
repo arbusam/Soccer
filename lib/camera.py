@@ -10,9 +10,6 @@ from threading import Condition
 
 import cv2
 import numpy as np
-
-# change to picamzero
-from lib.opencv import OpenCV
 from picamera2 import Picamera2
 from picamera2.encoders import H264Encoder, JpegEncoder
 from picamera2.outputs import FileOutput, PyavOutput
@@ -26,6 +23,8 @@ from calibration.ball_distance import (
     predict_distance_from_calibration,
 )
 from lib.hailo_ball import HailoBallDetector
+
+from lib.opencv import OpenCV
 
 logger = logging.getLogger(__name__)
 
@@ -438,6 +437,7 @@ class Camera:
                 self._last_detection = detection
                 self._bearing = new_bearing
                 self._distance = new_distance
+                self._goal_contours = contours
                 self._bot_measurements = bot_measurements
                 self._frame_id += 1
                 inference_sequence = self._frame_id

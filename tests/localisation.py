@@ -16,6 +16,7 @@ import math
 import queue
 import threading
 import time
+from dataclasses import dataclass
 
 from lib import lidar
 from lib.config import load_config
@@ -43,6 +44,24 @@ LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 PITCH_X = 2430
 PITCH_Y = 1820
+
+
+@dataclass(frozen=True)
+class OdometryDiagnostics:
+    """Values used for the latest MCL odometry prediction."""
+
+    dt_s: float
+    omega_deg_s: float
+    yaw_deg: float
+    wheel_vx: float
+    wheel_vy: float
+    lidar_vx: float
+    lidar_vy: float
+    lidar_fresh: bool
+    trust: float
+    fed_vx: float
+    fed_vy: float
+    has_wheel_odometry: bool
 
 
 def parse_args():
@@ -114,20 +133,69 @@ def get_position(lidar_module):
     return x_pos, y_pos, yaw
 
 
-def print_localisation_status(lidar_module):
-    """Print pose, confidence, and whether MCL is currently using LIDAR scans."""
+def print_localisation_status(lidar_module, odometry=None):
+    """Print a readable snapshot of pose, odometry, and filter health."""
     x_pos, y_pos, yaw, confidence, ok = lidar_module.get_coordinates_info()
-    lidar_used = lidar_module.scan_updates_enabled()
-    lidar_label = "LIDAR" if lidar_used else "odom-only"
+    scans_enabled = lidar_module.scan_updates_enabled()
+    scan_generation = lidar_module.get_scan_generation()
+    mcl_updates = lidar_module.get_mcl_update_count()
+    scan_quality, baseline, bad_scans, global_fraction, recovery_valid = (
+        lidar_module.get_recovery_status()
+    )
+    confidence_s = "n/a" if confidence is None else f"{confidence:.2f}"
+
     if ok and x_pos is not None and y_pos is not None and yaw is not None:
         print(
-            f"pose=({x_pos:.1f}, {y_pos:.1f}) yaw={yaw:.1f} deg "
-            f"confidence={confidence:.2f} source={lidar_label}"
+            f"[POSE] x={x_pos:7.1f}  y={y_pos:7.1f} mm  yaw={yaw:6.1f} deg  "
+            f"confidence={confidence_s}"
         )
     else:
+        print(f"[POSE] unavailable  confidence={confidence_s}")
+
+    if odometry is None or not odometry.has_wheel_odometry:
+        odometry_text = "wheel=unavailable"
+        if odometry is not None:
+            odometry_text += (
+                f"  dt={odometry.dt_s * 1000.0:5.1f} ms"
+                f"  gyro={odometry.omega_deg_s:+6.1f} deg/s"
+            )
+        print(f"[ODOM] {odometry_text}")
+    else:
+        wheel_speed = math.hypot(odometry.wheel_vx, odometry.wheel_vy)
+        lidar_speed = math.hypot(odometry.lidar_vx, odometry.lidar_vy)
+        freshness = "fresh" if odometry.lidar_fresh else "stale"
+        flags = []
+        if odometry.trust <= 0.01:
+            flags.append("TRUST ZERO")
+        if odometry.dt_s > 0.1:
+            flags.append("LARGE DT")
+        flag_text = f"  !! {', '.join(flags)}" if flags else ""
         print(
-            f"pose=unavailable confidence={confidence:.2f} source={lidar_label}"
+            f"[ODOM] dt={odometry.dt_s * 1000.0:5.1f} ms  "
+            f"gyro={odometry.omega_deg_s:+6.1f} deg/s  "
+            f"yaw={odometry.yaw_deg:6.1f} deg  trust={odometry.trust:4.0%}"
+            f"{flag_text}"
         )
+        print(
+            f"       wheel=({odometry.wheel_vx:+7.1f}, {odometry.wheel_vy:+7.1f}) "
+            f"|v|={wheel_speed:6.1f}  "
+            f"lidar=({odometry.lidar_vx:+7.1f}, {odometry.lidar_vy:+7.1f}) "
+            f"|v|={lidar_speed:6.1f} [{freshness}]  "
+            f"fed=({odometry.fed_vx:+7.1f}, {odometry.fed_vy:+7.1f}) mm/s"
+        )
+
+    scan_mode = "enabled" if scans_enabled else "PAUSED (predict only)"
+    if recovery_valid:
+        recovery_text = (
+            f"quality={scan_quality:6.2f}/{baseline:6.2f}  "
+            f"bad={bad_scans}  global={global_fraction:4.0%}"
+        )
+    else:
+        recovery_text = "quality=not ready"
+    print(
+        f"[MCL ] scans={scan_generation}  corrections={mcl_updates}  "
+        f"scan updates={scan_mode}  {recovery_text}"
+    )
 
 
 def print_scan_correction_if_new(lidar_module, last_sequence):
@@ -158,12 +226,17 @@ def print_scan_correction_if_new(lidar_module, last_sequence):
 
     if not ok and generation != last_collapse_generation:
         recovery = lidar_module.get_recovery_status()
-        scan_quality, baseline, bad_scans, global_fraction, _valid = recovery
+        scan_quality, baseline, bad_scans, global_fraction, recovery_valid = recovery
         confidence_s = "n/a" if confidence is None else f"{confidence:.2f}"
+        recovery_text = (
+            f"quality={scan_quality:.2f}/{baseline:.2f}  "
+            f"bad={bad_scans}  global={global_fraction:.0%}"
+            if recovery_valid
+            else "quality=not ready"
+        )
         print(
-            f"scan#{generation} confidence collapsed "
-            f"confidence={confidence_s} quality={scan_quality:.2f}/{baseline:.2f} "
-            f"bad_scans={bad_scans} global={100.0 * global_fraction:.0f}%"
+            f"[SCAN {generation:06d}] NO FIX  confidence={confidence_s}  "
+            f"{recovery_text}"
         )
         print_scan_correction_if_new._collapse_generation = generation
 
@@ -174,12 +247,14 @@ def print_scan_correction_if_new(lidar_module, last_sequence):
     scan_quality, baseline, bad_scans, global_fraction, _valid = recovery
     confidence_s = "n/a" if confidence is None else f"{confidence:.2f}"
     print(
-        f"scan#{sequence} odom_error={error_mm:.1f} mm "
-        f"yaw_error={yaw_error_deg:+.1f} deg confidence={confidence_s} "
-        f"quality={scan_quality:.2f}/{baseline:.2f} "
-        f"bad_scans={bad_scans} global={100.0 * global_fraction:.0f}% | "
-        f"odom=({pred_x:.1f}, {pred_y:.1f}, {pred_yaw:.1f}) -> "
-        f"lidar=({corr_x:.1f}, {corr_y:.1f}, {corr_yaw:.1f})"
+        f"[SCAN {sequence:06d}] correction={error_mm:6.1f} mm  "
+        f"yaw correction={yaw_error_deg:+5.1f} deg  confidence={confidence_s}"
+    )
+    print(
+        f"              predicted=({pred_x:7.1f}, {pred_y:7.1f}, {pred_yaw:6.1f})"
+        f" -> corrected=({corr_x:7.1f}, {corr_y:7.1f}, {corr_yaw:6.1f})  "
+        f"quality={scan_quality:.2f}/{baseline:.2f}  "
+        f"bad={bad_scans}  global={global_fraction:.0%}"
     )
     return sequence
 
@@ -211,21 +286,41 @@ def predict_odometry(
     feed_imu_yaw_prior(lidar_module, imu, startup_yaw)
 
     vx, vy = 0.0, 0.0
+    vx_wheel, vy_wheel = 0.0, 0.0
+    lidar_vx, lidar_vy = 0.0, 0.0
+    lidar_fresh = False
+    trust = 1.0
+    has_wheel_odometry = movement_controller is not None and yaw_deg is not None
     if movement_controller is not None and yaw_deg is not None:
         vx_wheel, vy_wheel = movement_controller.get_measured_body_velocity_mm_s(yaw_deg)
         lidar_vx, lidar_vy = lidar_velocity.get_body_velocity(yaw_deg)
+        lidar_fresh = lidar_velocity.is_fresh(now)
         trust = compute_wheel_odometry_trust(
             vx_wheel,
             vy_wheel,
             lidar_vx,
             lidar_vy,
-            lidar_velocity.is_fresh(now),
+            lidar_fresh,
         )
         vx = trust * vx_wheel
         vy = trust * vy_wheel
 
     lidar_module.predict_odometry(vx, vy, omega, dt)
-    return now
+    diagnostics = OdometryDiagnostics(
+        dt_s=dt,
+        omega_deg_s=omega,
+        yaw_deg=yaw_deg,
+        wheel_vx=vx_wheel,
+        wheel_vy=vy_wheel,
+        lidar_vx=lidar_vx,
+        lidar_vy=lidar_vy,
+        lidar_fresh=lidar_fresh,
+        trust=trust,
+        fed_vx=vx,
+        fed_vy=vy,
+        has_wheel_odometry=has_wheel_odometry,
+    )
+    return now, diagnostics
 
 
 def drive_to_target(
@@ -243,11 +338,11 @@ def drive_to_target(
     send_log_module=None,
 ):
     """Drive toward (target_x, target_y) using localized pose feedback."""
-    # last_status_print = 0.0
+    last_status_print = 0.0
     while True:
         now = time.monotonic()
         yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
-        last_pose_time = predict_odometry(
+        last_pose_time, odometry = predict_odometry(
             lidar_module,
             movement_controller,
             imu,
@@ -260,9 +355,9 @@ def drive_to_target(
             lidar_module, last_scan_sequence
         )
 
-        # if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
-        #     print_localisation_status(lidar_module)
-        #     last_status_print = now
+        if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
+            print_localisation_status(lidar_module, odometry)
+            last_status_print = now
 
         pose = get_position(lidar_module)
         if pose is None:
@@ -361,7 +456,7 @@ def wait_for_target_while_localising(
 
         now = time.monotonic()
         yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
-        last_pose_time = predict_odometry(
+        last_pose_time, _odometry = predict_odometry(
             lidar_module,
             movement_controller,
             imu,
@@ -404,11 +499,11 @@ def monitor_pose(
     send_log_module=None,
 ):
     """Print and optionally stream localized pose without commanding motors."""
-    # last_status_print = 0.0
+    last_status_print = 0.0
     while True:
         now = time.monotonic()
         yaw_for_odom = last_mcl_yaw if last_mcl_yaw is not None else 0.0
-        last_pose_time = predict_odometry(
+        last_pose_time, odometry = predict_odometry(
             lidar_module,
             None,
             imu,
@@ -421,9 +516,9 @@ def monitor_pose(
             lidar_module, last_scan_sequence
         )
 
-        # if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
-        #     print_localisation_status(lidar_module)
-        #     last_status_print = now
+        if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
+            print_localisation_status(lidar_module, odometry)
+            last_status_print = now
 
         pose = get_position(lidar_module)
         if pose is None:
@@ -474,7 +569,7 @@ def main():
 
         print("Waiting for first pose estimate...")
         last_pose_time = time.monotonic()
-        # last_status_print = 0.0
+        last_status_print = 0.0
         while not lidar.is_coordinates_ready():
             now = time.monotonic()
             omega = 0.0
@@ -486,10 +581,10 @@ def main():
             # after resampling; without this the filter often never reaches confidence.
             lidar.predict_odometry(0.0, 0.0, omega, now - last_pose_time)
             last_pose_time = now
-            # if now - last_status_print >= STATUS_PRINT_INTERVAL_S:
-            #     print_localisation_status(lidar)
-            #     print(f"  scan_points={lidar.get_scan_count()}")
-            #     last_status_print = now
+            if now - last_status_print >= 0.5:
+                print_localisation_status(lidar)
+                print(f"[LIDAR] points in latest scan={lidar.get_scan_count()}")
+                last_status_print = now
             time.sleep(0.1)
 
         lidar_velocity = LidarVelocityEstimator()
@@ -544,7 +639,7 @@ def main():
                     movement_controller=movement_controller,
                 )
 
-                # print_localisation_status(lidar)
+                print_localisation_status(lidar)
                 pose = get_position(lidar)
                 if pose is not None:
                     stream_pose(args.stream, send_log_module, pose[0], pose[1], pose[2])
