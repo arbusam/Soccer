@@ -21,6 +21,7 @@ MAX_DRIVE_DT_S = DRIVE_LOOP_INTERVAL_S * 2.0
 
 AMPS_PER_LSB = 2**16 # 1 LSB is 2^-16 A.
 DRIBBLER_MOTOR_TORQUE = 1 * AMPS_PER_LSB # Amps
+MOTOR_CURRENT_LIMIT = 8 * AMPS_PER_LSB # Amps
 MAX_MOTORS = 8
 
 
@@ -118,7 +119,7 @@ def get_motors_for_calibration(i2c_addresses, i2c_bus=None, i2c_lock=None):
 
     for setup_motor_count in range(motor_count):
         with i2c_lock:
-            motors[setup_motor_count].set_current_limit_foc(524288) # set current limit (only works in FOC mode). Max is 8A (524288). 1LSB is 2^-16 A.
+            motors[setup_motor_count].set_current_limit_foc(MOTOR_CURRENT_LIMIT) # set current limit (only works in FOC mode). Max is 8A (524288). 1LSB is 2^-16 A.
             motors[setup_motor_count].set_id_pid_constants(1500, 200)
             motors[setup_motor_count].set_iq_pid_constants(1500, 200)
             motors[setup_motor_count].set_speed_pid_constants(4e-2, 4e-4, 3e-2)  # Constants valid for FOC and Robomaster M2006 P36 motor only
@@ -747,6 +748,7 @@ def stop_all_motors(motors):
     for index, m in enumerate(motors):
         if m is not None:
             _set_motor_speed(m, 0, index, ignore_errors=True)
+    _set_motor_torque(motors[4], 0, 4, ignore_errors=True)
 
 
 def _prompt_i2c_addresses():
