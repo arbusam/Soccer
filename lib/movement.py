@@ -19,7 +19,7 @@ DRIVE_LOOP_INTERVAL_S = 1.0 / DRIVE_LOOP_HZ
 # Cap one-step accel so a late wake never applies more than ~2 control periods of ramp.
 MAX_DRIVE_DT_S = DRIVE_LOOP_INTERVAL_S * 2.0
 
-AMPS_PER_LSB = 2^16 # 1 LSB is 2^-16 A.
+AMPS_PER_LSB = 2**16 # 1 LSB is 2^-16 A.
 DRIBBLER_MOTOR_TORQUE = 1 * AMPS_PER_LSB # Amps
 MAX_MOTORS = 8
 
