@@ -23,7 +23,6 @@ from calibration.ball_distance import (
     predict_distance_from_calibration,
 )
 from lib.hailo_ball import HailoBallDetector
-
 from lib.opencv import OpenCV
 
 logger = logging.getLogger(__name__)
