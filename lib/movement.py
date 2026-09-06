@@ -20,8 +20,8 @@ DRIVE_LOOP_INTERVAL_S = 1.0 / DRIVE_LOOP_HZ
 MAX_DRIVE_DT_S = DRIVE_LOOP_INTERVAL_S * 2.0
 
 AMPS_PER_LSB = 2**16 # 1 LSB is 2^-16 A.
-DRIBBLER_MOTOR_TORQUE = 1 * AMPS_PER_LSB # Amps
-MOTOR_CURRENT_LIMIT = 8 * AMPS_PER_LSB # Amps
+DRIBBLER_MOTOR_TORQUE = int(1.0 * AMPS_PER_LSB) # Amps
+MOTOR_CURRENT_LIMIT = int(8.0 * AMPS_PER_LSB) # Amps
 MAX_MOTORS = 8
 
 
@@ -117,7 +117,7 @@ def get_motors_for_calibration(i2c_addresses, i2c_bus=None, i2c_lock=None):
                 print("Error unsupported motor driver version, please check for updates, maybe check wiring and i2c configuration, reboot microcontroller to try again.")
                 sys.exit()
 
-    for setup_motor_count in range(motor_count):
+    for setup_motor_count in range(4):
         with i2c_lock:
             motors[setup_motor_count].set_current_limit_foc(MOTOR_CURRENT_LIMIT) # set current limit (only works in FOC mode). Max is 8A (524288). 1LSB is 2^-16 A.
             motors[setup_motor_count].set_id_pid_constants(1500, 200)
@@ -126,6 +126,14 @@ def get_motors_for_calibration(i2c_addresses, i2c_bus=None, i2c_lock=None):
             motors[setup_motor_count].set_position_pid_constants(275, 0, 0)
             motors[setup_motor_count].set_position_region_boundary(250000)
             motors[setup_motor_count].set_speed_limit(546133333)
+    with i2c_lock:
+        motors[4].set_current_limit_foc(DRIBBLER_MOTOR_TORQUE)
+        motors[4].set_id_pid_constants(1500, 200)
+        motors[4].set_iq_pid_constants(1500, 200)
+        motors[4].set_speed_pid_constants(4e-2, 4e-4, 3e-2)  # Constants valid for FOC and Robomaster M2006 P36 motor only
+        motors[4].set_position_pid_constants(275, 0, 0)
+        motors[4].set_position_region_boundary(250000)
+        motors[4].set_speed_limit(546133333)
     return motors, motor_count, normalized_addresses
 
 
@@ -325,6 +333,7 @@ class MovementController:
             for index, motor in enumerate(self.motors):
                 if motor is not None:
                     _set_motor_speed(motor, 0, index, ignore_errors=True)
+            _set_motor_torque(self.motors[4], 0, 4, ignore_errors=True)
 
     def _raise_pending_error(self):
         with self._error_lock:
@@ -744,12 +753,11 @@ def compute_wheel_odometry_trust(wheel_vx, wheel_vy, lidar_vx, lidar_vy, lidar_f
 
 
 def stop_all_motors(motors):
-    """Set speed to 0 on all non-None motors. Call on exit to avoid runaway motors."""
+    """Set speed and torque to 0 on all non-None motors. Call on exit to avoid runaway motors."""
     for index, m in enumerate(motors):
         if m is not None:
             _set_motor_speed(m, 0, index, ignore_errors=True)
-    _set_motor_torque(motors[4], 0, 4, ignore_errors=True)
-
+            _set_motor_torque(m, 0, index, ignore_errors=True)
 
 def _prompt_i2c_addresses():
     """Gets i2c addresses from the user."""
