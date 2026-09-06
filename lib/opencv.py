@@ -5,9 +5,7 @@ class OpenCV:
     def __init__(self):
         self.bounding_boxes = []
 
-    def process_image(self, image_rgb, blue):
-        image_hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
-
+    def process_image(self, image_hsv, blue):
         blue_lower = (100, 240, 100)
         blue_upper = (120, 255, 255)
         yellow_lower = (20, 100, 100)
@@ -48,18 +46,17 @@ if __name__ == "__main__":
         print(f"Failed to load image: {image_path}")
         sys.exit(1)
 
-    image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+    image_hsv = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2HSV)
 
     opencv = OpenCV()
     start_time = time.perf_counter()
-    contours = opencv.process_image(image_rgb, blue)
+    contours = opencv.process_image(image_hsv, blue)
     elapsed_ms = (time.perf_counter() - start_time) * 1000
     print(f"Processing took {elapsed_ms:.2f} ms")
 
     overlay = image_bgr.copy()
     cv2.drawContours(overlay, contours, -1, (0, 255, 0), cv2.FILLED)
     preview = cv2.addWeighted(image_bgr, 0.6, overlay, 0.4, 0)
-    image_hsv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2HSV)
     window_name = "Colour selection"
 
     def show_pixel_hsv(event, x, y, _flags, _param):

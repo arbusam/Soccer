@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 # change to picamzero
+from lib.opencv import OpenCV
 from picamera2 import Picamera2
 from picamera2.encoders import H264Encoder, JpegEncoder
 from picamera2.outputs import FileOutput, PyavOutput
@@ -428,6 +429,10 @@ class Camera:
                 if bot_bearing is None:
                     continue
                 bot_measurements.append((bot_bearing, bot_distance))
+
+            hsv_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            cv = OpenCV()
+            contours = cv.process_image(hsv_frame, True) # TODO: Update to match the target goal
 
             with self._measurement_lock:
                 self._last_detection = detection

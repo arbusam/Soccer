@@ -19,8 +19,8 @@ DRIVE_LOOP_INTERVAL_S = 1.0 / DRIVE_LOOP_HZ
 # Cap one-step accel so a late wake never applies more than ~2 control periods of ramp.
 MAX_DRIVE_DT_S = DRIVE_LOOP_INTERVAL_S * 2.0
 
-DRIBBLER_RPM = 1000
-DRIBBLER_MOTOR_SPEED = int(DRIBBLER_RPM * RPM_TO_MOTOR_SPEED)
+AMPS_PER_LSB = 2^16 # 1 LSB is 2^-16 A.
+DRIBBLER_MOTOR_TORQUE = 1 * AMPS_PER_LSB # Amps
 MAX_MOTORS = 8
 
 
@@ -118,7 +118,7 @@ def get_motors_for_calibration(i2c_addresses, i2c_bus=None, i2c_lock=None):
 
     for setup_motor_count in range(motor_count):
         with i2c_lock:
-            motors[setup_motor_count].set_current_limit_foc(524288)  # set current limit to 8 amp (only works in FOC mode)
+            motors[setup_motor_count].set_current_limit_foc(524288) # set current limit (only works in FOC mode). Max is 8A (524288). 1LSB is 2^-16 A.
             motors[setup_motor_count].set_id_pid_constants(1500, 200)
             motors[setup_motor_count].set_iq_pid_constants(1500, 200)
             motors[setup_motor_count].set_speed_pid_constants(4e-2, 4e-4, 3e-2)  # Constants valid for FOC and Robomaster M2006 P36 motor only
@@ -151,7 +151,7 @@ def init_motors(
         print(f"Error: calibration file has {len(cal_data['motors'])} motor(s), but {motor_count} motor(s) were requested.")
         sys.exit()
     # Sets the calibration constants to each motor (drive wheels and optional dribbler)
-    for setup_motor_count in range(motor_count):
+    for setup_motor_count in range(4):
         motor_cal = cal_data["motors"][setup_motor_count]
         with i2c_lock:
             motors[setup_motor_count].set_ELECANGLEOFFSET(motor_cal["elecangleoffset"])
@@ -159,6 +159,14 @@ def init_motors(
             motors[setup_motor_count].configure_operating_mode_and_sensor(3, 1)  # configure FOC mode and sin/cos encoder
             motors[setup_motor_count].configure_command_mode(12)  # configure speed command mode
         motor_modes[setup_motor_count] = 12
+
+    with i2c_lock:
+        motor_cal = cal_data["motors"][4]
+        motors[4].set_ELECANGLEOFFSET(motor_cal["elecangleoffset"])
+        motors[4].set_SINCOSCENTRE(motor_cal["sincoscentre"])
+        motors[4].configure_operating_mode_and_sensor(3, 1)  # configure FOC mode and sin/cos encoder
+        motors[4].configure_command_mode(2)  # configure torque command mode
+    motor_modes[4] = 2
     return motors, motor_modes
 
 
@@ -423,9 +431,9 @@ class MovementController:
                     _set_motor_speed(drive_motors[2], c_val, 2)
                     _set_motor_speed(drive_motors[3], d_val, 3)
                     if len(self.motors) > 4 and self.motors[4] is not None:
-                        dribbler_speed = DRIBBLER_MOTOR_SPEED * dribbler 
-                        _set_motor_speed(
-                            self.motors[4], dribbler_speed, 4, ignore_errors=True
+                        dribbler_torque = DRIBBLER_MOTOR_TORQUE * dribbler
+                        _set_motor_torque(
+                            self.motors[4], dribbler_torque, 4, ignore_errors=True
                         )
             except MotorCommunicationError as exc:
                 self._set_pending_error(exc)
@@ -510,6 +518,15 @@ def _set_motor_speed(motor, speed, motor_index, *, ignore_errors=False):
         raise MotorCommunicationError(message) from exc
     return True
 
+def _set_motor_torque(motor, torque, motor_index, *, ignore_errors=False):
+    """Write a torque command and optionally suppress communication failures."""
+    try:
+        motor.set_torque(torque)
+    except OSError as exc:
+        address = _get_motor_address(motor)
+        details = f"motor {motor_index}"
+        if address is not None:
+            details += f" (I2C address {address})"
 
 def _clamp(value, minimum, maximum):
     return max(minimum, min(value, maximum))
