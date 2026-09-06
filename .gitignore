@@ -237,3 +237,5 @@ config.txt
 !open-soccer-detect-s_hailo_model/*
 
 .vscode/
+
+logs/*

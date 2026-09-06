@@ -5,12 +5,9 @@ import sys
 import threading
 import time
 
-import board
-import busio
 from steelbar_powerful_bldc_driver import PowerfulBLDCDriver
 
-# Initialises the i2c bus
-i2c = busio.I2C(board.SCL, board.SDA)
+from lib.i2c_bus import get_shared_i2c_bus, get_shared_i2c_lock
 
 # Conversion factor from RPM to motor speed units.
 # Formula: rpm * 7 (pole pairs) * 36 (36:1 gear ratio) / 60 (seconds per minute) / 2^-16 (electrical revolutions per second)
@@ -86,8 +83,12 @@ def _load_calibration_data(calibration_file):
     return cal_data
 
 
-def get_motors_for_calibration(i2c_addresses):
+def get_motors_for_calibration(i2c_addresses, i2c_bus=None, i2c_lock=None):
     """Create motor driver objects and set PID/limits (no calibration or FOC). Input: list of i2c addresses. Returns: tuple of (motors, motor_count, normalized_addresses)."""
+    if i2c_bus is None:
+        i2c_bus = get_shared_i2c_bus()
+    if i2c_lock is None:
+        i2c_lock = get_shared_i2c_lock()
     try:
         normalized_addresses = [int(addr) for addr in i2c_addresses]
     except (TypeError, ValueError):
@@ -107,26 +108,40 @@ def get_motors_for_calibration(i2c_addresses):
         if address <= 7 or address >= 120:
             print("Error invalid i2c address, please reboot microcontroller to try again.")
             sys.exit()
-        motors[setup_motor_count] = PowerfulBLDCDriver(i2c, address)
-        print(f"The firmware version of motor driver number {setup_motor_count} is: {motors[setup_motor_count].get_firmware_version()}")
-        if motors[setup_motor_count].get_firmware_version() != 3:
-            print("Error unsupported motor driver version, please check for updates, maybe check wiring and i2c configuration, reboot microcontroller to try again.")
-            sys.exit()
+        with i2c_lock:
+            motors[setup_motor_count] = PowerfulBLDCDriver(i2c_bus, address)
+            firmware_version = motors[setup_motor_count].get_firmware_version()
+            print(f"The firmware version of motor driver number {setup_motor_count} is: {firmware_version}")
+            if firmware_version != 3:
+                print("Error unsupported motor driver version, please check for updates, maybe check wiring and i2c configuration, reboot microcontroller to try again.")
+                sys.exit()
 
     for setup_motor_count in range(motor_count):
-        motors[setup_motor_count].set_current_limit_foc(524288)  # set current limit to 8 amp (only works in FOC mode)
-        motors[setup_motor_count].set_id_pid_constants(1500, 200)
-        motors[setup_motor_count].set_iq_pid_constants(1500, 200)
-        motors[setup_motor_count].set_speed_pid_constants(4e-2, 4e-4, 3e-2)  # Constants valid for FOC and Robomaster M2006 P36 motor only
-        motors[setup_motor_count].set_position_pid_constants(275, 0, 0)
-        motors[setup_motor_count].set_position_region_boundary(250000)
-        motors[setup_motor_count].set_speed_limit(546133333)
+        with i2c_lock:
+            motors[setup_motor_count].set_current_limit_foc(524288)  # set current limit to 8 amp (only works in FOC mode)
+            motors[setup_motor_count].set_id_pid_constants(1500, 200)
+            motors[setup_motor_count].set_iq_pid_constants(1500, 200)
+            motors[setup_motor_count].set_speed_pid_constants(4e-2, 4e-4, 3e-2)  # Constants valid for FOC and Robomaster M2006 P36 motor only
+            motors[setup_motor_count].set_position_pid_constants(275, 0, 0)
+            motors[setup_motor_count].set_position_region_boundary(250000)
+            motors[setup_motor_count].set_speed_limit(546133333)
     return motors, motor_count, normalized_addresses
 
 
-def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
+def init_motors(
+    i2c_addresses,
+    calibration_file="calibration_data.json",
+    i2c_bus=None,
+    i2c_lock=None,
+):
     """Initialises the motors and returns the motor objects and motor modes"""
-    motors, motor_count, _normalized_addresses = get_motors_for_calibration(i2c_addresses)
+    if i2c_bus is None:
+        i2c_bus = get_shared_i2c_bus()
+    if i2c_lock is None:
+        i2c_lock = get_shared_i2c_lock()
+    motors, motor_count, _normalized_addresses = get_motors_for_calibration(
+        i2c_addresses, i2c_bus=i2c_bus, i2c_lock=i2c_lock
+    )
     motor_modes = [None] * motor_count
 
     # Loads the calibration data from the file. Calibration file is created by running calibration/motors.py
@@ -138,10 +153,11 @@ def init_motors(i2c_addresses, calibration_file="calibration_data.json"):
     # Sets the calibration constants to each motor (drive wheels and optional dribbler)
     for setup_motor_count in range(motor_count):
         motor_cal = cal_data["motors"][setup_motor_count]
-        motors[setup_motor_count].set_ELECANGLEOFFSET(motor_cal["elecangleoffset"])
-        motors[setup_motor_count].set_SINCOSCENTRE(motor_cal["sincoscentre"])
-        motors[setup_motor_count].configure_operating_mode_and_sensor(3, 1)  # configure FOC mode and sin/cos encoder
-        motors[setup_motor_count].configure_command_mode(12)  # configure speed command mode
+        with i2c_lock:
+            motors[setup_motor_count].set_ELECANGLEOFFSET(motor_cal["elecangleoffset"])
+            motors[setup_motor_count].set_SINCOSCENTRE(motor_cal["sincoscentre"])
+            motors[setup_motor_count].configure_operating_mode_and_sensor(3, 1)  # configure FOC mode and sin/cos encoder
+            motors[setup_motor_count].configure_command_mode(12)  # configure speed command mode
         motor_modes[setup_motor_count] = 12
     return motors, motor_modes
 
@@ -162,6 +178,7 @@ class MovementController:
         max_yaw_rpm,
         max_rpm,
         yaw_correct_threshold,
+        i2c_lock=None,
     ):
         drive_motors = motors[:4]
         if any(motor is None for motor in drive_motors):
@@ -177,7 +194,9 @@ class MovementController:
         self.yaw_correct_threshold = yaw_correct_threshold
 
         self._command_lock = threading.Lock()
-        self._i2c_lock = threading.Lock()
+        self._i2c_lock = (
+            get_shared_i2c_lock() if i2c_lock is None else i2c_lock
+        )
         self._current_lock = threading.Lock()
         self._error_lock = threading.Lock()
 
@@ -236,9 +255,20 @@ class MovementController:
         max_rpm,
         yaw_correct_threshold,
         calibration_file="calibration_data.json",
+        i2c_bus=None,
+        i2c_lock=None,
     ):
         """Initialise motors and return a ready-to-use movement controller."""
-        motors, motor_modes = init_motors(i2c_addresses, calibration_file=calibration_file)
+        if i2c_bus is None:
+            i2c_bus = get_shared_i2c_bus()
+        if i2c_lock is None:
+            i2c_lock = get_shared_i2c_lock()
+        motors, motor_modes = init_motors(
+            i2c_addresses,
+            calibration_file=calibration_file,
+            i2c_bus=i2c_bus,
+            i2c_lock=i2c_lock,
+        )
         return cls(
             motors,
             motor_modes,
@@ -246,6 +276,7 @@ class MovementController:
             max_yaw_rpm,
             max_rpm,
             yaw_correct_threshold,
+            i2c_lock=i2c_lock,
         )
 
     def move(self, direction, speed, rotation, rotation_speed, yaw, dribbler=0):
@@ -401,23 +432,41 @@ class MovementController:
 
 
 # Used by calibration/motors.py to calibrate the motors and save the results to the calibration file to be re used.
-def calibrate_motors(motors, motor_count, i2c_addresses, calibration_file="calibration_data.json"):
+def calibrate_motors(
+    motors,
+    motor_count,
+    i2c_addresses,
+    calibration_file="calibration_data.json",
+    i2c_lock=None,
+):
     """Run physical calibration on each motor and save results to a JSON file."""
+    if i2c_lock is None:
+        i2c_lock = get_shared_i2c_lock()
     calibration_path = _resolve_calibration_path(calibration_file)
     cal_data = {"motors": []}
     for setup_motor_count in range(motor_count):
-        motors[setup_motor_count].configure_operating_mode_and_sensor(15, 1)  # calibration mode and sin/cos encoder
-        motors[setup_motor_count].configure_command_mode(15)  # calibration mode
-        motors[setup_motor_count].set_calibration_options(300, 2097152, 50000, 500000)
-        motors[setup_motor_count].start_calibration()
+        with i2c_lock:
+            motors[setup_motor_count].configure_operating_mode_and_sensor(15, 1)  # calibration mode and sin/cos encoder
+            motors[setup_motor_count].configure_command_mode(15)  # calibration mode
+            motors[setup_motor_count].set_calibration_options(300, 2097152, 50000, 500000)
+            motors[setup_motor_count].start_calibration()
         print(f"Starting calibration of motor {setup_motor_count}")
-        while not motors[setup_motor_count].is_calibration_finished():
+        while True:
+            with i2c_lock:
+                calibration_finished = motors[
+                    setup_motor_count
+                ].is_calibration_finished()
+            if calibration_finished:
+                break
             print(".", end="")
             sys.stdout.flush()
             time.sleep(0.5)
         print()
-        elecangleoffset = motors[setup_motor_count].get_calibration_ELECANGLEOFFSET()
-        sincoscentre = motors[setup_motor_count].get_calibration_SINCOSCENTRE()
+        with i2c_lock:
+            elecangleoffset = motors[
+                setup_motor_count
+            ].get_calibration_ELECANGLEOFFSET()
+            sincoscentre = motors[setup_motor_count].get_calibration_SINCOSCENTRE()
         print(f"ELECANGLEOFFSET: {elecangleoffset}")
         print(f"SINCOSCENTRE: {sincoscentre}")
         cal_data["motors"].append({

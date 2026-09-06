@@ -2,26 +2,32 @@ import math
 import threading
 import time
 
-import board
-import busio
 from adafruit_bno08x import BNO_REPORT_GAME_ROTATION_VECTOR, BNO_REPORT_GYROSCOPE
 from adafruit_bno08x.i2c import BNO08X_I2C
 
+from lib.i2c_bus import get_shared_i2c_bus, get_shared_i2c_lock
+
 
 class IMU:
-    def __init__(self, poll_interval=0.01):
+    def __init__(self, poll_interval=0.01, i2c_bus=None, i2c_lock=None):
         self._poll_interval = poll_interval
         self._lock = threading.Lock()
+        self._i2c_lock = (
+            get_shared_i2c_lock() if i2c_lock is None else i2c_lock
+        )
         self._running = True
         self._latest_quaternion = None
         self._latest_yaw = None
         self._latest_gyro = None
         self._update_count = 0
 
-        i2c = busio.I2C(board.SCL, board.SDA)
-        self._bno = BNO08X_I2C(i2c)
-        self._bno.enable_feature(BNO_REPORT_GAME_ROTATION_VECTOR)
-        self._bno.enable_feature(BNO_REPORT_GYROSCOPE)
+        if i2c_bus is None:
+            i2c_bus = get_shared_i2c_bus()
+        with self._i2c_lock:
+            self._bno = BNO08X_I2C(i2c_bus)
+            # Game rotation vector is used as opposed to rotation vector as it does not use the magnetometer, which has shown to be unreliable.
+            self._bno.enable_feature(BNO_REPORT_GAME_ROTATION_VECTOR)
+            self._bno.enable_feature(BNO_REPORT_GYROSCOPE)
 
         self._thread = threading.Thread(target=self._update_loop, daemon=True)
         self._thread.start()
@@ -29,9 +35,12 @@ class IMU:
     def _update_loop(self):
         while self._running:
             try:
-                quat_i, quat_j, quat_k, quat_real = self._bno.game_quaternion
-                yaw = self._quaternion_to_yaw_degrees(quat_i, quat_j, quat_k, quat_real)
-                gyro = self._bno.gyro
+                with self._i2c_lock:
+                    quat_i, quat_j, quat_k, quat_real = self._bno.game_quaternion
+                    yaw = self._quaternion_to_yaw_degrees(
+                        quat_i, quat_j, quat_k, quat_real
+                    )
+                    gyro = self._bno.gyro
                 with self._lock:
                     self._latest_quaternion = (quat_i, quat_j, quat_k, quat_real)
                     self._latest_yaw = yaw
