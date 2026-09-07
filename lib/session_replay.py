@@ -5,10 +5,13 @@ from __future__ import annotations
 import bisect
 import csv
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,6 +64,19 @@ def _bool(value: str | None) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _read_complete_csv_rows(path: Path) -> list[dict]:
+    """Read complete rows, ignoring a final row torn by sudden power loss."""
+    with path.open(encoding="utf-8", newline="") as handle:
+        reader = csv.DictReader(handle)
+        rows = []
+        for row in reader:
+            if None in row or any(row.get(field) is None for field in reader.fieldnames or ()):
+                logger.warning("Ignoring incomplete final recording row in %s", path)
+                continue
+            rows.append(row)
+        return rows
+
+
 def load_recorded_session(directory: str | Path) -> RecordedSession:
     directory = Path(directory)
     metadata_path = directory / "metadata.json"
@@ -71,17 +87,22 @@ def load_recorded_session(directory: str | Path) -> RecordedSession:
         )
 
     game_path = directory / metadata.get("game_file", "game.csv")
-    with game_path.open(encoding="utf-8", newline="") as handle:
-        game_events = list(csv.DictReader(handle))
+    game_events = _read_complete_csv_rows(game_path)
+    valid_game_events = []
     for event in game_events:
-        event["elapsed_s"] = float(event["elapsed_s"])
+        try:
+            event["elapsed_s"] = float(event["elapsed_s"])
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid recording row in %s", game_path)
+            continue
+        valid_game_events.append(event)
+    game_events = valid_game_events
 
     detections_path = directory / metadata.get(
         "detections_file",
         "detections.csv",
     )
-    with detections_path.open(encoding="utf-8", newline="") as handle:
-        detection_events = list(csv.DictReader(handle))
+    detection_events = _read_complete_csv_rows(detections_path)
     numeric_fields = (
         "elapsed_s",
         "video_time_s",
@@ -93,10 +114,28 @@ def load_recorded_session(directory: str | Path) -> RecordedSession:
         "centre_y",
         "confidence",
     )
+    valid_detection_events = []
     for event in detection_events:
-        for field in numeric_fields:
-            event[field] = _optional_float(event.get(field))
+        try:
+            for field in numeric_fields:
+                event[field] = _optional_float(event.get(field))
+        except (TypeError, ValueError):
+            logger.warning("Ignoring invalid recording row in %s", detections_path)
+            continue
         event["detected"] = _bool(event.get("detected"))
+        valid_detection_events.append(event)
+    detection_events = valid_detection_events
+
+    # The camera normally checkpoints this offset once per second. If power is
+    # lost before that first checkpoint, every detection still carries both
+    # clocks, so recover the offset from the earliest complete row.
+    if metadata.get("video_start_elapsed_s") is None:
+        for event in detection_events:
+            elapsed_s = event.get("elapsed_s")
+            video_time_s = event.get("video_time_s")
+            if elapsed_s is not None and video_time_s is not None:
+                metadata["video_start_elapsed_s"] = elapsed_s - video_time_s
+                break
 
     return RecordedSession(directory, metadata, game_events, detection_events)
 

@@ -16,6 +16,9 @@ def writes_versioned_game_and_detection_files():
             resolution=(640, 640),
             requested_fps=90,
         )
+        initial_metadata = json.loads(session.metadata_path.read_text(encoding="utf-8"))
+        assert initial_metadata["video_file"] == "video.ts"
+        assert not initial_metadata["finalized"]
         session.record_game(
             (1, 2, 3, 4, 5, True, "STRIKER", False, 10, 500, 20, False, True),
             elapsed_s=0.25,
@@ -38,6 +41,9 @@ def writes_versioned_game_and_detection_files():
 
         metadata = json.loads(session.metadata_path.read_text(encoding="utf-8"))
         assert metadata["schema_version"] == 1
+        assert session.video_path.name == "video.ts"
+        assert metadata["video_file"] == "video.ts"
+        assert metadata["finalized"]
         assert metadata["game_rows"] == 1
         assert metadata["detection_rows"] == 1
 

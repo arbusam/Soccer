@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import os
 import queue
 import threading
 import time
@@ -47,9 +48,16 @@ DETECTION_FIELDS = (
 class AsyncCsvWriter:
     """Write small CSV records without blocking the producer threads."""
 
-    def __init__(self, path: Path, fields: Iterable[str], queue_size: int = 4096):
+    def __init__(
+        self,
+        path: Path,
+        fields: Iterable[str],
+        queue_size: int = 4096,
+        sync_interval_s: float = 1.0,
+    ):
         self.path = Path(path)
         self.fields = tuple(fields)
+        self._sync_interval_s = sync_interval_s
         self._queue: queue.Queue[tuple[object, ...]] = queue.Queue(maxsize=queue_size)
         self._stop = threading.Event()
         self._dropped = 0
@@ -61,6 +69,17 @@ class AsyncCsvWriter:
             name=f"csv-writer-{self.path.stem}",
             daemon=True,
         )
+        # Create and durably sync the header before returning. A session is
+        # therefore structurally replayable even if power is lost immediately.
+        with self.path.open("w", encoding="utf-8", newline="") as handle:
+            csv.writer(handle).writerow(self.fields)
+            handle.flush()
+            os.fsync(handle.fileno())
+        directory_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
         self._thread.start()
 
     @property
@@ -93,10 +112,9 @@ class AsyncCsvWriter:
 
     def _run(self) -> None:
         try:
-            with self.path.open("w", encoding="utf-8", newline="") as handle:
+            with self.path.open("a", encoding="utf-8", newline="") as handle:
                 writer = csv.writer(handle)
-                writer.writerow(self.fields)
-                last_flush = time.monotonic()
+                last_sync = time.monotonic()
                 while not self._stop.is_set() or not self._queue.empty():
                     try:
                         row = self._queue.get(timeout=0.1)
@@ -107,10 +125,12 @@ class AsyncCsvWriter:
                         with self._counter_lock:
                             self._written += 1
                     now = time.monotonic()
-                    if now - last_flush >= 0.25:
+                    if now - last_sync >= self._sync_interval_s:
                         handle.flush()
-                        last_flush = now
+                        os.fsync(handle.fileno())
+                        last_sync = now
                 handle.flush()
+                os.fsync(handle.fileno())
         except Exception as exc:
             self._error = exc
 
@@ -135,7 +155,10 @@ class RecordingSession:
         if self.directory.exists() and any(self.directory.iterdir()):
             raise FileExistsError(f"Recording session directory is not empty: {self.directory}")
         self.directory.mkdir(parents=True, exist_ok=True)
-        self.video_path = self.directory / "video.mp4"
+        # MPEG-TS has no end-of-file index to finalize, unlike MP4.  Each
+        # packet is usable as it is written, so a sudden power loss preserves
+        # the already-flushed beginning of a session recording.
+        self.video_path = self.directory / "video.ts"
         self.game_path = self.directory / "game.csv"
         self.detections_path = self.directory / "detections.csv"
         self.metadata_path = self.directory / "metadata.json"
@@ -150,7 +173,9 @@ class RecordingSession:
             "game_file": self.game_path.name,
             "detections_file": self.detections_path.name,
             "annotation": "top-confidence Ball detection used by the controller",
+            "finalized": False,
         }
+        self._write_metadata_locked()
         self.game_writer = AsyncCsvWriter(self.game_path, GAME_FIELDS)
         self.detection_writer = AsyncCsvWriter(
             self.detections_path,
@@ -195,6 +220,37 @@ class RecordingSession:
     def update_metadata(self, values: Mapping[str, object]) -> None:
         with self._metadata_lock:
             self._metadata.update(values)
+            self._write_metadata_locked()
+
+    def checkpoint(self, values: Mapping[str, object] | None = None) -> None:
+        """Durably save enough live state to replay after an abrupt shutdown."""
+        with self._metadata_lock:
+            if values is not None:
+                self._metadata.update(values)
+            self._metadata.update(
+                {
+                    "duration_s": self.elapsed(),
+                    "game_rows": self.game_writer.written,
+                    "detection_rows": self.detection_writer.written,
+                    "dropped_game_rows": self.game_writer.dropped,
+                    "dropped_detection_rows": self.detection_writer.dropped,
+                }
+            )
+            self._write_metadata_locked()
+
+    def _write_metadata_locked(self) -> None:
+        temporary_path = self.metadata_path.with_suffix(".json.tmp")
+        with temporary_path.open("w", encoding="utf-8") as handle:
+            json.dump(self._metadata, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(self.metadata_path)
+        directory_fd = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
 
     def close(self) -> None:
         self.game_writer.close()
@@ -215,12 +271,7 @@ class RecordingSession:
                         if self.detection_writer.error
                         else None
                     ),
+                    "finalized": True,
                 }
             )
-            metadata = dict(self._metadata)
-        temporary_path = self.metadata_path.with_suffix(".json.tmp")
-        temporary_path.write_text(
-            json.dumps(metadata, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        temporary_path.replace(self.metadata_path)
+            self._write_metadata_locked()

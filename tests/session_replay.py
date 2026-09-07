@@ -130,6 +130,41 @@ def loads_session_and_converts_legacy_field_order():
         tokens = session_replay.game_event_tokens(session.game_events[0])
         assert tokens[:3] == ["10", "20", "30"]
         assert not session.detection_events[0]["detected"]
+        assert session.metadata["video_start_elapsed_s"] == 0.5
+
+
+def ignores_rows_truncated_by_power_loss():
+    with tempfile.TemporaryDirectory() as temporary:
+        directory = Path(temporary)
+        (directory / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "video_file": "video.ts",
+                    "game_file": "game.csv",
+                    "detections_file": "detections.csv",
+                    "finalized": False,
+                }
+            ),
+            encoding="utf-8",
+        )
+        # Use the actual field names; the second data row ends mid-write.
+        game_fields = (
+            "elapsed_s,x,y,yaw,ball_x,ball_y,ball_captured,bot_mode,"
+            "steering_state,direction,speed,rotation,kick,dribbler\n"
+        )
+        (directory / "game.csv").write_text(
+            game_fields + "0.1,1,2,3,None,None,False,DEFENCE,False,0,0,0,False,False\n0.2,1",
+            encoding="utf-8",
+        )
+        (directory / "detections.csv").write_text(
+            "elapsed_s,video_time_s,detected\n0.1,0.0,False\n0.2",
+            encoding="utf-8",
+        )
+
+        session = session_replay.load_recorded_session(directory)
+        assert len(session.game_events) == 1
+        assert len(session.detection_events) == 1
 
 
 def annotation_does_not_modify_source_frame():

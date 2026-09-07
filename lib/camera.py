@@ -530,7 +530,7 @@ class Camera:
 
         if enable_stream and self.recording_path is not None:
             raise RuntimeError(
-                "MP4 session recording and the MJPEG HTTP preview cannot run together"
+                "session recording and the MJPEG HTTP preview cannot run together"
             )
 
         if enable_stream:
@@ -549,6 +549,10 @@ class Camera:
                 # preserves the low-CPU recording choice.
                 if hasattr(encoder, "preset"):
                     encoder.preset = "ultrafast"
+                # The recording-session path uses .ts (MPEG transport stream),
+                # which stays readable after an unclean shutdown because it has
+                # no MP4-style end-of-file index to finalize. PyAV selects the
+                # muxer from this suffix.
                 output = PyavOutput(str(self.recording_path))
                 if hasattr(output, "error_callback"):
                     output.error_callback = self._handle_recording_error

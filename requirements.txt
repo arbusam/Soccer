@@ -12,3 +12,4 @@ matplotlib
 pandas-stubs
 ultralytics
 av
+luma.oled

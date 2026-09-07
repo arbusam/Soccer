@@ -416,8 +416,14 @@ try:
 
     paused_yaw_sampler = RollingYawSampler()
     next_paused_yaw_sample_time = time.monotonic()
+    next_recording_checkpoint_time = time.monotonic()
 
     while True:
+        if recording_session is not None:
+            checkpoint_time = time.monotonic()
+            if checkpoint_time >= next_recording_checkpoint_time:
+                recording_session.checkpoint(camera.recording_info)
+                next_recording_checkpoint_time = checkpoint_time + 1.0
         if fps_monitor is not None:
             fps_monitor.maybe_print()
         was_run = run
