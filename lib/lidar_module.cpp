@@ -19,10 +19,19 @@
 #include <stdexcept>
 
 #include "localisation.h"
+#include "timing_native.h"
 #include "sl_lidar_driver.h"
 
 namespace py = pybind11;
 using namespace sl;
+
+// Benchmark baseline only: normal builds always release the GIL for runtime work.
+#ifdef SOCCER_LIDAR_HOLD_GIL
+struct RuntimeRelease {};
+#else
+using RuntimeRelease = py::gil_scoped_release;
+#endif
+
 
 #ifndef _countof
 #define _countof(_Array) (int)(sizeof(_Array) / sizeof(_Array[0]))
@@ -403,7 +412,8 @@ static void predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, fl
 }
 
 static py::tuple get_pose_py() {
-    LocPose pose = loc_get_pose();
+    LocPose pose;
+    { RuntimeRelease release; pose = loc_get_pose(); }
     if (!pose.ok) {
         return py::make_tuple(py::none(), py::none(), py::none(), pose.confidence);
     }
@@ -411,7 +421,8 @@ static py::tuple get_pose_py() {
 }
 
 static py::tuple get_coordinates_py() {
-    LocPose pose = loc_get_pose();
+    LocPose pose;
+    { RuntimeRelease release; pose = loc_get_pose(); }
     if (!pose.ok) {
         return py::make_tuple(py::none(), py::none());
     }
@@ -419,7 +430,8 @@ static py::tuple get_coordinates_py() {
 }
 
 static py::tuple get_coordinates_info_py() {
-    LocPose pose = loc_get_pose();
+    LocPose pose;
+    { RuntimeRelease release; pose = loc_get_pose(); }
     if (!pose.ok) {
         return py::make_tuple(py::none(), py::none(), py::none(),
                               pose.confidence, pose.ok);
@@ -436,7 +448,8 @@ static bool scan_updates_enabled() {
 }
 
 static py::tuple get_last_scan_correction_py() {
-    LocScanCorrection corr = loc_get_last_scan_correction();
+    LocScanCorrection corr;
+    { RuntimeRelease release; corr = loc_get_last_scan_correction(); }
     if (!corr.valid) {
         return py::make_tuple(
             corr.sequence,
@@ -454,7 +467,8 @@ static py::tuple get_last_scan_correction_py() {
 }
 
 static py::tuple get_recovery_status_py() {
-    LocRecoveryStatus status = loc_get_recovery_status();
+    LocRecoveryStatus status;
+    { RuntimeRelease release; status = loc_get_recovery_status(); }
     return py::make_tuple(
         status.scan_quality,
         status.quality_baseline,
@@ -503,6 +517,7 @@ static void test_mcl_update_scan(const py::list& points) {
         pt.hit = t[3].cast<bool>();
         scan.push_back(pt);
     }
+    RuntimeRelease release;
     loc_update_scan(scan.data(), (int)scan.size(),
                     MIN_RANGE_MM, MAX_RANGE_MM, MIN_BEAM_QUALITY);
 }
@@ -512,6 +527,46 @@ static void test_mcl_reset() {
 }
 
 PYBIND11_MODULE(lidar, m) {
+#ifdef SOCCER_LIDAR_HOLD_GIL
+    m.attr("runtime_gil_released") = false;
+#else
+    m.attr("runtime_gil_released") = true;
+#endif
+    m.def("timing_clock_ns", &timing::now);
+    m.def("timing_start", [](timing::Ns start, timing::Ns end, size_t capacity) {
+        auto& state = timing::state();
+        if (state.configured)
+            throw std::runtime_error("Native timing capture is once per process");
+        if (end <= start || capacity == 0 || capacity > 1000000)
+            throw std::invalid_argument("Invalid native timing window/capacity");
+        state.configured = true;
+        state.start = start; state.end = end; state.capacity = capacity;
+        state.enabled.store(true);
+    });
+    m.def("timing_finish", []() {
+        auto& state = timing::state();
+        state.enabled.store(false);
+        py::list result;
+        std::lock_guard<std::mutex> registry(state.registry);
+        size_t index = 0;
+        for (const auto& buffer : state.buffers) {
+            std::lock_guard<std::mutex> lock(buffer->mutex);
+            py::list rows;
+            for (const auto& r : buffer->rows)
+                rows.append(py::make_tuple(r.name, r.start, r.end, r.value));
+            py::dict item;
+            item["thread"] = "native-" + std::to_string(index++);
+            item["rows"] = rows;
+            item["dropped"] = buffer->dropped.load();
+            result.append(item);
+        }
+        return result;
+    });
+    m.def("test_mcl_hold_mutex", [](int milliseconds) {
+        if (g_loc_running.load()) throw std::runtime_error("Stop live localization first");
+        loc_test_hold_mutex(milliseconds);
+    });
+    m.def("test_mcl_mutex_released_ns", &loc_test_mutex_released_ns);
     m.doc() = "RPLidar C1 Python module — scan data and MCL localization";
 
     m.def("init", &init_lidar,
@@ -548,18 +603,18 @@ PYBIND11_MODULE(lidar, m) {
     m.def("get_scan_generation", &get_scan_generation,
           "Monotonic count of completed LIDAR scan captures.");
 
-    m.def("get_mcl_update_count", &get_mcl_update_count,
+    m.def("get_mcl_update_count", &get_mcl_update_count, py::call_guard<RuntimeRelease>(),
           "Monotonic count of MCL scan updates applied.");
 
     m.def("start_coordinates", &start_coordinates,
           py::arg("pitch_x"), py::arg("pitch_y"),
           "Start background MCL localization thread.");
 
-    m.def("set_imu_yaw", &set_imu_yaw,
+    m.def("set_imu_yaw", &set_imu_yaw, py::call_guard<RuntimeRelease>(),
           py::arg("yaw_deg"),
           "Set startup-relative IMU yaw for the soft MCL yaw prior.");
 
-    m.def("predict_odometry", &predict_odometry,
+    m.def("predict_odometry", &predict_odometry, py::call_guard<RuntimeRelease>(),
           py::arg("vx_mm_s"), py::arg("vy_mm_s"),
           py::arg("omega_deg_s"), py::arg("dt_s"),
           "Propagate the particle filter between LIDAR scans.");
@@ -573,10 +628,10 @@ PYBIND11_MODULE(lidar, m) {
     m.def("get_coordinates_info", &get_coordinates_info_py,
           "Get (x, y, yaw_deg, confidence, ok).");
 
-    m.def("is_coordinates_ready", &is_coordinates_ready,
+    m.def("is_coordinates_ready", &is_coordinates_ready, py::call_guard<RuntimeRelease>(),
           "True once at least one confident pose has been computed.");
 
-    m.def("scan_updates_enabled", &scan_updates_enabled,
+    m.def("scan_updates_enabled", &scan_updates_enabled, py::call_guard<RuntimeRelease>(),
           "True when MCL is accepting LIDAR scans (false during fast rotation).");
 
     m.def("get_last_scan_correction", &get_last_scan_correction_py,
@@ -596,10 +651,10 @@ PYBIND11_MODULE(lidar, m) {
           "Stop synthetic MCL session.");
     m.def("test_mcl_reset", &test_mcl_reset,
           "Reset synthetic MCL particles.");
-    m.def("test_mcl_set_imu_yaw", &test_mcl_set_imu_yaw,
+    m.def("test_mcl_set_imu_yaw", &test_mcl_set_imu_yaw, py::call_guard<RuntimeRelease>(),
           py::arg("yaw_deg"),
           "Set IMU yaw prior for synthetic MCL.");
-    m.def("test_mcl_predict", &test_mcl_predict,
+    m.def("test_mcl_predict", &test_mcl_predict, py::call_guard<RuntimeRelease>(),
           py::arg("vx_mm_s"), py::arg("vy_mm_s"),
           py::arg("omega_deg_s"), py::arg("dt_s"),
           "Propagate synthetic MCL with odometry.");

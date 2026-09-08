@@ -8,6 +8,8 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from lib import timing
+
 BALL_CLASS_NAME = "ball"
 BOT_CLASS_NAME = "bot"
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -469,15 +471,19 @@ class HailoBallDetector:
     def _infer_raw(self, frame_rgb: np.ndarray) -> tuple[np.ndarray, float, tuple[int, int]]:
         if self._closed:
             raise RuntimeError("HailoBallDetector is closed")
-        input_batch, scale, pad = self._preprocess(frame_rgb)
-        raw = self._infer.infer({self._input_name: input_batch})
+        input_batch, scale, pad = timing.call("camera.preprocess", self._preprocess, frame_rgb)
+        raw = timing.call("camera.inference", self._infer.infer, {self._input_name: input_batch})
+        merge_start = timing.now_ns() if timing.active is not None else None
         outputs = [np.asarray(raw[name]) for name in self._output_names]
         merged = _merge_box_score_outputs(outputs)
+        if merge_start is not None:
+            timing.record("camera.merge", merge_start)
         return merged, scale, pad
 
     def predict(self, frame_rgb: np.ndarray) -> list[dict]:
         """Return detections as dicts with xyxy (original frame), conf, cls."""
         output, scale, (pad_left, pad_top) = self._infer_raw(frame_rgb)
+        post_start = timing.now_ns() if timing.active is not None else None
         detections: list[dict] = []
         frame_h, frame_w = frame_rgb.shape[:2]
         for x1, y1, x2, y2, conf, class_id in _decode_detections(
@@ -504,14 +510,16 @@ class HailoBallDetector:
                     "class_id": class_id,
                 }
             )
+        if post_start is not None:
+            timing.record("camera.postprocess", post_start)
         return detections
 
     def debug_scores(self, frame_rgb: np.ndarray) -> dict:
         """Return raw output stats for diagnosing empty detections."""
         if self._closed:
             raise RuntimeError("HailoBallDetector is closed")
-        input_batch, scale, pad = self._preprocess(frame_rgb)
-        raw = self._infer.infer({self._input_name: input_batch})
+        input_batch, scale, pad = timing.call("camera.preprocess", self._preprocess, frame_rgb)
+        raw = timing.call("camera.inference", self._infer.infer, {self._input_name: input_batch})
         outputs = [np.asarray(raw[name]) for name in self._output_names]
         cf = _merge_box_score_outputs(outputs)
         if cf.dtype != np.float32:

@@ -187,6 +187,8 @@ class Dashboard:
         self.camera = None
         self.camera_factory = camera_factory
         self.camera_status = "starting"
+        self.analogue_gain = 10.0
+        self.analogue_gain_range = None
         self.model_options = discover_models(self.root)
         model_ids = {model["id"] for model in self.model_options}
         self.requested_model = "n" if "n" in model_ids else (self.model_options[0]["id"] if self.model_options else None)
@@ -262,6 +264,8 @@ class Dashboard:
                                {key: copy.deepcopy(model[key]) for key in ("id", "label", "input_size")}
                                for model in self.model_options
                            ],
+                           "analogue_gain": self.analogue_gain,
+                           "analogue_gain_range": self.analogue_gain_range,
                            "active_model": self.active_model,
                            "requested_model": self.requested_model},
                 "control": {"occupied": self.lease.token is not None, "armed": self.lease.armed},
@@ -312,7 +316,7 @@ class Dashboard:
                     raise ValueError("Confirm that wheels are clear before calibration")
             allowed = {"drive", "calibrate", "localise", "thresholds", "save_goals", "revert_goals",
                        "default_goals", "sample", "remove_sample", "clear_samples", "fit", "save_ball",
-                       "select_model"}
+                       "select_model", "analogue_gain"}
             if action not in allowed:
                 raise ValueError("Unknown action")
             if action == "thresholds":
@@ -356,6 +360,13 @@ class Dashboard:
                 self.camera_status = "switching model"
                 self.model_change.set()
                 self.notify(f"Switching detection model to {model_id}")
+        elif action == "analogue_gain":
+            if self.camera_status != "running" or self.analogue_gain_range is None:
+                raise ValueError("Camera analogue gain is unavailable")
+            gain = number(data.get("gain"), *self.analogue_gain_range, "analogue gain")
+            self.camera.picam2.set_controls({"AnalogueGain": gain})
+            self.analogue_gain = gain
+            self.notify(f"Analogue gain set to {gain:g}×")
         elif action == "thresholds":
             self.thresholds = data["thresholds"]
         elif action == "save_goals":
@@ -456,6 +467,13 @@ class Dashboard:
             camera = self.camera_factory(**camera_args)
             with self.lock:
                 self.camera = camera
+                picam2 = getattr(camera, "picam2", None)
+                limits = picam2.camera_controls.get("AnalogueGain") if picam2 else None
+                self.analogue_gain_range = [float(v) for v in limits[:2]] if limits else None
+                if self.analogue_gain_range is not None:
+                    gain = max(self.analogue_gain_range[0], min(self.analogue_gain_range[1], self.analogue_gain))
+                    picam2.set_controls({"AnalogueGain": gain})
+                    self.analogue_gain = gain
             camera.start()
             with self.lock:
                 self.sample_resolution = list(camera.resolution)
@@ -509,6 +527,7 @@ class Dashboard:
             with self.lock:
                 camera = self.camera
                 self.camera = None
+                self.analogue_gain_range = None
             if camera is not None:
                 camera.stop()
 

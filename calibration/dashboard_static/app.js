@@ -24,6 +24,7 @@ function motorAddresses() {
 $('claim').onclick = async () => { try { token = (await api('claim')).token; message('You have control. Motors remain disarmed until you arm them.'); } catch (e) { message(e.message); } };
 $('release').onclick = async () => { try { await api('release'); token = null; } catch (e) { message(e.message); } };
 handle('stop', 'stop');
+handle('applyGain', 'analogue_gain', () => ({gain:$('analogueGain').value}));
 for (const button of document.querySelectorAll('.arm')) button.onclick = async () => { try { await api('arm'); } catch (e) { message(e.message); } };
 handle('sample', 'sample', () => ({distance:$('distance').value, captured:$('captured').checked}));
 handle('fit', 'fit'); handle('saveBall', 'save_ball'); handle('clearSamples', 'clear_samples');
@@ -123,6 +124,14 @@ function render(s) {
   document.querySelectorAll('.control').forEach(e => { e.disabled = !token; });
   document.querySelectorAll('.arm').forEach(e => { e.disabled = !token || s.control.armed; });
   $('calibrate').disabled = $('drive').disabled = !token || !s.control.armed;
+  const gainRange = s.camera.analogue_gain_range;
+  const gainAvailable = s.camera.status === 'running' && gainRange != null;
+  $('analogueGain').disabled = $('applyGain').disabled = !token || !gainAvailable;
+  if (gainRange) {
+    $('analogueGain').min = gainRange[0]; $('analogueGain').max = gainRange[1];
+  }
+  if (document.activeElement !== $('analogueGain') && document.activeElement !== $('applyGain')) $('analogueGain').value = s.camera.analogue_gain;
+  $('gainHelp').textContent = gainAvailable ? `Requested gain: ${fmt(s.camera.analogue_gain, 2)}× · Range ${fmt(gainRange[0], 2)}–${fmt(gainRange[1], 2)}×. Applies live for this dashboard session.` : 'Camera analogue gain is unavailable.';
   const modelSignature = JSON.stringify(s.camera.models);
   if (modelsSignature !== modelSignature) {
     modelsSignature = modelSignature;

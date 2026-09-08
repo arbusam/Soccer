@@ -8,7 +8,7 @@ from collections import deque
 
 import defence
 import striker
-from lib import lidar, switch
+from lib import lidar, switch, timing
 from lib.break_beam import Breakbeam
 from lib.camera import Camera
 from lib.communication import Peer
@@ -130,7 +130,14 @@ parser.add_argument(
     action="store_true",
     help="Print logic-loop and background-thread rates once per second.",
 )
+parser.add_argument("--timing-output", metavar="PATH", help="Save bounded timing samples, summary and trace on shutdown.")
+parser.add_argument("--timing-stationary", action="store_true", help="Run active sensing/logic but command zero motor speed and suppress kicks.")
+parser.add_argument("--timing-warmup", type=float, default=10.0)
+parser.add_argument("--timing-duration", type=float, default=60.0)
 args = parser.parse_args()
+if (not math.isfinite(args.timing_warmup) or args.timing_warmup < 0
+        or not math.isfinite(args.timing_duration) or args.timing_duration <= 0):
+    parser.error("Timing warmup must be finite >= 0 and duration finite > 0")
 if args.record_session is not None and args.camera_stream:
     parser.error("--record-session cannot be combined with --camera-stream")
 
@@ -286,7 +293,7 @@ def feed_imu_yaw_prior(imu_sensor, startup_yaw):
     imu_yaw = imu_sensor.get_yaw()
     if imu_yaw is None:
         return
-    lidar.set_imu_yaw(imu_yaw_to_relative_yaw(imu_yaw, startup_yaw))
+    timing.call("binding.set_imu_yaw", lidar.set_imu_yaw, imu_yaw_to_relative_yaw(imu_yaw, startup_yaw))
 
 
 try:
@@ -389,6 +396,9 @@ try:
     last_camera_bot_positions = []
     last_pose_time = time.monotonic()
     lidar_velocity = LidarVelocityEstimator()
+    timing_recorder = None
+    previous_logic_ns = None
+    next_timing_state_ns = 0
 
     fps_monitor = None
     if args.fps:
@@ -454,21 +464,40 @@ try:
                 print("Shutdown requested, exiting.")
                 break
 
+            if args.timing_output is not None and timing_recorder is None:
+                timing_recorder = timing.Recorder(
+                    warmup=args.timing_warmup, duration=args.timing_duration,
+                    metadata={"arguments": vars(args), "config": vars(config),
+                              "camera_resolution": CAMERA_RESOLUTION, "camera_fps": CAMERA_FPS,
+                              "i2c_addresses": I2C_ADDRESSES},
+                )
+                timing_recorder.attach_native(lidar)
+                timing.active = timing_recorder
+                print(f"Timing: warmup {args.timing_warmup}s, capture {args.timing_duration}s; saved on shutdown")
+
             _logic_loop_count += 1
+            if timing.active is not None:
+                logic_ns = timing.now_ns()
+                if previous_logic_ns is not None:
+                    timing.record("logic.interval", previous_logic_ns, logic_ns)
+                previous_logic_ns = logic_ns
 
             now_pose = time.monotonic()
             dt_pose = now_pose - last_pose_time
             last_pose_time = now_pose
             omega = 0.0
             yaw = None
+            yaw_sample_ns = None
             if imu is not None:
                 gyro_z = imu.get_gyro_z_deg_s()
                 if gyro_z is not None:
                     omega = gyro_z
-                imu_yaw = imu.get_yaw()
+                imu_yaw, yaw_sample_ns = imu.get_yaw_sample()
+                if timing.active is not None and yaw_sample_ns is not None:
+                    timing.record("imu.consume_age", yaw_sample_ns)
                 if imu_yaw is not None:
                     yaw = imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)
-                    lidar.set_imu_yaw(yaw)
+                    timing.call("binding.set_imu_yaw", lidar.set_imu_yaw, yaw)
             vx, vy = 0.0, 0.0
             if movement_controller is not None:
                 yaw_for_odom = yaw if yaw is not None else 0.0
@@ -485,9 +514,21 @@ try:
                 )
                 vx = trust * vx_wheel
                 vy = trust * vy_wheel
-            lidar.predict_odometry(vx, vy, omega, dt_pose)
+            timing.call("binding.predict", lidar.predict_odometry, vx, vy, omega, dt_pose)
 
-            x_pos, y_pos, _mcl_yaw, _confidence = lidar.get_pose()
+            x_pos, y_pos, _mcl_yaw, _confidence = timing.call("binding.pose", lidar.get_pose)
+            if timing.active is not None and logic_ns >= next_timing_state_ns:
+                gate = timing.call("binding.scan_gate", lidar.scan_updates_enabled)
+                timing.active.observe("state", {
+                    "pose": [x_pos, y_pos, _mcl_yaw, _confidence],
+                    "scan_updates_enabled": gate,
+                    "scan_generation": lidar.get_scan_generation(),
+                    "camera_capture": camera.capture_count,
+                    "camera_inference": camera.infer_count,
+                    "imu_updates": imu.update_count,
+                    "drive_iterations": movement_controller.loop_count,
+                })
+                next_timing_state_ns = logic_ns + 100_000_000
             if x_pos is not None and y_pos is not None and yaw is not None:
                 lidar_velocity.update(x_pos, y_pos, yaw, now_pose)
             if x_pos is None or y_pos is None or yaw is None:
@@ -623,6 +664,8 @@ try:
                     enemy_bot_positions=enemy_bot_positions,
                 )
                 steering_state = False
+            if args.timing_stationary:
+                direction, speed, rotation, dribbler, kick = 0, 0, yaw, 0, False
             if (
                 args.stream
                 or log_recorder_thread is not None
@@ -655,11 +698,12 @@ try:
             if kick:
                 kicker.kick()
             try:
-                movement_controller.move(direction, speed, rotation, 1.0, yaw, dribbler)
+                movement_controller.move(direction, speed, rotation, 1.0, yaw, dribbler, yaw_sample_ns=yaw_sample_ns)
             except MotorCommunicationError as exc:
                 print(exc)
                 raise
         else:
+            previous_logic_ns = None
             bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
             time.sleep(0.01)
             if movement_controller is not None:
@@ -712,3 +756,12 @@ finally:
         lidar.shutdown()
     except Exception as exc:
         print(f"Warning: failed to shut down lidar cleanly: {exc}")
+
+    if timing.active is not None:
+        try:
+            summary = timing.active.finish(args.timing_output, lidar)
+            print(f"Timing saved to {args.timing_output} (dropped={summary['dropped']})")
+        except Exception as exc:
+            print(f"Warning: failed to save timing capture: {exc}")
+        finally:
+            timing.active = None

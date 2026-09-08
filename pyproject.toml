@@ -2,6 +2,8 @@
 testpaths = ["tests"]
 python_files = [
     "dashboard_test.py",
+    "localisation_timing_test.py",
+    "timing_test.py",
     "striker_shots.py",
     "recording_session.py",
     "session_replay.py",

@@ -570,6 +570,11 @@ def test_model_discovery_and_live_switch_restart_only_camera(tmp_path):
     class FakeCamera:
 
         def __init__(self, **kwargs):
+            self.gain_controls = []
+            self.picam2 = types.SimpleNamespace(
+                camera_controls={"AnalogueGain": (1.0, 16.0, 1.0)},
+                set_controls=self.gain_controls.append,
+            )
             self.model_path = kwargs["ball_model_path"]
             self.resolution = (640, 640)
             self.inference_error = None
@@ -591,9 +596,19 @@ def test_model_discovery_and_live_switch_restart_only_camera(tmp_path):
         wait_until(lambda: app.active_model == "n")
         app.hardware.mode = "monitoring"
         token = app.command("claim", {}, None)["token"]
+        assert camera_instances[0].gain_controls == [{"AnalogueGain": 10.0}]
+        app.command("analogue_gain", {"gain": "4.5"}, token)
+        wait_until(lambda: app.analogue_gain == 4.5)
+        assert camera_instances[0].gain_controls[-1] == {"AnalogueGain": 4.5}
+        for invalid in (0, 17, "nan", "inf", "invalid"):
+            with pytest.raises(ValueError):
+                app._edit("analogue_gain", {"gain": invalid})
+        assert app.analogue_gain == 4.5
         app.command("select_model", {"model": "s"}, token)
         wait_until(lambda: app.active_model == "s" and len(camera_instances) == 2)
         assert camera_instances[0].closed
+        assert camera_instances[1].gain_controls == [{"AnalogueGain": 4.5}]
+        assert app.state()["camera"]["analogue_gain_range"] == [1.0, 16.0]
         assert camera_instances[1].model_path.endswith("open-soccer-detect-s_hailo_model")
         assert app.hardware.mode == "monitoring"
         public_models = app.state()["camera"]["models"]
@@ -615,3 +630,40 @@ def test_watchdog_disarms_if_localisation_worker_stalls(dashboard):
     assert not dashboard.lease.armed and dashboard.hardware.stops > 0
     dashboard.closing.set()
     thread.join(1)
+
+
+def test_drive_timing_counts_failed_batches_without_false_completions(movement, monkeypatch):
+    from lib import timing
+
+    rows = []
+
+    class Sink:
+        def record(self, name, start, end=None, value=None):
+            rows.append((name, start, end, value))
+
+    monkeypatch.setattr(timing, 'active', Sink())
+    # Run the real loop synchronously with fake drivers, stopping after three ticks.
+    monkeypatch.setattr(threading.Thread, 'start', lambda self: None)
+    controller = movement.MovementController([FakeMotor() for _ in range(4)], [12]*4, 50, 100, 400, 3)
+    calls = 0
+
+    def write(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 6:
+            raise movement.MotorCommunicationError('injected second-batch failure')
+        if calls == 10:
+            controller._running = False
+
+    monkeypatch.setattr(movement, '_set_motor_speed', write)
+    controller.move(0, 100, 0, 1, 0, yaw_sample_ns=timing.now_ns())
+    controller._drive_loop()
+    names = [row[0] for row in rows]
+    assert names.count('drive.interval') == 2
+    assert names.count('drive.writes.interval') == 1
+    assert names.count('drive.writes.failure') == 1
+    assert names.count('i2c.drive.hold') == 3
+    assert names.count('drive.command_age') == 3
+    assert names.count('drive.yaw_age') == 3
+    with pytest.raises(movement.MotorCommunicationError):
+        controller.move(0, 0, 0, 0, 0)

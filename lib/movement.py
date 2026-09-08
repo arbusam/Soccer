@@ -7,6 +7,7 @@ import time
 
 from steelbar_powerful_bldc_driver import PowerfulBLDCDriver
 
+from lib import timing
 from lib.i2c_bus import get_shared_i2c_bus, get_shared_i2c_lock
 
 # Conversion factor from RPM to motor speed units.
@@ -232,6 +233,8 @@ class MovementController:
         self._target_rotation_speed = 0.0
         self._target_yaw = 0.0
         self._target_dribbler = 0
+        self._target_time_ns = None
+        self._yaw_sample_ns = None
 
         self._current_direction = 0.0
         self._current_speed = 0.0
@@ -305,7 +308,7 @@ class MovementController:
             i2c_lock=i2c_lock,
         )
 
-    def move(self, direction, speed, rotation, rotation_speed, yaw, dribbler=0):
+    def move(self, direction, speed, rotation, rotation_speed, yaw, dribbler=0, *, yaw_sample_ns=None):
         """Update drive targets; accel and yaw correction continue on the drive thread."""
         self._raise_pending_error()
         with self._command_lock:
@@ -315,12 +318,15 @@ class MovementController:
             self._target_rotation_speed = float(rotation_speed)
             self._target_yaw = float(yaw)
             self._target_dribbler = int(dribbler)
+            if timing.active is not None:
+                self._target_time_ns = timing.now_ns()
+                self._yaw_sample_ns = yaw_sample_ns
 
     def get_measured_body_velocity_mm_s(self, yaw_deg):
         """Estimate robot-body translation speed (mm/s) from measured wheel RPMs."""
         self._raise_pending_error()
         drive_motors = self.motors[:4]
-        with self._i2c_lock:
+        with timing.measured_lock(self._i2c_lock, "odometry"):
             rpms = read_wheel_rpms(drive_motors)
         wheel_mm_s = wheel_rpms_to_linear_mm_s(rpms, self.diameter)
         return measured_wheel_speeds_to_body_velocity_mm_s(wheel_mm_s, yaw_deg)
@@ -365,16 +371,26 @@ class MovementController:
                 self._target_rotation_speed,
                 self._target_yaw,
                 self._target_dribbler,
+                self._target_time_ns,
+                self._yaw_sample_ns,
             )
 
     def _drive_loop(self):
         next_tick = time.monotonic()
         last_update_time = next_tick
+        previous_tick_ns = previous_write_ns = None
         while self._running:
             now = time.monotonic()
             if now < next_tick:
                 time.sleep(min(next_tick - now, 0.005))
                 continue
+
+            if timing.active is not None:
+                tick_ns = timing.now_ns()
+                if previous_tick_ns is not None:
+                    timing.record("drive.interval", previous_tick_ns, tick_ns)
+                timing.record("drive.lateness", round(next_tick * 1e9), tick_ns)
+                previous_tick_ns = tick_ns
 
             next_tick += DRIVE_LOOP_INTERVAL_S
             if next_tick < now:
@@ -396,7 +412,14 @@ class MovementController:
                 rotation_speed,
                 yaw,
                 dribbler,
+                target_time_ns,
+                yaw_sample_ns,
             ) = self._snapshot_command()
+            if timing.active is not None:
+                if target_time_ns is not None:
+                    timing.record("drive.command_age", target_time_ns)
+                if yaw_sample_ns is not None:
+                    timing.record("drive.yaw_age", yaw_sample_ns)
 
             with self._current_lock:
                 current_direction = self._current_direction
@@ -445,17 +468,25 @@ class MovementController:
             drive_motors = self.motors[:4]
 
             try:
-                with self._i2c_lock:
+                with timing.measured_lock(self._i2c_lock, "drive"):
                     _set_motor_speed(drive_motors[0], a_val, 0)
                     _set_motor_speed(drive_motors[1], b_val, 1)
                     _set_motor_speed(drive_motors[2], c_val, 2)
                     _set_motor_speed(drive_motors[3], d_val, 3)
+                    writes_done_ns = timing.now_ns() if timing.active is not None else None
                     if len(self.motors) > 4 and self.motors[4] is not None:
                         dribbler_torque = DRIBBLER_MOTOR_TORQUE * dribbler
                         _set_motor_torque(
                             self.motors[4], dribbler_torque, 4, ignore_errors=True
                         )
+                if timing.active is not None and writes_done_ns is not None:
+                    if previous_write_ns is not None:
+                        timing.record("drive.writes.interval", previous_write_ns, writes_done_ns)
+                    previous_write_ns = writes_done_ns
             except MotorCommunicationError as exc:
+                if timing.active is not None:
+                    failed_ns = timing.now_ns()
+                    timing.record("drive.writes.failure", failed_ns, failed_ns)
                 self._set_pending_error(exc)
 
 
