@@ -5,7 +5,7 @@ import time
 from adafruit_bno08x import BNO_REPORT_GAME_ROTATION_VECTOR, BNO_REPORT_GYROSCOPE
 from adafruit_bno08x.i2c import BNO08X_I2C
 
-from lib.i2c_bus import get_shared_i2c_bus, get_shared_i2c_lock
+from legacy.i2c_bus import get_shared_i2c_bus, get_shared_i2c_lock
 
 
 class IMU:

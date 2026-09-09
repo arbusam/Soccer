@@ -7,17 +7,12 @@ import time
 
 from lib import lidar, send_log
 from lib.camera import Camera
-from lib.imu import IMU
+from lib.hardware_test_utils import create_hardware, set_startup_yaw
 from striker import BALL_TIMEOUT, CAMERA_PORT, LIDAR_BAUDRATE, LIDAR_PORT
 
 PORT = send_log.PORT
 PITCH_WIDTH = 2430
 PITCH_HEIGHT = 1820
-
-
-def imu_yaw_to_relative_yaw(imu_yaw, startup_yaw):
-    """Match the startup-relative yaw conversion used by defence.py."""
-    return ((float(startup_yaw) - float(imu_yaw) + 180.0) % 360.0) - 180.0
 
 
 def _enter_pressed():
@@ -30,22 +25,6 @@ def _enter_pressed():
     return True
 
 
-def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02):
-    print("Stabilizing IMU yaw reference...")
-    sin_sum = 0.0
-    cos_sum = 0.0
-    samples = 0
-    while samples < sample_count:
-        yaw_sample = imu.get_yaw()
-        if yaw_sample is not None:
-            yaw_rad = math.radians(yaw_sample)
-            sin_sum += math.sin(yaw_rad)
-            cos_sum += math.cos(yaw_rad)
-            samples += 1
-        time.sleep(sample_interval)
-    return math.degrees(math.atan2(sin_sum, cos_sum))
-
-
 def format_log_line(x_pos, y_pos, yaw_relative, ball_x, ball_y, other_bot_positions):
     values = [x_pos, y_pos, yaw_relative, ball_x, ball_y]
     for other_x, other_y in other_bot_positions:
@@ -55,7 +34,7 @@ def format_log_line(x_pos, y_pos, yaw_relative, ball_x, ball_y, other_bot_positi
 
 def main():
     camera = None
-    imu = None
+    hardware = None
 
     send_log.start_server_background()
     time.sleep(0.05)
@@ -78,13 +57,13 @@ def main():
 
         camera = Camera(CAMERA_PORT, resolution=(2000, 2000), frame_rate=90)
         camera.start()
-        imu = IMU()
+        hardware = create_hardware()
 
-        startup_yaw = capture_startup_yaw(imu)
+        startup_yaw = set_startup_yaw(hardware)
         print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
-        yaw_world = imu.get_yaw()
-        if yaw_world is not None:
-            lidar.set_imu_yaw(imu_yaw_to_relative_yaw(yaw_world, startup_yaw))
+        yaw_relative = hardware.get_yaw()
+        if yaw_relative is not None:
+            lidar.set_imu_yaw(yaw_relative)
 
         lidar.start_coordinates(PITCH_WIDTH, PITCH_HEIGHT)
 
@@ -93,9 +72,9 @@ def main():
             if _enter_pressed():
                 print("Shutdown requested, exiting.")
                 return
-            yaw_world = imu.get_yaw()
-            if yaw_world is not None:
-                lidar.set_imu_yaw(imu_yaw_to_relative_yaw(yaw_world, startup_yaw))
+            yaw_relative = hardware.get_yaw()
+            if yaw_relative is not None:
+                lidar.set_imu_yaw(yaw_relative)
             time.sleep(0.1)
 
         print("Streaming measured positions. Press Enter to shut down.")
@@ -112,14 +91,14 @@ def main():
                 print("Shutdown requested, exiting.")
                 break
 
-            yaw_world = imu.get_yaw()
-            if yaw_world is None:
+            yaw_relative = hardware.get_yaw()
+            if yaw_relative is None:
                 time.sleep(0.01)
                 continue
 
-            yaw_relative = imu_yaw_to_relative_yaw(yaw_world, startup_yaw)
             lidar.set_imu_yaw(yaw_relative)
-            lidar.predict_odometry(0.0, 0.0, 0.0, 0.01)
+            gyro_z = hardware.get_gyro_z_deg_s()
+            lidar.predict_odometry(0.0, 0.0, gyro_z or 0.0, 0.01)
 
             x_pos, y_pos, mcl_yaw, _confidence = lidar.get_pose()
             if mcl_yaw is not None:
@@ -186,11 +165,11 @@ def main():
                 camera.stop()
             except Exception as exc:
                 print(f"Warning: failed to stop camera cleanly: {exc}")
-        if imu is not None:
+        if hardware is not None:
             try:
-                imu.close()
+                hardware.stop()
             except Exception as exc:
-                print(f"Warning: failed to close IMU cleanly: {exc}")
+                print(f"Warning: failed to stop hardware cleanly: {exc}")
         try:
             lidar.shutdown()
         except Exception as exc:

@@ -3,7 +3,7 @@ from math import atan2, degrees, hypot
 
 import pygame
 
-from lib.movement import MovementController
+from legacy.movement import MovementController
 
 WHEEL_DIAMETER = 50 # mm
 WHEEL_LEVER_ARM = 100 # mm (distance from center to wheel contact)

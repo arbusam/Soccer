@@ -1,9 +1,9 @@
 Any time you don't understand something about how this project works, try and figure it out. If you still don't understand, ask for help. Once you figure it out/get an answer, add an explanation of the problem and how to solve it to this file, so you don't run into the same problem again. Do not just save every change you make here, only add to this file if you didn't understand something and you had to spend time working it out.
 Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bin/ruff check <path>`). If that does not work (for example `.venv` is missing or the command fails), tell the user. CI uses Ruff **0.16.2** (pinned in `.github/workflows/ruff.yml`); install the same version locally (`pip install 'ruff>=0.16.2'`) so local results match GitHub Actions. Ruff 0.15.x has fewer default rules and will pass checks that 0.16 fails.
 
-## Library (motor / movement)
+## Legacy Python motor / movement tools
 
-**Movement module (`lib/movement.py`)** – main API for driving motors:
+**Movement module (`legacy/movement.py`)** – retained for calibration and old utilities:
 
 - **`init_motors(i2c_addresses, calibration_file="calibration_data.json")`** → `(motors, motor_modes)`. Creates up to 8 `PowerfulBLDCDriver` instances, sets PID/limits, loads saved calibration from the JSON file, applies `set_ELECANGLEOFFSET` / `set_SINCOSCENTRE`, and puts motors in FOC speed mode (command mode 12). Exits with an error if the calibration file is missing or has fewer motors than requested. Use this for normal operation.
 - **`get_motors_for_calibration(i2c_addresses)`** → `(motors, motor_count, normalized_addresses)`. Creates drivers and sets PID/limits only (no calibration, no FOC). Used by `calibration/motors.py`.
@@ -20,13 +20,13 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **Calibration workflow:** Run `python calibration/motors.py` once (or after hardware change) to create/overwrite `calibration_data.json`. After that, `init_motors(...)` loads that file and does not run physical calibration. Calibration file format: `{"motors": [{"address": <int>, "elecangleoffset": <int>, "sincoscentre": <int>}, ...]}`.
 
-## Movement: speed (mm/s) to motor RPM (`lib/movement.py`)
+## Movement: speed (mm/s) to motor RPM (`legacy/movement.py`)
 
 **Problem:** What are `a_speed`, `b_speed`, `c_speed`, `d_speed`, and `max_trans_rpm` when `speed` is a given value (e.g. 500)?
 
 **How it works:**
 - `speed` is in mm/s. `direction`, `rotation`, and `yaw` use the project heading frame where `0` = startup-forward and `90` = startup-right. The IMU does **not** natively use this sign convention; convert raw IMU yaw with `imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)` before passing it into `move()`.
-- `lib/movement.py` converts the global translation heading into the robot's local frame with `local_direction = yaw - direction + 45` (degrees). The `+45` rotates into the wheel basis because the wheels sit on the diagonals, leaving the front edge clear.
+- The legacy Python controller and native C++ controller convert the global translation heading into the robot's local frame with `local_direction = yaw - direction + 45` (degrees). The `+45` rotates into the wheel basis because the wheels sit on the diagonals, leaving the front edge clear.
 - Wheel velocities in mm/s use the current code signs: `a_value = -sin(local_direction)*speed`, `b_value = +cos(local_direction)*speed`, `c_value = +sin(local_direction)*speed`, `d_value = -cos(local_direction)*speed`.
 - Conversion to RPM uses wheel diameter (e.g. `WHEEL_DIAMETER = 50` mm in `defence.py`): `mmps_to_rpm = 60 / (diameter * π)`.
 - Motor speeds in RPM: `a_speed = a_value * mmps_to_rpm`, and similarly for b, c, d.
@@ -66,7 +66,7 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 9. `lidar.scan_updates_enabled()` → `bool` — false while MCL is pausing LIDAR updates during fast rotation.
 10. `lidar.shutdown()` — stops localization, scan thread, and motor.
 
-**IMU in MCL:** `lib/imu.py` enables `BNO_REPORT_GYROSCOPE` and `BNO_REPORT_GAME_ROTATION_VECTOR`. Game rotation fuses gyro + gravity with no magnetometer, which is what we want because yaw is always converted relative to startup (`imu_yaw_to_relative_yaw`) and motors/metal near the BNO08x make magnetic north unreliable. Gyro: `get_gyro_z_deg_s()` (clockwise positive in project frame) is passed as `omega_deg_s` to `predict_odometry` each control loop. Absolute yaw: convert with `imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)` and call `lidar.set_imu_yaw(...)` each loop (and before the first pose wait). MCL applies a soft Gaussian yaw prior (σ = 45°) on every scan update so LIDAR still owns fine, drift-free heading while the IMU breaks the 180° field symmetry. Init/recovery particles sample yaw around the IMU when a reading exists, otherwise over ±180°.
+**IMU in MCL:** `HardwareController` enables calibrated gyroscope and game rotation vector without the magnetometer. Call `set_startup_yaw()` after sampling `get_raw_imu_yaw()`, then feed `get_yaw()` directly to `lidar.set_imu_yaw()` and clockwise-positive `get_gyro_z_deg_s()` to `predict_odometry()`. MCL applies a soft Gaussian yaw prior (σ = 45°) on every scan update so LIDAR still owns fine, drift-free heading while the IMU breaks the 180° field symmetry. Init/recovery particles sample yaw around the IMU when a reading exists, otherwise over ±180°.
 
 **Stuck on "Waiting for first pose estimate...":** While waiting for `is_coordinates_ready()`, still call `predict_odometry(0, 0, omega, dt)` each loop (even when stationary). Predict applies translation/yaw process noise; without it, particles collapse after the first resample and often never reach the confidence threshold. Also print `get_coordinates_info()` / `get_scan_count()` during the wait so low confidence vs empty scans is visible.
 
@@ -207,3 +207,27 @@ Continue to use the apt-provided NumPy, OpenCV, and Picamera2 packages rather th
 **Problem:** Low motor trust during movement can be caused by the estimator itself, rather than physical wheel slip. `compute_wheel_odometry_trust()` compares speed magnitudes: a 30% discrepancy gives 40% trust, and a discrepancy of 50% or more gives zero. Previously, both `main.py` and `lib/localisation_service.py` multiplied measured wheel velocity by this score before MCL prediction. `LidarVelocityEstimator` differentiates the fused MCL pose, which `loc_predict_odometry()` also updates, so the comparison is circular. Its smoothing (alpha 0.3, initialized at zero) can also trigger low trust during acceleration.
 
 **Diagnostic approach:** Compare wheel, lidar, and fed velocities in `tests/localisation.py`. A controlled comparison using unscaled measured wheel velocity can distinguish feedback-induced underprediction from wheel calibration/slip problems. Raw measured wheel velocity is now the default in the game loop, service, and localisation test; trust remains diagnostic in the service/test. Runs at 350 and 500 mm/s tracked successfully with raw odometry despite trust dips, including zero trust at 500 mm/s. Run `python -m tests.localisation --scaled-odometry --max-speed 200` to reproduce legacy scaling; `--raw-odometry` remains an explicit alias for the default. A durable fix should model uncertain odometry with motion uncertainty and use time-aligned, independent evidence for slip rather than treating this score as a velocity multiplier.
+
+## Native hardware controller (`lib/hardware_controller.cpp`)
+
+**Native kicker GPIO:** Pi 5 GPIO chip numbering varies with the kernel. Discover
+the chip using its device-tree `compatible` entry (`raspberrypi,rp1-gpio`), rather
+than assuming gpiochip0 or gpiochip4. The configured Blinka pin's `id` is its BCM
+line number. `linux_kicker.cpp` uses Linux GPIO v2 directly and restores input with
+pull-down after each pulse, matching `legacy/kicker.py`; writing low alone does not
+restore that input configuration. `main.py` passes the pin to the native controller
+and must not also construct a Python Kicker for the same line.
+
+**Problem:** The supplied `PowerfulBLDCdriver` C++ files use Arduino `Wire`, so they cannot compile directly on Linux. A native motor worker also cannot acquire Python's shared I2C lock without depending on the GIL.
+
+**Solution:** `linux_wire.h/.cpp` implements the driver's small Wire surface using addressed Linux `I2C_RDWR` messages, checking transfer failures. The native controller serializes motor operations with its own mutex; Linux serializes individual transfers with the Python display. Only one controller may own any motor or IMU address, since register-selection/read pairs must not interleave with another owner. `main.py`, dashboard driving, and hardware tests use the pybind11 `lib.hardware_controller.HardwareController`; its workers use no Python callbacks. Calibration JSON is matched by address, and four wheels plus an optional dribbler are supported. Physical calibration remains in `legacy/movement.py` and must run separately from the game controller.
+
+Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, or only motors with `SOCCER_HARDWARE_ONLY=1 .venv/bin/python lib/setup.py build_ext --inplace`. Rebuild on the Pi with its runtime Python. Offline protocol/lifecycle tests: `.venv/bin/python -m unittest tests.test_hardware_controller`. See `lib/HARDWARE_CONTROLLER.md` for the API and ownership/shutdown behavior.
+
+## Native BNO08x / SH-2 (`lib/imu/linux_bno08x.cpp`)
+
+**Problem:** The imported Adafruit wrapper needs Arduino/BusIO, but the underlying SH-2/SHTP sources are portable C. SH-2 stores a global session; `sh2_open()` can return success after reset timeout, ignores the HAL open result, and its product-ID operation originally had no timeout. Returning zero from HAL writes also triggers an unbounded retry loop.
+
+**Solution:** Compile the four SH-2 core `.c` files as C11 and the Linux adapter as C++17; exclude the Arduino wrapper. The adapter claims one session per process, checks transport errors and reset completion, and returns negative write errors. `getProdIdOp` has a one-second timeout. I2C reads repeat the four-byte SHTP header; the adapter reconstructs bounded transfers from 32-byte chunks, timestamps arrival with a monotonic microsecond counter, and re-enables reports after resets outside the callback. All IMU service and motor I/O share the controller's native bus mutex.
+
+`main.py` now samples native raw yaw, sets the startup reference in C++, and reads relative yaw and gyro for LIDAR. `move(direction, speed, rotation, rotation_speed, dribbler=0)` has no yaw argument. Each drive tick uses native yaw; after 100 ms without a quaternion, yaw correction is disabled while translation uses the last known heading. Gyro freshness is separate. Both reports resume automatically; the startup reference is retained across a sensor reset, so re-zero while paused if its raw origin shifts. Stop joins both workers and releases SH-2. Python IMU/dashboard workflows must run separately. The hardware-only build now includes both motors and IMU.

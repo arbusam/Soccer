@@ -6,6 +6,8 @@ import threading
 import time
 from collections import deque
 
+from lib.hardware_controller import HardwareController, MotorCommunicationError
+
 import defence
 import striker
 from lib import lidar, switch
@@ -13,13 +15,6 @@ from lib.break_beam import Breakbeam
 from lib.camera import Camera
 from lib.communication import Peer
 from lib.config import BotMode, load_config
-from lib.imu import IMU
-from lib.kicker import Kicker
-from lib.movement import (
-    MotorCommunicationError,
-    MovementController,
-    imu_yaw_to_relative_yaw,
-)
 from lib.recording_session import RecordingSession
 
 LOG_FPS = 30 # How often the bot state is written to the log file
@@ -225,9 +220,7 @@ if args.save_log is not None:
     print(f"Saving game log to {args.save_log} at {LOG_FPS} FPS")
 
 camera = None
-kicker = None
-movement_controller = None
-imu = None
+hardware_controller = None
 peer = None
 recording_session = None
 last_pose_time = None
@@ -273,22 +266,23 @@ def capture_startup_yaw(
     print("Stabilizing IMU yaw reference...")
     sampler = RollingYawSampler(sample_count)
     while True:
-        startup_yaw = sampler.add(imu_sensor.get_yaw())
+        if enter_pressed():
+            raise KeyboardInterrupt
+        startup_yaw = sampler.add(imu_sensor.get_raw_imu_yaw())
         if startup_yaw is not None:
             return startup_yaw
         time.sleep(sample_interval)
 
 
-def feed_imu_yaw_prior(imu_sensor, startup_yaw):
+def feed_imu_yaw_prior(imu_sensor):
     """Push startup-relative IMU yaw into MCL as a soft heading prior."""
     imu_yaw = imu_sensor.get_yaw()
     if imu_yaw is None:
         return
-    lidar.set_imu_yaw(imu_yaw_to_relative_yaw(imu_yaw, startup_yaw))
+    lidar.set_imu_yaw(imu_yaw)
 
 
 try:
-    kicker = Kicker(KICKER_PIN, 0.02)
     break_beam = Breakbeam(BREAK_BEAM_PIN)
     print(f"Initializing LIDAR on {LIDAR_PORT} at {LIDAR_BAUDRATE} baud...")
     try:
@@ -306,20 +300,33 @@ try:
             raise KeyboardInterrupt
         time.sleep(0.1)
 
-    print("Initializing IMU...")
-    imu = IMU()
-    startup_yaw = capture_startup_yaw(imu)
+    print(f"Initializing Hardware Controller with motor I2C addresses {I2C_ADDRESSES}...")
+    hardware_controller = HardwareController.from_i2c_addresses(
+        I2C_ADDRESSES,
+        WHEEL_DIAMETER,
+        MAX_YAW_RPM,
+        MAX_MOTOR_RPM,
+        YAW_CORRECT_THRESHOLD,
+        kicker_pin=int(KICKER_PIN.id),
+    )
+    startup_yaw = capture_startup_yaw(hardware_controller)
+    hardware_controller.set_startup_yaw(startup_yaw)
     print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
-    feed_imu_yaw_prior(imu, startup_yaw)
+    feed_imu_yaw_prior(hardware_controller)
 
     lidar.start_coordinates(2430, 1820)
 
     print("Waiting for first pose estimate...")
+    last_wait_time = time.monotonic()
     while not lidar.is_coordinates_ready():
         if enter_pressed():
             print("Shutdown requested, exiting.")
             raise KeyboardInterrupt
-        feed_imu_yaw_prior(imu, startup_yaw)
+        feed_imu_yaw_prior(hardware_controller)
+        now = time.monotonic()
+        omega = hardware_controller.get_gyro_z_deg_s()
+        lidar.predict_odometry(0, 0, omega if omega is not None else 0.0, now - last_wait_time)
+        last_wait_time = now
         time.sleep(0.1)
 
     if args.record_session is not None:
@@ -363,14 +370,6 @@ try:
         camera.start()
         print("Camera preview disabled (pass --camera-stream to enable MJPEG stream)")
 
-    print(f"Initializing motors at I2C addresses: {I2C_ADDRESSES}")
-    movement_controller = MovementController.from_i2c_addresses(
-        I2C_ADDRESSES,
-        WHEEL_DIAMETER,
-        MAX_YAW_RPM,
-        MAX_MOTOR_RPM,
-        YAW_CORRECT_THRESHOLD,
-    )
     if ENABLE_COMMUNICATION:
         peer = Peer(port=PEER_PORT)
         peer.start()
@@ -393,8 +392,8 @@ try:
         fps_monitor.add("logic", lambda: _logic_loop_count)
         fps_monitor.add("camera_cap", lambda: camera.capture_count)
         fps_monitor.add("camera_infer", lambda: camera.infer_count)
-        fps_monitor.add("drive", lambda: movement_controller.loop_count)
-        fps_monitor.add("imu", lambda: imu.update_count)
+        fps_monitor.add("drive", lambda: hardware_controller.loop_count)
+        fps_monitor.add("imu", lambda: hardware_controller.imu_update_count)
         if hasattr(lidar, "get_scan_generation"):
             fps_monitor.add("lidar_scan", lidar.get_scan_generation)
         if hasattr(lidar, "get_mcl_update_count"):
@@ -441,11 +440,12 @@ try:
             steering_state = False
             now = time.monotonic()
             if now >= next_paused_yaw_sample_time:
-                sampled_yaw = paused_yaw_sampler.add(imu.get_yaw())
+                sampled_yaw = paused_yaw_sampler.add(hardware_controller.get_raw_imu_yaw())
                 next_paused_yaw_sample_time = now + STARTUP_YAW_SAMPLE_INTERVAL
                 if sampled_yaw is not None:
                     startup_yaw = sampled_yaw
-                    feed_imu_yaw_prior(imu, startup_yaw)
+                    hardware_controller.set_startup_yaw(startup_yaw)
+                    feed_imu_yaw_prior(hardware_controller)
         if run:
             if enter_pressed():
                 print("Shutdown requested, exiting.")
@@ -456,21 +456,16 @@ try:
             now_pose = time.monotonic()
             dt_pose = now_pose - last_pose_time
             last_pose_time = now_pose
-            omega = 0.0
-            yaw = None
-            if imu is not None:
-                gyro_z = imu.get_gyro_z_deg_s()
-                if gyro_z is not None:
-                    omega = gyro_z
-                imu_yaw = imu.get_yaw()
-                if imu_yaw is not None:
-                    yaw = imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)
-                    lidar.set_imu_yaw(yaw)
+            gyro_z = hardware_controller.get_gyro_z_deg_s()
+            omega = gyro_z if gyro_z is not None else 0.0
+            yaw = hardware_controller.get_yaw()
+            if yaw is not None:
+                lidar.set_imu_yaw(yaw)
             vx, vy = 0.0, 0.0
-            if movement_controller is not None:
+            if hardware_controller is not None:
                 yaw_for_odom = yaw if yaw is not None else 0.0
                 # Fused-pose speed agreement is diagnostic, not a velocity scale.
-                vx, vy = movement_controller.get_measured_body_velocity_mm_s(
+                vx, vy = hardware_controller.get_measured_body_velocity_mm_s(
                     yaw_for_odom
                 )
             lidar.predict_odometry(vx, vy, omega, dt_pose)
@@ -638,18 +633,16 @@ try:
                     update_latest_log_snapshot(log_line)
                 if recording_session is not None:
                     recording_session.record_game(log_values)
-            if kick:
-                kicker.kick()
             try:
-                movement_controller.move(direction, speed, rotation, 1.0, yaw, dribbler)
+                hardware_controller.move(direction, speed, rotation, 1.0, dribbler, kick=kick)
             except MotorCommunicationError as exc:
                 print(exc)
                 raise
         else:
             bot_mode = MODE_SWITCH_ON if mode_switch.read() else MODE_SWITCH_OFF
             time.sleep(0.01)
-            if movement_controller is not None:
-                movement_controller.move(0, 0, 0, 0, 0, 0)
+            if hardware_controller is not None:
+                hardware_controller.move(0, 0, 0, 0, 0)
 
 finally:
     if log_recorder_thread is not None:
@@ -660,16 +653,11 @@ finally:
             peer.stop()
         except Exception as exc:
             print(f"Warning: failed to stop peer communication cleanly: {exc}")
-    if movement_controller is not None:
+    if hardware_controller is not None:
         try:
-            movement_controller.stop()
+            hardware_controller.stop()
         except Exception as exc:
-            print(f"Warning: failed to stop motors cleanly: {exc}")
-    if kicker is not None:
-        try:
-            kicker.deinit()
-        except Exception as exc:
-            print(f"Warning: failed to deinitialize kicker cleanly: {exc}")
+            print(f"Warning: failed to stop hardware cleanly: {exc}")
     if camera is not None:
         try:
             camera.stop()
@@ -689,11 +677,6 @@ finally:
             )
         except Exception as exc:
             print(f"Warning: failed to finalize recording session cleanly: {exc}")
-    if imu is not None:
-        try:
-            imu.close()
-        except Exception as exc:
-            print(f"Warning: failed to close IMU cleanly: {exc}")
     try:
         lidar.shutdown()
     except Exception as exc:

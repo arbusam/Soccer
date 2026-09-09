@@ -1,20 +1,20 @@
 from lib.break_beam import Breakbeam
 from lib.config import load_config
-from lib.kicker import Kicker
+from lib.hardware_test_utils import create_hardware
 
 config = load_config()
 break_beam = Breakbeam(config.break_beam_pin)
-kicker = Kicker(config.kicker_pin, 0.1)
+hardware = create_hardware(kicker=True)
 
 print("IR Breakbeam Sensor Test Initialized.")
 print("Waiting for beam to be broken...")
 
 try:
     while True:
-        if break_beam.read():
-            print("Beam is BROKEN!")
-            kicker.kick()
-        else:
-            print("Beam is Solid (unbroken).")
+        broken = break_beam.read()
+        print("Beam is BROKEN!" if broken else "Beam is solid (unbroken).")
+        hardware.move(0, 0, 0, 0, kick=broken)
 except KeyboardInterrupt:
     print("Test stopped.")
+finally:
+    hardware.stop()

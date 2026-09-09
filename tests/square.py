@@ -4,13 +4,9 @@ import argparse
 import sys
 import time
 
-from lib.config import load_config
-from lib.movement import MotorCommunicationError, MovementController
+from lib.hardware_controller import MotorCommunicationError
 
-WHEEL_DIAMETER = 50  # mm
-MAX_YAW_RPM = 100
-MAX_MOTOR_RPM = 400
-YAW_CORRECT_THRESHOLD = 3  # deg
+from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
 SQUARE_DIRECTIONS = (0, 90, 180, 270)
 DEFAULT_SIDE_SECONDS = 1.0
@@ -40,28 +36,21 @@ def main(argv: list[str]) -> int:
     if args.side_seconds <= 0:
         parser.error("--side-seconds must be positive")
 
-    movement_controller = None
+    hardware = None
     try:
-        i2c_addresses = load_config().i2c_addresses
-        print(f"Initializing motors at I2C addresses: {i2c_addresses}")
-        movement_controller = MovementController.from_i2c_addresses(
-            i2c_addresses,
-            WHEEL_DIAMETER,
-            MAX_YAW_RPM,
-            MAX_MOTOR_RPM,
-            YAW_CORRECT_THRESHOLD,
-        )
+        hardware = create_hardware(max_motor_rpm=400)
+        set_startup_yaw(hardware)
         print("Running square path. Press Ctrl+C to stop.")
         for direction in SQUARE_DIRECTIONS:
-            _run_side(direction, args.side_seconds, args.speed, movement_controller)
+            _run_side(direction, args.side_seconds, args.speed, hardware)
     except KeyboardInterrupt:
         print("\nStopping square path.")
     except MotorCommunicationError as exc:
         print(exc)
         raise
     finally:
-        if movement_controller is not None:
-            movement_controller.stop()
+        if hardware is not None:
+            hardware.stop()
             print("Motors stopped.")
 
     return 0

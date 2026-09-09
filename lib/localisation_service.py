@@ -23,6 +23,53 @@ class OdometryDiagnostics:
     has_wheel_odometry: bool
 
 
+def global_velocity_to_body_mm_s(global_vx, global_vy, yaw_deg):
+    yaw_rad = math.radians(yaw_deg)
+    return (
+        global_vx * math.cos(yaw_rad) + global_vy * math.sin(yaw_rad),
+        global_vx * math.sin(yaw_rad) - global_vy * math.cos(yaw_rad),
+    )
+
+
+class LidarVelocityEstimator:
+    """Estimate smoothed body velocity from successive confident LIDAR poses."""
+
+    def __init__(self, smoothing=0.3):
+        self.smoothing = smoothing
+        self.last_x = self.last_y = self.last_time = None
+        self.global_vx = self.global_vy = 0.0
+        self.last_update_time = None
+
+    def update(self, x, y, _yaw, now):
+        if self.last_x is None:
+            self.last_x, self.last_y, self.last_time = x, y, now
+            return
+        dt = now - self.last_time
+        if dt < 0.02 or math.hypot(x - self.last_x, y - self.last_y) < 2.0:
+            return
+        alpha = self.smoothing
+        self.global_vx = alpha * (x - self.last_x) / dt + (1 - alpha) * self.global_vx
+        self.global_vy = alpha * (y - self.last_y) / dt + (1 - alpha) * self.global_vy
+        self.last_x, self.last_y, self.last_time = x, y, now
+        self.last_update_time = now
+
+    def get_body_velocity(self, yaw_deg):
+        return global_velocity_to_body_mm_s(self.global_vx, self.global_vy, yaw_deg)
+
+    def is_fresh(self, now):
+        return self.last_update_time is not None and now - self.last_update_time <= 0.15
+
+
+def compute_wheel_odometry_trust(wheel_vx, wheel_vy, lidar_vx, lidar_vy, lidar_fresh):
+    if not lidar_fresh:
+        return 1.0
+    wheel_speed = math.hypot(wheel_vx, wheel_vy)
+    if wheel_speed < 50.0:
+        return 1.0
+    slip_ratio = abs(wheel_speed - math.hypot(lidar_vx, lidar_vy)) / wheel_speed
+    return 0.0 if slip_ratio >= 0.5 else 1.0 - slip_ratio / 0.5
+
+
 def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02, cancel_event=None):
     """Average a short burst of IMU samples so startup yaw is not just the first reading."""
     print("Stabilizing IMU yaw reference...")
@@ -35,26 +82,24 @@ def capture_startup_yaw(imu, sample_count=25, sample_interval=0.02, cancel_event
             raise InterruptedError("IMU startup cancelled")
         if time.monotonic() > deadline:
             raise TimeoutError("No IMU yaw received during startup")
-        yaw = imu.get_yaw()
+        yaw = imu.get_raw_imu_yaw()
         if yaw is not None:
             yaw_rad = math.radians(yaw)
             sin_sum += math.sin(yaw_rad)
             cos_sum += math.cos(yaw_rad)
             samples += 1
         time.sleep(sample_interval)
-    return math.degrees(math.atan2(sin_sum, cos_sum))
+    startup_yaw = math.degrees(math.atan2(sin_sum, cos_sum))
+    imu.set_startup_yaw(startup_yaw)
+    return startup_yaw
 
 
-def get_yaw(imu, startup_yaw, mcl_yaw):
+def get_yaw(imu, _startup_yaw, mcl_yaw):
     """Prefer MCL yaw when available, otherwise use startup-relative IMU yaw."""
     if mcl_yaw is not None:
         return mcl_yaw
     imu_yaw = imu.get_yaw()
-    if imu_yaw is None:
-        return None
-    from lib.movement import imu_yaw_to_relative_yaw
-
-    return imu_yaw_to_relative_yaw(imu_yaw, startup_yaw)
+    return imu_yaw
 
 
 def get_position(lidar_module):
@@ -65,14 +110,12 @@ def get_position(lidar_module):
     return x_pos, y_pos, yaw
 
 
-def feed_imu_yaw_prior(lidar_module, imu, startup_yaw):
+def feed_imu_yaw_prior(lidar_module, imu, _startup_yaw):
     """Push startup-relative IMU yaw into MCL as a soft heading prior."""
-    from lib.movement import imu_yaw_to_relative_yaw
-
     imu_yaw = imu.get_yaw()
     if imu_yaw is None:
         return
-    lidar_module.set_imu_yaw(imu_yaw_to_relative_yaw(imu_yaw, startup_yaw))
+    lidar_module.set_imu_yaw(imu_yaw)
 
 
 def predict_odometry(
@@ -91,8 +134,6 @@ def predict_odometry(
     ``apply_trust=True`` restores legacy scaling for comparison tests only.
     Fused-pose velocity is not independent evidence of wheel slip.
     """
-    from lib.movement import compute_wheel_odometry_trust
-
     now = time.monotonic()
     dt = now - last_pose_time
     omega = 0.0
@@ -172,7 +213,7 @@ class LocalisationSession:
         if generation != self.scan_generation:
             self.scan_generation = generation
             self.last_scan_time = now
-        count = self.imu.update_count
+        count = self.imu.imu_update_count
         if count != self.imu_count:
             self.imu_count = count
             self.last_imu_time = now
@@ -203,6 +244,6 @@ class LocalisationSession:
 
     def close(self):
         try:
-            self.imu.close()
+            self.imu.stop()
         finally:
             self.lidar.shutdown()

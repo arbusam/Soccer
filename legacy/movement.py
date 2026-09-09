@@ -7,7 +7,13 @@ import time
 
 from steelbar_powerful_bldc_driver import PowerfulBLDCDriver
 
-from lib.i2c_bus import get_shared_i2c_bus, get_shared_i2c_lock
+from legacy.angles import (
+    imu_yaw_to_relative_yaw as imu_yaw_to_relative_yaw,  # noqa: PLC0414 - public compatibility export
+)
+from legacy.angles import (
+    wrap_angle_deg as wrap_angle_deg,  # noqa: PLC0414 - public compatibility export
+)
+from legacy.i2c_bus import get_shared_i2c_bus, get_shared_i2c_lock
 
 # Conversion factor from RPM to motor speed units.
 # Formula: rpm * 7 (pole pairs) * 36 (36:1 gear ratio) / 60 (seconds per minute) / 2^-16 (electrical revolutions per second)
@@ -27,16 +33,6 @@ MAX_MOTORS = 8
 
 class MotorCommunicationError(RuntimeError):
     """Raised when an I2C write to a motor driver fails."""
-
-
-def wrap_angle_deg(angle):
-    """Wrap an angle to the shortest signed equivalent in [-180, 180)."""
-    return ((float(angle) + 180.0) % 360.0) - 180.0
-
-
-def imu_yaw_to_relative_yaw(imu_yaw, startup_yaw):
-    """Convert raw IMU yaw into the project's clockwise-positive startup-relative frame."""
-    return wrap_angle_deg(float(startup_yaw) - float(imu_yaw))
 
 
 def _project_root():

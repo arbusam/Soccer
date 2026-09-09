@@ -3,7 +3,7 @@ Run physical calibration on motor drivers and save results to calibration_data.j
 Run this once (or when motors/encoders change); thereafter use init_motors() which loads the saved file.
 """
 
-from lib.movement import (
+from legacy.movement import (
     _prompt_i2c_addresses,
     calibrate_motors,
     get_motors_for_calibration,

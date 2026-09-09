@@ -67,12 +67,13 @@ class Hardware:
             self.status["mode"] = "stopping"
         errors = []
         try:
-            controller.stop()
+            if self.session is not None and controller is self.session.imu:
+                controller.move(0, 0, 0, 0)
+            else:
+                controller.stop()
         except Exception as exc:
             errors.append(str(exc))
         finally:
-            from lib.movement import disable_calibration_motors
-            errors.extend(disable_calibration_motors(controller.motors))
             with self.lock:
                 if errors:
                     self.status["error"] = "Motor shutdown failed: " + "; ".join(errors)
@@ -83,26 +84,36 @@ class Hardware:
     def _localise(self, cancel):
         if self.session is not None:
             return
+        from lib.hardware_controller import HardwareController
+
         from lib import lidar
-        from lib.imu import IMU
+        from lib.config import load_config
         from lib.localisation_service import (
+            LidarVelocityEstimator,
             LocalisationSession,
             capture_startup_yaw,
             feed_imu_yaw_prior,
         )
-        from lib.movement import LidarVelocityEstimator
 
         imu = None
         try:
             lidar.init(self.port, self.baud)
-            imu = IMU()
+            config = load_config()
+            imu = HardwareController.from_i2c_addresses(
+                config.i2c_addresses,
+                50,
+                100,
+                400,
+                3,
+                calibration_file=str(self.root / "calibration_data.json"),
+            )
             startup = capture_startup_yaw(imu, cancel_event=cancel)
             feed_imu_yaw_prior(lidar, imu, startup)
             lidar.start_coordinates(*PITCH)
             self.session = LocalisationSession(lidar, imu, startup, LidarVelocityEstimator())
         except BaseException:
             if imu is not None:
-                imu.close()
+                imu.stop()
             lidar.shutdown()
             raise
 
@@ -128,7 +139,6 @@ class Hardware:
 
     def _drive(self, data, cancel):
         from lib.config import load_config
-        from lib.movement import MovementController
         from lib.switch import Switch
 
         if self.session is None or not self.session.state.get("fresh"):
@@ -143,14 +153,10 @@ class Hardware:
         saved_addresses = [motor["address"] for motor in saved["motors"]]
         if saved_addresses[:len(data["addresses"])] != data["addresses"]:
             raise ValueError("Drive addresses/order must match the saved motor calibration")
-        self.stop_drive()
-        controller = MovementController.from_i2c_addresses(
-            data["addresses"], 50, 100, 400, 3,
-            calibration_file=str(self.root / "calibration_data.json"),
-        )
+        controller = self.session.imu
         with self.lock:
             if cancel.is_set():
-                controller.stop()
+                controller.move(0, 0, 0, 0)
                 return
             self.controller = controller
             self.target = data["target"]
@@ -159,7 +165,7 @@ class Hardware:
             self.status["mode"] = "driving"
 
     def _calibrate(self, data, cancel):
-        from lib.movement import calibrate_motors, get_motors_for_calibration
+        from legacy.movement import calibrate_motors, get_motors_for_calibration
 
         self.stop_drive()
         if self.session is not None:
@@ -245,7 +251,7 @@ class Hardware:
                                     self.stop_drive()
                                     self.notify("Target reached; disarmed")
                                 else:
-                                    controller.move(direction, speed, yaw, 1.0, yaw)
+                                    controller.move(direction, speed, yaw, 1.0)
                 except (Exception, SystemExit) as exc:
                     stopping_localisation = (
                         action == "localise"

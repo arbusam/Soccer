@@ -1,0 +1,90 @@
+#pragma once
+
+#include "PowerfulBLDCdriver.h"
+#include "imu/linux_bno08x.h"
+#include "linux_kicker.h"
+#include <array>
+#include <atomic>
+#include <condition_variable>
+#include <memory>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <utility>
+#include <vector>
+
+namespace hardware {
+constexpr double RPM_TO_MOTOR_SPEED = 275251.2;
+struct MotorCalibration {
+    int address;
+    uint32_t elecangleoffset;
+    int32_t sincoscentre;
+};
+struct DriveConfig {
+    double diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold;
+    void validate() const;
+};
+struct Command {
+    double direction = 0, speed = 0, rotation = 0, rotation_speed = 0, yaw = 0;
+    int dribbler = 0;
+    bool kick = false;
+};
+class MotorCommunicationError : public std::runtime_error {
+    using std::runtime_error::runtime_error;
+};
+// Pure kinematics shared by the drive loop and offline tests.
+std::array<double, 4> calculate_drive_rpms(const Command& command, const DriveConfig& config);
+std::pair<double, double> body_velocity(const std::array<double, 4>& rpms, double diameter);
+
+// Owns motor I/O and its native drive thread. Future hardware belongs here.
+class HardwareController {
+public:
+    HardwareController(const std::vector<MotorCalibration>& calibration, DriveConfig config,
+                       const std::string& device = "/dev/i2c-1",
+                       std::unique_ptr<TwoWire> transport = nullptr,
+                       int imu_address = 0x4a, int imu_report_interval_ms = 10,
+                       int kicker_pin = -1, const std::string& kicker_gpiochip = "",
+                       std::unique_ptr<KickerOutput> kicker_output = nullptr);
+    ~HardwareController();
+    HardwareController(const HardwareController&) = delete;
+    HardwareController& operator=(const HardwareController&) = delete;
+    void move(double direction, double speed, double rotation, double rotation_speed,
+              int dribbler = 0, bool kick = false);
+    std::optional<double> get_raw_imu_yaw() const { return imu_->snapshot().raw_yaw; }
+    std::optional<double> get_yaw() const { return imu_->snapshot().yaw; }
+    std::optional<double> get_gyro_z_deg_s() const { return imu_->snapshot().gyro_z; }
+    std::optional<std::array<double, 4>> get_latest_quaternion() const { return imu_->snapshot().quaternion; }
+    uint64_t imu_update_count() const { return imu_->snapshot().update_count; }
+    void set_startup_yaw(double raw_yaw) { imu_->set_startup_yaw(raw_yaw); }
+    std::pair<double, double> get_measured_body_velocity_mm_s(double yaw_deg);
+    void stop();
+    uint64_t loop_count() const { return loop_count_.load(); }
+    double current_speed() const;
+    double current_direction() const;
+private:
+    void drive_loop() noexcept;
+    void imu_loop() noexcept;
+    void kicker_loop() noexcept;
+    std::string disable_motors(); // Caller holds bus_mutex_; tries every write on every motor.
+    void check_state() const; // Caller holds state_mutex_.
+    void fail(const std::string& message);
+    DriveConfig config_;
+    std::unique_ptr<TwoWire> wire_;
+    std::unique_ptr<LinuxBno08x> imu_;
+    std::unique_ptr<KickerOutput> kicker_;
+    std::vector<PowerfulBLDCdriver> motors_;
+    mutable std::mutex state_mutex_;
+    std::mutex bus_mutex_, stop_mutex_;
+    std::condition_variable wake_;
+    Command target_;
+    bool kicking_ = false; // Protected by state_mutex_, including the cooldown timestamp.
+    std::chrono::steady_clock::time_point next_kick_time_{};
+    double dx_ = 0, dy_ = 0;
+    std::string error_;
+    std::atomic<bool> running_{false};
+    std::atomic<uint64_t> loop_count_{0};
+    std::thread thread_;
+    std::thread imu_thread_;
+    std::thread kicker_thread_;
+};
+} // namespace hardware

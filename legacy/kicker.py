@@ -1,4 +1,4 @@
-"""Solenoid kicker: pulse a GPIO pin high for a fixed duration."""
+"""Legacy Python solenoid kicker retained for standalone maintenance tools."""
 
 import threading
 import time

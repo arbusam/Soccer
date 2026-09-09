@@ -1,12 +1,8 @@
 import time
 
-from lib.config import load_config
-from lib.movement import MotorCommunicationError, MovementController
+from lib.hardware_controller import MotorCommunicationError
 
-WHEEL_DIAMETER = 50
-MAX_YAW_RPM = 100
-MAX_MOTOR_RPM = 400
-YAW_CORRECT_THRESHOLD = 3
+from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
 COMMAND_INTERVAL = 0.05
 # Keep a clockwise yaw error so the bot spins in place instead of holding a heading.
@@ -14,25 +10,17 @@ CLOCKWISE_ROTATION = 90.0
 
 
 def main():
-    movement_controller = None
+    hardware = None
     try:
-        i2c_addresses = load_config().i2c_addresses
-        print(f"Initializing motors at I2C addresses: {i2c_addresses}")
-        movement_controller = MovementController.from_i2c_addresses(
-            i2c_addresses,
-            WHEEL_DIAMETER,
-            MAX_YAW_RPM,
-            MAX_MOTOR_RPM,
-            YAW_CORRECT_THRESHOLD,
-        )
+        hardware = create_hardware(max_motor_rpm=400)
+        set_startup_yaw(hardware)
         print("Dribbler on; rotating clockwise. Press Ctrl+C to stop.")
         while True:
-            movement_controller.move(
+            hardware.move(
                 0,
                 0,
                 CLOCKWISE_ROTATION,
                 1.0,
-                0,
                 1,
             )
             time.sleep(COMMAND_INTERVAL)
@@ -42,8 +30,8 @@ def main():
         print(exc)
         raise
     finally:
-        if movement_controller is not None:
-            movement_controller.stop()
+        if hardware is not None:
+            hardware.stop()
 
 
 if __name__ == "__main__":

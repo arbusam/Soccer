@@ -4,8 +4,8 @@
 Interactive test: enter a target (x, y) in mm and the robot drives there while
 printing its localized position. Requires LIDAR, IMU, and motors.
 
-With ``--no-move``, motors are skipped and the script only prints / streams the
-localized pose (still needs LIDAR and IMU).
+With ``--no-move``, the native controller keeps the motors at zero while the
+script only prints / streams the localized pose.
 
 With ``-s`` / ``--stream``, poses are pushed to the websocket log server for live
 viewing with ``python simulate.py --connect 127.0.0.1:8765``.
@@ -17,8 +17,8 @@ import queue
 import threading
 import time
 
-from lib.config import load_config
 from lib.localisation_service import (
+    LidarVelocityEstimator,
     capture_startup_yaw,
     feed_imu_yaw_prior,
     get_position,
@@ -32,10 +32,7 @@ SLOW_RADIUS_MM = 300
 LOOP_DELAY_SECONDS = 0.02
 STATUS_PRINT_INTERVAL_S = 0.2
 
-WHEEL_DIAMETER = 50
-MAX_YAW_RPM = 100
 MAX_MOTOR_RPM = 400
-YAW_CORRECT_THRESHOLD = 3
 
 LIDAR_PORT = "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
@@ -273,9 +270,7 @@ def drive_to_target(
         pose = get_position(lidar_module)
         if pose is None:
             # Pause safely without terminating the controller's drive thread.
-            movement_controller.move(
-                0.0, 0.0, yaw_for_odom, 0.0, yaw_for_odom
-            )
+            movement_controller.move(0.0, 0.0, yaw_for_odom, 0.0)
             time.sleep(LOOP_DELAY_SECONDS)
             continue
 
@@ -283,9 +278,7 @@ def drive_to_target(
         yaw = get_yaw(imu, startup_yaw, mcl_yaw)
         if yaw is None:
             # Pause safely without terminating the controller's drive thread.
-            movement_controller.move(
-                0.0, 0.0, yaw_for_odom, 0.0, yaw_for_odom
-            )
+            movement_controller.move(0.0, 0.0, yaw_for_odom, 0.0)
             time.sleep(LOOP_DELAY_SECONDS)
             continue
 
@@ -301,10 +294,10 @@ def drive_to_target(
 
         direction = math.degrees(math.atan2(dy, dx))
         speed = min(max_speed, distance / SLOW_RADIUS_MM * max_speed)
-        movement_controller.move(direction, speed, yaw, 1.0, yaw)
+        movement_controller.move(direction, speed, yaw, 1.0)
         time.sleep(LOOP_DELAY_SECONDS)
 
-    movement_controller.move(0.0, 0.0, yaw, 0.0, yaw)
+    movement_controller.move(0.0, 0.0, yaw, 0.0)
     return last_pose_time, last_mcl_yaw, last_scan_sequence
 
 
@@ -456,13 +449,10 @@ def monitor_pose(
 
 def main():
     args = parse_args()
+    from lib.hardware_controller import MotorCommunicationError
+
     from lib import lidar
-    from lib.imu import IMU
-    from lib.movement import (
-        LidarVelocityEstimator,
-        MotorCommunicationError,
-        MovementController,
-    )
+    from lib.hardware_test_utils import create_hardware
 
     mode = "RAW (trust diagnostic only)" if args.raw_odometry else "TRUST-SCALED"
     print(f"Odometry mode: {mode}; maximum speed: {args.max_speed:g} mm/s")
@@ -486,8 +476,9 @@ def main():
         while not lidar.is_scan_ready():
             time.sleep(0.1)
 
-        print("Initializing IMU...")
-        imu = IMU()
+        print("Initializing native motors and IMU...")
+        imu = create_hardware(max_motor_rpm=MAX_MOTOR_RPM)
+        movement_controller = imu
         startup_yaw = capture_startup_yaw(imu)
         print(f"Startup yaw reference set to {startup_yaw:.1f} deg")
         feed_imu_yaw_prior(lidar, imu, startup_yaw)
@@ -532,16 +523,6 @@ def main():
                 send_log_module=send_log_module,
             )
         else:
-            i2c_addresses = load_config().i2c_addresses
-            print(f"Initializing motors at I2C addresses: {i2c_addresses}")
-            movement_controller = MovementController.from_i2c_addresses(
-                i2c_addresses,
-                WHEEL_DIAMETER,
-                MAX_YAW_RPM,
-                MAX_MOTOR_RPM,
-                YAW_CORRECT_THRESHOLD,
-            )
-
             print(
                 "Enter target coordinates in mm. Localisation keeps running "
                 "while you type. Press Ctrl+C to quit."
@@ -595,10 +576,8 @@ def main():
         print(exc)
         raise
     finally:
-        if movement_controller is not None:
-            movement_controller.stop()
         if imu is not None:
-            imu.close()
+            imu.stop()
         try:
             lidar.shutdown()
         except Exception as exc:

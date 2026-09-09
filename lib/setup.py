@@ -1,11 +1,12 @@
 """
-Build script for the lidar pybind11 module.
+Build the LIDAR and hardware-controller pybind11 modules.
 
 Usage (from project root):
     python lib/setup.py build_ext --inplace
 """
 
 import json
+import os
 import sysconfig
 from pathlib import Path
 
@@ -44,11 +45,40 @@ lidar_module = Extension(
 )
 
 
+hardware_module = Extension(
+    'lib.hardware_controller',
+    sources=[str(lib_dir / name) for name in (
+        'hardware_module.cpp', 'hardware_controller.cpp',
+        'PowerfulBLDCdriver.cpp', 'linux_wire.cpp',
+        'linux_kicker.cpp', 'imu/linux_bno08x.cpp', 'imu/sh2.c', 'imu/shtp.c',
+        'imu/sh2_SensorValue.c', 'imu/sh2_util.c',
+    )],
+    include_dirs=[pybind11_include, str(lib_dir)],
+    libraries=['pthread'],
+    extra_compile_args=['-std=c++17', '-O2', '-fPIC'],
+    language='c++',
+)
+
+
 class BuildExtWithCompileCommands(build_ext):
     """Build the extension and emit compile_commands.json for IDE/clangd."""
 
     def build_extensions(self):
-        super().build_extensions()
+        # The vendor SH-2 core is C, not C++; keep its C initializers and linkage.
+        original_compile = self.compiler._compile
+
+        def compile_source(obj, src, ext, cc_args, extra_postargs, pp_opts):
+            flags = list(extra_postargs or [])
+            if Path(src).suffix == ".c":
+                flags = [flag for flag in flags if not flag.startswith("-std=")]
+                flags.append("-std=c11")
+            return original_compile(obj, src, ext, cc_args, flags, pp_opts)
+
+        self.compiler._compile = compile_source
+        try:
+            super().build_extensions()
+        finally:
+            self.compiler._compile = original_compile
         python_include = sysconfig.get_path("include")
         commands = []
         for ext in self.extensions:
@@ -58,11 +88,16 @@ class BuildExtWithCompileCommands(build_ext):
             compile_flags.append(f"-I{python_include}")
             for source in ext.sources:
                 source_path = Path(source)
+                source_flags = list(compile_flags)
+                is_c = source_path.suffix == ".c"
+                if is_c:
+                    source_flags = [flag for flag in source_flags if not flag.startswith("-std=")]
+                    source_flags.append("-std=c11")
                 commands.append(
                     {
                         "directory": str(project_root),
                         "command": " ".join(
-                            ["g++", *compile_flags, "-c", source_path.name]
+                            ["gcc" if is_c else "g++", *source_flags, "-c", str(source_path)]
                         ),
                         "file": str(source_path),
                     }
@@ -73,9 +108,10 @@ class BuildExtWithCompileCommands(build_ext):
 
 
 setup(
-    name='lib.lidar',
+    name='soccer-hardware',
     version='1.0',
-    description='RPLidar C1 Python module',
-    ext_modules=[lidar_module],
+    description='Soccer LIDAR and motor hardware modules',
+    ext_modules=([hardware_module] if os.environ.get("SOCCER_HARDWARE_ONLY") == "1"
+                 else [lidar_module, hardware_module]),
     cmdclass={'build_ext': BuildExtWithCompileCommands},
 )

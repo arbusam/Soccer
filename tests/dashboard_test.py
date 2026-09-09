@@ -25,7 +25,12 @@ from calibration.dashboard import (
 )
 from calibration.dashboard_hardware import Hardware, target_command
 from calibration_dashboard import DashboardServer
-from lib.localisation_service import LocalisationSession
+from lib.localisation_service import (
+    LidarVelocityEstimator,
+    LocalisationSession,
+    capture_startup_yaw,
+    feed_imu_yaw_prior,
+)
 from lib.opencv import DEFAULT_THRESHOLDS, OpenCV, load_thresholds, validate_thresholds
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -232,16 +237,16 @@ def test_ball_samples_fit_save_reload_and_stale_rejection(dashboard):
 def movement(monkeypatch):
     driver = types.ModuleType("steelbar_powerful_bldc_driver")
     driver.PowerfulBLDCDriver = FakeMotor
-    bus = types.ModuleType("lib.i2c_bus")
+    bus = types.ModuleType("legacy.i2c_bus")
     lock = threading.RLock()
     bus.get_shared_i2c_lock = lambda: lock
     bus.get_shared_i2c_bus = lambda: object()
     monkeypatch.setitem(sys.modules, "steelbar_powerful_bldc_driver", driver)
-    monkeypatch.setitem(sys.modules, "lib.i2c_bus", bus)
-    spec = importlib.util.spec_from_file_location("dashboard_test_movement", ROOT / "lib/movement.py")
+    monkeypatch.setitem(sys.modules, "legacy.i2c_bus", bus)
+    spec = importlib.util.spec_from_file_location("dashboard_test_movement", ROOT / "legacy/movement.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    monkeypatch.setitem(sys.modules, "lib.movement", module)
+    monkeypatch.setitem(sys.modules, "legacy.movement", module)
     return module
 
 
@@ -266,12 +271,9 @@ class FakeMotor:
         return method
 
 
-def test_four_motor_setup_and_controller_stop(movement):
-    motors, count, _ = movement.get_motors_for_calibration([28, 32, 31, 30])
+def test_four_motor_calibration_setup(movement):
+    _motors, count, _ = movement.get_motors_for_calibration([28, 32, 31, 30])
     assert count == 4
-    controller = movement.MovementController(motors, [12]*4, 50, 100, 400, 3)
-    controller.stop()
-    assert all(("set_speed", (0,)) in motor.calls for motor in motors)
 
 
 @pytest.mark.parametrize("mode", ["cancel", "timeout", "failure", "success"])
@@ -341,7 +343,11 @@ class FakeLidar:
 
 
 class FakeIMU:
-    update_count = 1
+    imu_update_count = 1
+
+    def __init__(self):
+        self._running = True
+        self.moves = []
     def get_yaw(self):
         return 10
 
@@ -349,13 +355,37 @@ class FakeIMU:
         return 0
 
     def close(self):
-        pass
+        self.stop()
+
+    def stop(self):
+        self._running = False
+
+    def move(self, *args, **kwargs):
+        self.moves.append((args, kwargs))
+
+    def get_measured_body_velocity_mm_s(self, _yaw):
+        return 0.0, 0.0
 
 
-def test_localisation_predicts_without_fix_and_flags_stale_data(movement):
+def test_localisation_uses_native_relative_yaw_directly():
+    hardware = FakeIMU()
+    samples = iter((179.0, -179.0))
+    hardware.get_raw_imu_yaw = lambda: next(samples)
+    hardware.set_startup_yaw = lambda yaw: setattr(hardware, "startup_yaw", yaw)
+    startup = capture_startup_yaw(hardware, sample_count=2, sample_interval=0)
+    assert abs(abs(startup) - 180.0) < 1e-6
+    assert hardware.startup_yaw == startup
+    lidar = FakeLidar()
+    lidar.prior = None
+    lidar.set_imu_yaw = lambda yaw: setattr(lidar, "prior", yaw)
+    feed_imu_yaw_prior(lidar, hardware, startup)
+    assert lidar.prior == 10
+
+
+def test_localisation_predicts_without_fix_and_flags_stale_data():
     lidar, imu = FakeLidar(), FakeIMU()
     now = [time.monotonic()]
-    session = LocalisationSession(lidar, imu, 10, movement.LidarVelocityEstimator(), clock=lambda: now[0])
+    session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator(), clock=lambda: now[0])
     lidar.ok = False
     assert not session.tick()["pose"][4]
     assert len(lidar.predictions) == 1 and lidar.predictions[0][:2] == (0, 0)
@@ -386,15 +416,15 @@ def test_stop_localisation_releases_session_and_clears_diagnostics(tmp_path):
         hardware.close()
 
 
-def test_drive_abort_and_repeated_sessions(movement, tmp_path):
+def test_drive_abort_and_repeated_sessions(tmp_path):
     logs = []
     hardware = Hardware(tmp_path, lambda text, **_kwargs: logs.append(text))
     try:
         lidar, imu = FakeLidar(), FakeIMU()
-        hardware.session = LocalisationSession(lidar, imu, 10, movement.LidarVelocityEstimator())
+        hardware.session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator())
         hardware.pause = types.SimpleNamespace(read=lambda: False, switch=types.SimpleNamespace(deinit=lambda: None))
         for _ in range(2):
-            controller = movement.MovementController([FakeMotor() for _ in range(4)], [12]*4, 50, 100, 400, 3)
+            controller = imu
             event = threading.Event()
             with hardware.lock:
                 hardware.controller = controller
@@ -407,7 +437,8 @@ def test_drive_abort_and_repeated_sessions(movement, tmp_path):
             # Aborted target must not resume if a new fix arrives.
             assert hardware.target is None
             if hardware.session is None:
-                hardware.session = LocalisationSession(lidar, imu, 10, movement.LidarVelocityEstimator())
+                imu = FakeIMU()
+                hardware.session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator())
     finally:
         hardware.close()
 
@@ -457,18 +488,18 @@ def test_http_origin_control_and_shared_previews(dashboard):
 
 
 @pytest.mark.parametrize("cause", ["pose", "pause", "stale"])
-def test_hardware_aborts_on_pose_pause_or_staleness(cause, movement, tmp_path):
+def test_hardware_aborts_on_pose_pause_or_staleness(cause, tmp_path):
     hardware = Hardware(tmp_path, lambda *_args, **_kwargs: None)
     try:
         lidar, imu = FakeLidar(), FakeIMU()
-        session = LocalisationSession(lidar, imu, 10, movement.LidarVelocityEstimator())
+        session = LocalisationSession(lidar, imu, 10, LidarVelocityEstimator())
         session.tick()
         if cause == "pose":
             lidar.ok = False
         if cause == "stale":
             session.last_scan_time -= 2
         hardware.pause = types.SimpleNamespace(read=lambda: cause == "pause", switch=types.SimpleNamespace(deinit=lambda: None))
-        controller = movement.MovementController([FakeMotor() for _ in range(4)], [12]*4, 50, 100, 400, 3)
+        controller = imu
         with hardware.lock:
             hardware.session = session
             hardware.controller = controller
@@ -483,7 +514,7 @@ def test_hardware_aborts_on_pose_pause_or_staleness(cause, movement, tmp_path):
         hardware.close()
 
 
-def test_repeated_drive_initializes_new_controller(movement, monkeypatch, tmp_path):
+def test_repeated_drive_reuses_localisation_controller(monkeypatch, tmp_path):
     config = types.ModuleType("lib.config")
     config.load_config = lambda: types.SimpleNamespace(pause_switch_pin=None)
     switch = types.ModuleType("lib.switch")
@@ -499,7 +530,7 @@ def test_repeated_drive_initializes_new_controller(movement, monkeypatch, tmp_pa
     hardware.closing.set()
     hardware.thread.join(1)
     try:
-        session = LocalisationSession(FakeLidar(), FakeIMU(), 10, movement.LidarVelocityEstimator())
+        session = LocalisationSession(FakeLidar(), FakeIMU(), 10, LidarVelocityEstimator())
         session.tick()
         hardware.session = session
         controllers = []
@@ -509,8 +540,8 @@ def test_repeated_drive_initializes_new_controller(movement, monkeypatch, tmp_pa
             controllers.append(hardware.controller)
             hardware.stop_drive()
             assert hardware.controller is None and hardware.target is None
-        assert controllers[0] is not controllers[1]
-        assert all(not controller._running for controller in controllers)
+        assert controllers[0] is controllers[1] is session.imu
+        assert session.imu._running
     finally:
         hardware.close()
 
@@ -630,4 +661,3 @@ def test_watchdog_disarms_if_localisation_worker_stalls(dashboard):
     assert not dashboard.lease.armed and dashboard.hardware.stops > 0
     dashboard.closing.set()
     thread.join(1)
-

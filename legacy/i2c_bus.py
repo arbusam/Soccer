@@ -1,4 +1,4 @@
-"""Process-wide I2C bus and transaction lock.
+"""Legacy process-wide I2C bus and transaction lock.
 
 All devices on the Raspberry Pi's primary I2C bus must use these shared
 objects so background threads cannot overlap multi-transaction device access.

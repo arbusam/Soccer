@@ -1,23 +1,19 @@
 import time
 
-from lib.imu import IMU
+from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
-imu = IMU()
+hardware = create_hardware()
 
 try:
+    startup = set_startup_yaw(hardware)
+    print(f"Startup yaw reference set to {startup:.6f} deg")
     while True:
         time.sleep(0.5)
-        yaw = imu.get_yaw()
-        gyro_z = imu.get_gyro_z_deg_s()
-        if yaw is None:
-            print("Yaw: waiting for quaternion...")
-        else:
-            print(f"Yaw: {yaw:.6f} deg")
-        if gyro_z is None:
-            print("Gyro Z: waiting for gyro report...")
-        else:
-            print(f"Gyro Z: {gyro_z:.3f} deg/s")
+        yaw = hardware.get_yaw()
+        gyro_z = hardware.get_gyro_z_deg_s()
+        print("Yaw: waiting for quaternion..." if yaw is None else f"Yaw: {yaw:.6f} deg")
+        print("Gyro Z: waiting for report..." if gyro_z is None else f"Gyro Z: {gyro_z:.3f} deg/s")
 except KeyboardInterrupt:
     pass
 finally:
-    imu.close()
+    hardware.stop()

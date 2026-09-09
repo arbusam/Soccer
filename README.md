@@ -16,7 +16,9 @@ This repo was created to share our code to provide inspiration to other teams. H
 
 `training/` contains all the code used to train our models on my hardware. I do not recommend using this code as it was only used to train a very specific model with a very specific setup on my specific computer.
 
-`legacy/` contains code that is no longer used
+`legacy/` contains retired runtime implementations and the Python motor code
+still required by the calibration workflow. Normal robot operation uses the
+native `lib.hardware_controller` extension.
 
 The below files are the most important, and have more information about them in comments inside of them.
 
