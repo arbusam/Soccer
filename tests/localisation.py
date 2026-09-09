@@ -62,9 +62,14 @@ def parse_args():
         action="store_true",
         help="Disable motors; only print/stream localized pose.",
     )
-    parser.add_argument(
-        "--raw-odometry", action="store_true",
-        help="Feed measured wheel velocity without trust scaling; still report trust.",
+    odometry_mode = parser.add_mutually_exclusive_group()
+    odometry_mode.add_argument(
+        "--raw-odometry", dest="raw_odometry", action="store_true", default=True,
+        help="Feed measured wheel velocity without trust scaling (default).",
+    )
+    odometry_mode.add_argument(
+        "--scaled-odometry", dest="raw_odometry", action="store_false",
+        help="Restore legacy trust scaling for comparison tests.",
     )
     parser.add_argument(
         "--max-speed", type=float, default=MAX_SPEED_MM_S,
@@ -239,7 +244,7 @@ def drive_to_target(
     last_scan_sequence=0,
     stream_enabled=False,
     send_log_module=None,
-    apply_trust=True,
+    apply_trust=False,
     max_speed=MAX_SPEED_MM_S,
 ):
     """Drive toward (target_x, target_y) using localized pose feedback."""
@@ -330,7 +335,7 @@ def wait_for_target_while_localising(
     stream_enabled=False,
     send_log_module=None,
     movement_controller=None,
-    apply_trust=True,
+    apply_trust=False,
 ):
     """Keep feeding MCL until the user enters a target (x, y).
 

@@ -84,9 +84,13 @@ def predict_odometry(
     yaw_deg,
     last_pose_time,
     *,
-    apply_trust=True,
+    apply_trust=False,
 ):
-    """Feed wheel and gyro measurements into MCL; optionally bypass trust scaling."""
+    """Feed raw wheel and gyro measurements into MCL, retaining diagnostic trust.
+
+    ``apply_trust=True`` restores legacy scaling for comparison tests only.
+    Fused-pose velocity is not independent evidence of wheel slip.
+    """
     from lib.movement import compute_wheel_odometry_trust
 
     now = time.monotonic()

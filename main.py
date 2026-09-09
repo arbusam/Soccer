@@ -16,10 +16,8 @@ from lib.config import BotMode, load_config
 from lib.imu import IMU
 from lib.kicker import Kicker
 from lib.movement import (
-    LidarVelocityEstimator,
     MotorCommunicationError,
     MovementController,
-    compute_wheel_odometry_trust,
     imu_yaw_to_relative_yaw,
 )
 from lib.recording_session import RecordingSession
@@ -388,7 +386,6 @@ try:
     last_camera_frame_id = camera.frame_id
     last_camera_bot_positions = []
     last_pose_time = time.monotonic()
-    lidar_velocity = LidarVelocityEstimator()
 
     fps_monitor = None
     if args.fps:
@@ -472,24 +469,13 @@ try:
             vx, vy = 0.0, 0.0
             if movement_controller is not None:
                 yaw_for_odom = yaw if yaw is not None else 0.0
-                vx_wheel, vy_wheel = movement_controller.get_measured_body_velocity_mm_s(
+                # Fused-pose speed agreement is diagnostic, not a velocity scale.
+                vx, vy = movement_controller.get_measured_body_velocity_mm_s(
                     yaw_for_odom
                 )
-                lidar_vx, lidar_vy = lidar_velocity.get_body_velocity(yaw_for_odom)
-                trust = compute_wheel_odometry_trust(
-                    vx_wheel,
-                    vy_wheel,
-                    lidar_vx,
-                    lidar_vy,
-                    lidar_velocity.is_fresh(now_pose),
-                )
-                vx = trust * vx_wheel
-                vy = trust * vy_wheel
             lidar.predict_odometry(vx, vy, omega, dt_pose)
 
             x_pos, y_pos, _mcl_yaw, _confidence = lidar.get_pose()
-            if x_pos is not None and y_pos is not None and yaw is not None:
-                lidar_velocity.update(x_pos, y_pos, yaw, now_pose)
             if x_pos is None or y_pos is None or yaw is None:
                 time.sleep(0.01)
                 continue
