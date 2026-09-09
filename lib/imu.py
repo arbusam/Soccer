@@ -5,7 +5,6 @@ import time
 from adafruit_bno08x import BNO_REPORT_GAME_ROTATION_VECTOR, BNO_REPORT_GYROSCOPE
 from adafruit_bno08x.i2c import BNO08X_I2C
 
-from lib import timing
 from lib.i2c_bus import get_shared_i2c_bus, get_shared_i2c_lock
 
 
@@ -21,7 +20,6 @@ class IMU:
         self._latest_yaw = None
         self._latest_gyro = None
         self._update_count = 0
-        self._sample_ns = None
 
         if i2c_bus is None:
             i2c_bus = get_shared_i2c_bus()
@@ -35,26 +33,19 @@ class IMU:
         self._thread.start()
 
     def _update_loop(self):
-        previous_ns = None
         while self._running:
             try:
-                with timing.measured_lock(self._i2c_lock, "imu"):
+                with self._i2c_lock:
                     quat_i, quat_j, quat_k, quat_real = self._bno.game_quaternion
                     yaw = self._quaternion_to_yaw_degrees(
                         quat_i, quat_j, quat_k, quat_real
                     )
                     gyro = self._bno.gyro
-                sample_ns = timing.now_ns() if timing.active is not None else None
                 with self._lock:
-                    self._sample_ns = sample_ns
                     self._latest_quaternion = (quat_i, quat_j, quat_k, quat_real)
                     self._latest_yaw = yaw
                     self._latest_gyro = gyro
                     self._update_count += 1
-                if sample_ns is not None:
-                    if previous_ns is not None:
-                        timing.record("imu.interval", previous_ns, sample_ns)
-                    previous_ns = sample_ns
             except Exception:
                 # Keep the updater alive if a read occasionally fails.
                 pass
@@ -78,11 +69,6 @@ class IMU:
     def get_yaw(self):
         with self._lock:
             return self._latest_yaw
-
-    def get_yaw_sample(self):
-        """Yaw and host read-completion timestamp (timestamp only with timing enabled)."""
-        with self._lock:
-            return self._latest_yaw, self._sample_ns
 
     def get_gyro_z_deg_s(self):
         """Z-axis turn rate in project frame (deg/s, clockwise positive).

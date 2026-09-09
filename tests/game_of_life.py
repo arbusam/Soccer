@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 # Copyright (c) 2014-2023 Richard Hull and contributors
 # See LICENSE.rst for details.
 # PYTHON_ARGCOMPLETE_OK
@@ -11,11 +13,8 @@ http://codereview.stackexchange.com/a/108121
 
 import time
 from random import randint
-
-from luma.core.render import canvas
-
 from lib.display import Display
-
+from luma.core.render import canvas
 
 def neighbors(cell):
     x, y = cell
@@ -30,8 +29,8 @@ def neighbors(cell):
 
 
 def iterate(board):
-    new_board = set()
-    candidates = board.union({n for cell in board for n in neighbors(cell)})
+    new_board = set([])
+    candidates = board.union(set(n for cell in board for n in neighbors(cell)))
     for cell in candidates:
         count = sum((n in board) for n in neighbors(cell))
         if count == 3 or (count == 2 and cell in board):
@@ -47,7 +46,7 @@ def main():
     initial_population = int(cols * rows * 0.33)
 
     while True:
-        board = {(randint(0, cols), randint(0, rows)) for _ in range(initial_population)}
+        board = set((randint(0, cols), randint(0, rows)) for _ in range(initial_population))
 
         for i in range(500):
             with canvas(display.device, dither=True) as draw:

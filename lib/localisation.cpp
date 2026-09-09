@@ -1,7 +1,4 @@
 #include "localisation.h"
-#include "timing_native.h"
-#include <future>
-#include <thread>
 
 #include <algorithm>
 #include <chrono>
@@ -732,7 +729,7 @@ static std::vector<Observation> bin_observations(const LocScanPoint* points, int
 }
 
 void loc_init_map(float pitch_x, float pitch_y) {
-    timing::Lock lock(g_loc_mutex, "loc_init_map.wait", "loc_init_map.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     g_pitch_x = pitch_x;
     g_pitch_y = pitch_y;
     g_static_segments.clear();
@@ -747,13 +744,13 @@ void loc_init_map(float pitch_x, float pitch_y) {
 }
 
 void loc_set_imu_yaw(float yaw_deg) {
-    timing::Lock lock(g_loc_mutex, "loc_set_imu_yaw.wait", "loc_set_imu_yaw.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     g_imu_yaw_deg = wrap_angle_deg(yaw_deg);
     g_imu_yaw_valid = true;
 }
 
 void loc_start() {
-    timing::Lock lock(g_loc_mutex, "loc_start.wait", "loc_start.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     init_particles_uniform();
     g_odometry_history.clear();
     reset_recovery_state();
@@ -765,7 +762,7 @@ void loc_start() {
 }
 
 void loc_stop() {
-    timing::Lock lock(g_loc_mutex, "loc_stop.wait", "loc_stop.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     g_started = false;
     g_ready = false;
     g_imu_yaw_valid = false;
@@ -778,7 +775,7 @@ void loc_stop() {
 }
 
 void loc_reset() {
-    timing::Lock lock(g_loc_mutex, "loc_reset.wait", "loc_reset.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     if (!g_started) {
         return;
     }
@@ -796,7 +793,7 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
         return;
     }
 
-    timing::Lock lock(g_loc_mutex, "loc_predict_odometry.wait", "loc_predict_odometry.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     if (!g_started || g_particles.empty()) {
         return;
     }
@@ -830,9 +827,8 @@ void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float
 void loc_update_scan(const LocScanPoint* points, int count,
                      float min_range_mm, float max_range_mm, int min_quality,
                      double scan_time_s) {
-    timing::Scope scan_timing("scan.skipped");
     {
-        timing::Lock lock(g_loc_mutex, "loc_update_scan.wait", "loc_update_scan.hold");
+        std::lock_guard<std::mutex> lock(g_loc_mutex);
         if (g_scan_updates_paused || !g_started || g_particles.empty()) {
             return;
         }
@@ -851,7 +847,7 @@ void loc_update_scan(const LocScanPoint* points, int count,
         return;
     }
 
-    timing::Lock lock(g_loc_mutex, "loc_update_scan.wait", "loc_update_scan.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     if (g_scan_updates_paused || !g_started || g_particles.empty()) {
         return;
     }
@@ -955,7 +951,6 @@ void loc_update_scan(const LocScanPoint* points, int count,
         }
     }
 
-    scan_timing.name = "scan.accepted";
     g_pose = estimate_pose_from_particles(nullptr, 0);
     g_pose.confidence = scan_pose.confidence;
     g_pose.ok = scan_pose.ok;
@@ -977,27 +972,27 @@ void loc_update_scan(const LocScanPoint* points, int count,
 }
 
 bool loc_scan_updates_allowed() {
-    timing::Lock lock(g_loc_mutex, "loc_scan_updates_allowed.wait", "loc_scan_updates_allowed.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     return !g_scan_updates_paused;
 }
 
 bool loc_is_ready() {
-    timing::Lock lock(g_loc_mutex, "loc_is_ready.wait", "loc_is_ready.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     return g_ready && g_pose.ok;
 }
 
 LocPose loc_get_pose() {
-    timing::Lock lock(g_loc_mutex, "loc_get_pose.wait", "loc_get_pose.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     return g_pose;
 }
 
 LocScanCorrection loc_get_last_scan_correction() {
-    timing::Lock lock(g_loc_mutex, "loc_get_last_scan_correction.wait", "loc_get_last_scan_correction.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     return g_last_scan_correction;
 }
 
 LocRecoveryStatus loc_get_recovery_status() {
-    timing::Lock lock(g_loc_mutex, "loc_get_recovery_status.wait", "loc_get_recovery_status.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     return {
         g_last_scan_quality,
         g_scan_quality_baseline,
@@ -1008,7 +1003,7 @@ LocRecoveryStatus loc_get_recovery_status() {
 }
 
 std::vector<LocParticle> loc_get_particles() {
-    timing::Lock lock(g_loc_mutex, "loc_get_particles.wait", "loc_get_particles.hold");
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
     std::vector<LocParticle> result;
     result.reserve(g_particles.size());
     for (const auto& particle : g_particles) {
@@ -1018,31 +1013,3 @@ std::vector<LocParticle> loc_get_particles() {
     }
     return result;
 }
-
-// Controlled contention for hardware-free binding tests; never used in live control.
-namespace {
-struct TestMutexWorker {
-    std::thread thread;
-    ~TestMutexWorker() { if (thread.joinable()) thread.join(); }
-};
-TestMutexWorker test_mutex_worker;
-std::atomic<timing::Ns> test_mutex_released{0};
-}
-void loc_test_hold_mutex(int milliseconds) {
-    if (milliseconds < 1 || milliseconds > 1000)
-        throw std::invalid_argument("Mutex test duration must be 1..1000 ms");
-    if (test_mutex_worker.thread.joinable()) test_mutex_worker.thread.join();
-    test_mutex_released.store(0);
-    auto acquired = std::make_shared<std::promise<void>>();
-    auto ready = acquired->get_future();
-    test_mutex_worker.thread = std::thread([milliseconds, acquired]() {
-        {
-            std::lock_guard<std::mutex> lock(g_loc_mutex);
-            acquired->set_value();
-            std::this_thread::sleep_for(std::chrono::milliseconds(milliseconds));
-            test_mutex_released.store(timing::now());
-        }
-    });
-    ready.wait();
-}
-std::int64_t loc_test_mutex_released_ns() { return test_mutex_released.load(); }

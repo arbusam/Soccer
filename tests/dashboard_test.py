@@ -631,39 +631,3 @@ def test_watchdog_disarms_if_localisation_worker_stalls(dashboard):
     dashboard.closing.set()
     thread.join(1)
 
-
-def test_drive_timing_counts_failed_batches_without_false_completions(movement, monkeypatch):
-    from lib import timing
-
-    rows = []
-
-    class Sink:
-        def record(self, name, start, end=None, value=None):
-            rows.append((name, start, end, value))
-
-    monkeypatch.setattr(timing, 'active', Sink())
-    # Run the real loop synchronously with fake drivers, stopping after three ticks.
-    monkeypatch.setattr(threading.Thread, 'start', lambda self: None)
-    controller = movement.MovementController([FakeMotor() for _ in range(4)], [12]*4, 50, 100, 400, 3)
-    calls = 0
-
-    def write(*_args, **_kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 6:
-            raise movement.MotorCommunicationError('injected second-batch failure')
-        if calls == 10:
-            controller._running = False
-
-    monkeypatch.setattr(movement, '_set_motor_speed', write)
-    controller.move(0, 100, 0, 1, 0, yaw_sample_ns=timing.now_ns())
-    controller._drive_loop()
-    names = [row[0] for row in rows]
-    assert names.count('drive.interval') == 2
-    assert names.count('drive.writes.interval') == 1
-    assert names.count('drive.writes.failure') == 1
-    assert names.count('i2c.drive.hold') == 3
-    assert names.count('drive.command_age') == 3
-    assert names.count('drive.yaw_age') == 3
-    with pytest.raises(movement.MotorCommunicationError):
-        controller.move(0, 0, 0, 0, 0)

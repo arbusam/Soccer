@@ -243,27 +243,3 @@ def inference_diagnostics_keep_source_pixels_and_all_boxes():
     again = camera.get_diagnostic_snapshot()
     np.testing.assert_array_equal(again["frame"], source)
     assert len(again["bots"]) == 1
-
-
-def test_inference_timing_preserves_capture_age(monkeypatch, tmp_path):
-    from lib import timing
-
-    camera_module = _import_camera_without_picamera_hardware()
-    camera = _make_camera_for_infer(camera_module)
-    recorder = timing.Recorder(warmup=0, duration=10)
-    monkeypatch.setattr(timing, 'active', recorder)
-    camera._latest_capture_monotonic = timing.now_ns() / 1e9
-    camera._detect_scene = lambda _frame: (None, [])
-    camera.detection_callback = lambda _event: camera._infer_stop.set()
-    try:
-        camera._infer_loop()
-        assert camera.get_scene_measurement() == (1, None, None, [])
-        summary = recorder.finish(tmp_path / 'camera.json')
-        metrics = summary['metrics']
-        assert metrics['camera.publish_age']['count'] == 1
-        assert metrics['camera.consume_age']['count'] == 1
-        assert metrics['camera.colour']['count'] == 1
-        assert metrics['camera.consume_age']['max_ms'] >= metrics['camera.publish_age']['max_ms']
-    finally:
-        recorder.stop.set()
-        recorder.thread.join(timeout=1)

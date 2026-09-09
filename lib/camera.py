@@ -23,7 +23,6 @@ from calibration.ball_distance import (
     load_distance_calibration,
     predict_distance_from_calibration,
 )
-from lib import timing
 from lib.hailo_ball import HailoBallDetector
 from lib.opencv import OpenCV
 
@@ -132,7 +131,6 @@ class Camera:
             self._distance = None
             self._bot_measurements = []
             self._frame_id = 0
-            self._measurement_capture_ns = None
             self._measurement_lock = threading.Lock()
             self._capture_started = False
             self._recording = False
@@ -307,16 +305,12 @@ class Camera:
             with self._measurement_lock:
                 return self._frame_id, None, None, []
         with self._measurement_lock:
-            capture_ns = self._measurement_capture_ns if timing.active is not None else None
-            result = (
+            return (
                 self._frame_id,
                 self._bearing,
                 self._distance,
                 list(self._bot_measurements),
             )
-        if capture_ns is not None:
-            timing.record("camera.consume_age", capture_ns)
-        return result
 
     def set_callback(self, callback_function):
         self.user_callback = callback_function
@@ -443,9 +437,8 @@ class Camera:
                 time.sleep(0.0005)
                 continue
 
-            inference_frame = timing.call("camera.colour", cv2.cvtColor, frame, cv2.COLOR_BGR2RGB)
-            detection, bot_detections = timing.call("camera.detect_scene", self._detect_scene, inference_frame)
-            post_start = timing.now_ns() if timing.active is not None else None
+            inference_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            detection, bot_detections = self._detect_scene(inference_frame)
             frame_h, frame_w = frame.shape[:2]
             bot_measurements = []
             if detection is not None:
@@ -478,8 +471,6 @@ class Camera:
             yellow_contours = cv.process_image(hsv_frame, False)
 
             with self._measurement_lock:
-                if timing.active is not None:
-                    self._measurement_capture_ns = round(capture_time * 1e9)
                 self._last_detection = detection
                 self._bearing = new_bearing
                 self._distance = new_distance
@@ -498,10 +489,6 @@ class Camera:
                         "ball": copy.deepcopy(detection),
                         "bots": copy.deepcopy(bot_detections),
                     }
-
-            if post_start is not None:
-                timing.record("camera.scene_postprocess", post_start)
-                timing.record("camera.publish_age", round(capture_time * 1e9))
 
             if self.detection_callback is not None:
                 if (
@@ -644,9 +631,6 @@ class Camera:
                         self._latest_sensor_timestamp_ns = sensor_timestamp_ns
                         self._latest_capture_monotonic = capture_monotonic
 
-                    if timing.active is not None:
-                        capture_ns = round(capture_monotonic * 1e9)
-                        timing.record("camera.capture", capture_ns, capture_ns)
                     with self._measurement_lock:
                         detection = self._last_detection
 

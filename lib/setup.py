@@ -6,7 +6,6 @@ Usage (from project root):
 """
 
 import json
-import os
 import sysconfig
 from pathlib import Path
 
@@ -41,8 +40,6 @@ lidar_module = Extension(
     library_dirs=[sdk_lib],
     libraries=['sl_lidar_sdk', 'pthread', 'rt'],
     extra_compile_args=['-std=c++11', '-O2', '-fPIC'],
-    define_macros=([('SOCCER_LIDAR_HOLD_GIL', '1')]
-                   if os.environ.get('SOCCER_LIDAR_HOLD_GIL') == '1' else []),
     language='c++',
 )
 

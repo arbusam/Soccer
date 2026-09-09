@@ -67,7 +67,4 @@ LocScanCorrection loc_get_last_scan_correction();
 LocRecoveryStatus loc_get_recovery_status();
 std::vector<LocParticle> loc_get_particles();
 
-void loc_test_hold_mutex(int milliseconds);
-std::int64_t loc_test_mutex_released_ns();
-
 #endif

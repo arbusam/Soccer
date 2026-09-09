@@ -51,7 +51,7 @@ Whenever you finish writing code, lint with `.venv/bin/ruff check` (or `.venv/bi
 
 **Problem:** LIDAR often drops walls at extreme incidence angles. The old hit-only Gaussian treated every surviving return as a perfect first-wall match and ignored missing bearings, so partial scans could under-constrain or destabilize the pose.
 
-**Solution:** Model visibility from incidence angle; score explicit misses; lower confidence when geometry is under-constrained. Offline check: `.venv/bin/python -m pytest tests/localisation_timing_test.py -q` (uses `lidar.test_mcl_*` hooks, no hardware; the old `test_grazing_localisation.py` reference pointed to a missing file).
+**Solution:** Model visibility from incidence angle; score explicit misses; lower confidence when geometry is under-constrained. Offline check: `python test_grazing_localisation.py` (uses `lidar.test_mcl_*` hooks, no hardware).
 
 **Python API** (import with `from lib import lidar`):
 
@@ -202,9 +202,3 @@ Continue to use the apt-provided NumPy, OpenCV, and Picamera2 packages rather th
 **Problem:** The existing MJPEG preview draws old inference results onto newer capture frames; its pixels are therefore unsuitable for exact distance samples or colour picking.
 
 **Solution:** `Camera(diagnostics=True)` publishes `get_diagnostic_snapshot()` containing an owned copy of the unannotated inference frame, matching ball/bot boxes, and the source capture's monotonic timestamp. The dashboard renders from that snapshot and rejects stale samples. Pixel picking uses a separately retained lossless source frame, not JPEG/overlay pixels. Diagnostic copies are disabled for ordinary camera callers.
-
-## Localization mutex and Python GIL
-
-**Problem:** Native localization threads do not need the GIL, but can indirectly stall all Python threads. `loc_update_scan()` holds `g_loc_mutex` throughout particle scoring/resampling. Python bindings such as `set_imu_yaw`, `predict_odometry`, and pose getters previously retained the GIL while waiting for that same mutex. A main-loop call during scoring can therefore delay the Python drive and IMU threads too.
-
-**Solution:** Runtime localization bindings now release the GIL around native-only calls and mutex waits, including `get_mcl_update_count()` used by `--fps`. Tuple-returning wrappers reacquire it before constructing Python objects. Initialization/shutdown retain their previous serialization. Callers still wait for the localization mutex. See [docs/localisation_timing.md](docs/localisation_timing.md) for `--timing-output`, the build-time `SOCCER_LIDAR_HOLD_GIL=1` baseline (requires `--force`), and hardware-free concurrency tests. `get_mcl_update_count()` counts confident scan corrections, not all accepted scans; native `scan.accepted` timing events provide the latter. Capture drive jitter, binding/native mutex latency, I2C waits, sensor ages and camera stages before deciding on a C++ control rewrite.
