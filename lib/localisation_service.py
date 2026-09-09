@@ -83,8 +83,10 @@ def predict_odometry(
     lidar_velocity,
     yaw_deg,
     last_pose_time,
+    *,
+    apply_trust=True,
 ):
-    """Feed wheel and gyro measurements into the MCL motion model."""
+    """Feed wheel and gyro measurements into MCL; optionally bypass trust scaling."""
     from lib.movement import compute_wheel_odometry_trust
 
     now = time.monotonic()
@@ -112,8 +114,9 @@ def predict_odometry(
             lidar_vy,
             lidar_fresh,
         )
-        vx = trust * vx_wheel
-        vy = trust * vy_wheel
+        scale = trust if apply_trust else 1.0
+        vx = scale * vx_wheel
+        vy = scale * vy_wheel
 
     lidar_module.predict_odometry(vx, vy, omega, dt)
     diagnostics = OdometryDiagnostics(

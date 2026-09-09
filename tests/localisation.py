@@ -17,20 +17,13 @@ import queue
 import threading
 import time
 
-from lib import lidar
 from lib.config import load_config
-from lib.imu import IMU
 from lib.localisation_service import (
     capture_startup_yaw,
     feed_imu_yaw_prior,
     get_position,
     get_yaw,
     predict_odometry,
-)
-from lib.movement import (
-    LidarVelocityEstimator,
-    MotorCommunicationError,
-    MovementController,
 )
 
 TARGET_TOLERANCE_MM = 10
@@ -69,7 +62,18 @@ def parse_args():
         action="store_true",
         help="Disable motors; only print/stream localized pose.",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--raw-odometry", action="store_true",
+        help="Feed measured wheel velocity without trust scaling; still report trust.",
+    )
+    parser.add_argument(
+        "--max-speed", type=float, default=MAX_SPEED_MM_S,
+        help="Maximum translation speed in mm/s (default: 500).",
+    )
+    args = parser.parse_args()
+    if not math.isfinite(args.max_speed) or not 0 < args.max_speed <= MAX_SPEED_MM_S:
+        parser.error("--max-speed must be greater than zero and at most 500 mm/s")
+    return args
 
 
 def format_pose_log_line(x_pos, y_pos, yaw):
@@ -235,6 +239,8 @@ def drive_to_target(
     last_scan_sequence=0,
     stream_enabled=False,
     send_log_module=None,
+    apply_trust=True,
+    max_speed=MAX_SPEED_MM_S,
 ):
     """Drive toward (target_x, target_y) using localized pose feedback."""
     last_status_print = 0.0
@@ -249,6 +255,7 @@ def drive_to_target(
             lidar_velocity,
             yaw_for_odom,
             last_pose_time,
+            apply_trust=apply_trust,
         )
         last_scan_sequence = print_scan_correction_if_new(
             lidar_module, last_scan_sequence
@@ -288,11 +295,11 @@ def drive_to_target(
             break
 
         direction = math.degrees(math.atan2(dy, dx))
-        speed = min(MAX_SPEED_MM_S, distance / SLOW_RADIUS_MM * MAX_SPEED_MM_S)
+        speed = min(max_speed, distance / SLOW_RADIUS_MM * max_speed)
         movement_controller.move(direction, speed, yaw, 1.0, yaw)
         time.sleep(LOOP_DELAY_SECONDS)
 
-    movement_controller.stop()
+    movement_controller.move(0.0, 0.0, yaw, 0.0, yaw)
     return last_pose_time, last_mcl_yaw, last_scan_sequence
 
 
@@ -301,6 +308,10 @@ def _read_target_coordinates(result_queue):
     try:
         target_x = float(input("What x position to move to? "))
         target_y = float(input("What y position to move to? "))
+        if not (math.isfinite(target_x) and math.isfinite(target_y)):
+            raise ValueError("Target coordinates must be finite")
+        if not (0 <= target_x <= PITCH_X and 0 <= target_y <= PITCH_Y):
+            raise ValueError("Target coordinates must be inside the pitch")
         result_queue.put(("ok", target_x, target_y))
     except ValueError as exc:
         result_queue.put(("error", exc))
@@ -319,6 +330,7 @@ def wait_for_target_while_localising(
     stream_enabled=False,
     send_log_module=None,
     movement_controller=None,
+    apply_trust=True,
 ):
     """Keep feeding MCL until the user enters a target (x, y).
 
@@ -363,6 +375,7 @@ def wait_for_target_while_localising(
             lidar_velocity,
             yaw_for_odom,
             last_pose_time,
+            apply_trust=apply_trust,
         )
         last_scan_sequence = print_scan_correction_if_new(
             lidar_module, last_scan_sequence
@@ -438,6 +451,16 @@ def monitor_pose(
 
 def main():
     args = parse_args()
+    from lib import lidar
+    from lib.imu import IMU
+    from lib.movement import (
+        LidarVelocityEstimator,
+        MotorCommunicationError,
+        MovementController,
+    )
+
+    mode = "RAW (trust diagnostic only)" if args.raw_odometry else "TRUST-SCALED"
+    print(f"Odometry mode: {mode}; maximum speed: {args.max_speed:g} mm/s")
     send_log_module = None
     if args.stream:
         from lib import send_log
@@ -536,6 +559,7 @@ def main():
                     stream_enabled=args.stream,
                     send_log_module=send_log_module,
                     movement_controller=movement_controller,
+                    apply_trust=not args.raw_odometry,
                 )
 
                 print_localisation_status(lidar)
@@ -556,6 +580,8 @@ def main():
                     last_scan_sequence,
                     stream_enabled=args.stream,
                     send_log_module=send_log_module,
+                    apply_trust=not args.raw_odometry,
+                    max_speed=args.max_speed,
                 )
                 print(f"Reached target ({target_x:.1f}, {target_y:.1f})")
     except KeyboardInterrupt:
