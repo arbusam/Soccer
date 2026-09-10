@@ -23,19 +23,20 @@ Run standalone: stop `main.py`, camera tests, motor scripts and localisation tes
 
 ## Camera, colours and saved data
 
-The Camera panel overlays the highest-confidence ball and every detected bot on the exact inference frame. Ball distance uses the box centre; bot distance uses the bottom centre and the same radial calibration. Missing distance calibration leaves boxes/bearings available.
+The Camera panel overlays the highest-confidence ball and every detected bot on the exact inference frame. Ball and bot distances both use box centres, with separate radial distance calibrations. Missing calibration leaves boxes/bearings available for that class, with no fallback to the other class’s fit.
 
 The **Detection model** selector lists compiled `open-soccer-detect-*_hailo_model` directories that contain `model.hef`. Changing between Nano (`n`), Small (`s`), or another installed variant restarts only the camera/Hailo pipeline; motor and localisation state are unaffected. The preview briefly reports `switching model`, then shows the active model. Model input dimensions come from each directory's `metadata.yaml`.
 
 **Pick a pixel** freezes an unannotated, lossless frame. Tap it to inspect original RGB, BGR and OpenCV HSV values (H 0–179, S/V 0–255). At most eight frozen frames are retained across viewers; freeze again if an old frame expires. PNG downloads provide raw and annotated snapshots.
 
-Ball samples need a fresh detection and a positive measured distance. Sample several distinct radial positions; duplicate radial positions are rejected to avoid ill-conditioned polynomial fits. **Held by dribbler** preserves the existing capture-calibration metadata. Preview the curve and fit metrics, then Save. Clear/remove only edit the draft until Save.
+In **Distances**, select **Ball** or **Bot**. Each has its own samples, fit preview, and saved calibration. Samples need a fresh detection and a positive distance measured from your robot’s centre to the object’s centre. For bot samples, keep exactly one detected bot in view. Sample several distinct radial positions; duplicate radial positions are rejected to avoid ill-conditioned polynomial fits. **Held by dribbler** applies only to ball samples and preserves the existing capture-calibration metadata. Preview the curve and fit metrics, then Save. Clear/remove only edit the draft until Save.
 
 Goal bounds preview immediately for both blue/cyan and yellow. Save writes the preview bounds; Revert reloads the last save; Restore Defaults changes the draft back to the original values. A lower channel bound must not exceed its upper bound.
 
 Files in the project root:
 
 - `ball_distance_calibration.json`: existing distance format, including samples/resolution; reloaded into the dashboard camera after saving.
+- `bot_distance_calibration.json`: independent bot distance model in the same format; saved and reloaded by selecting Bot in Distances. Create this calibration before relying on bot world positions.
 - `calibration_data.json`: existing motor format; replaced only after every motor succeeds and shutdown succeeds.
 - `goal_thresholds.json`: `blue` and `yellow` objects, each with three-element `lower`/`upper` HSV arrays. Normal `OpenCV()`/camera startup loads these too. Restart another already-running consumer to load changes.
 - `calibration_backups/`: timestamped copies made before replacement. To restore, stop the dashboard and copy the chosen JSON back to its original root filename.
@@ -72,3 +73,24 @@ The HTTP test needs permission to bind a loopback socket. The tests use fake har
 6. Connect two devices. Confirm both see the same perception results, only one controls edits/motion, and a slow viewer does not interrupt the other. Exit with Ctrl+C and confirm hardware is released.
 
 In **Camera → Camera settings**, take control, enter an **Analogue gain** within the displayed sensor range, and click **Apply gain**. The live preview updates after the camera processes the control. Gain starts at 10× (clamped to the sensor range), survives detection model switches, and resets when the dashboard restarts. It is not saved to normal camera configuration.
+
+The **Camera** panel also contains goal HSV thresholds, blue/yellow masks and the
+contour preview. Use **Pick a pixel** on the main preview for exact source colours.
+
+In **Break beam & kicker**, take control and select **Monitor break beam** for live
+blocked/clear readings. **Arm kicker**, then **Fire once**, sends a fixed 20 ms
+pulse on the configured kicker pin and disarms afterwards. The physical pause
+switch must be released; Stop or loss of control cancels pending firing. The
+500 ms cooldown matches the game controller. These GPIO tools do not require
+motor calibration or localisation. The dashboard owns the GPIO pins while in use;
+run it separately from the game controller and other hardware tools.
+
+**Manual drive** provides robot-relative translation with arrow keys or the
+on-screen touch/mouse joystick, alongside a raw camera stream. Stop localisation,
+take control, arm motors, then select **Start manual control**. Saved motor
+calibration is required; LIDAR is not. Speed defaults to 300 mm/s and is limited to
+1000 mm/s, including diagonals. Up means forward; right means strafe right.
+Release keys/the joystick to request zero speed. Leaving the panel or losing
+window focus stops and disarms. Input updates expire after 350 ms; the independent
+watchdog also stops a stalled manual worker. The physical pause switch remains
+active. Click outside numeric inputs before using the arrow keys to drive.

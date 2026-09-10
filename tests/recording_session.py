@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from lib.recording_session import RecordingSession
+from lib.session_replay import game_event_tokens, load_recorded_session
 
 
 def writes_versioned_game_and_detection_files():
@@ -22,6 +23,7 @@ def writes_versioned_game_and_detection_files():
         session.record_game(
             (1, 2, 3, 4, 5, True, "STRIKER", False, 10, 500, 20, False, True),
             elapsed_s=0.25,
+            other_bots=[(100, 200), (300, 400)],
         )
         session.record_detection(
             {
@@ -35,6 +37,10 @@ def writes_versioned_game_and_detection_files():
                     "centre": (16, 22),
                     "confidence": 0.8,
                 },
+                "bots": [
+                    {"bbox": (50, 60, 20, 40), "centre": (60, 80), "confidence": 0.7},
+                    {"bbox": (90, 60, 20, 40), "centre": (100, 80), "confidence": 0.6},
+                ],
             }
         )
         session.close()
@@ -59,6 +65,10 @@ def writes_versioned_game_and_detection_files():
             detection_rows = list(csv.DictReader(handle))
         assert detection_rows[0]["detected"] == "True"
         assert detection_rows[0]["bbox_w"] == "30"
+        replay = load_recorded_session(session_path)
+        assert game_event_tokens(replay.game_events[0])[13:] == ["100", "200", "300", "400"]
+        assert len(replay.detection_events[0]["bots"]) == 2
+        assert replay.detection_events[0]["bots"][0]["centre"] == [60, 80]
 
 
 def refuses_to_overwrite_nonempty_session():

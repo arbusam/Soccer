@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DISTANCE_CALIBRATION_FILE = "ball_distance_calibration.json"
+DEFAULT_BOT_DISTANCE_CALIBRATION_FILE = "bot_distance_calibration.json"
 DEFAULT_BALL_MODEL_PATH = _PROJECT_ROOT / "open-soccer-detect-n_hailo_model"
 DEFAULT_BALL_CONFIDENCE = 0.25
 

@@ -17,6 +17,7 @@ from picamera2.outputs import FileOutput, PyavOutput
 from picamera2.request import MappedArray
 
 from calibration.ball_distance import (
+    DEFAULT_BOT_DISTANCE_CALIBRATION_FILE,
     DEFAULT_DISTANCE_CALIBRATION_FILE,
     calculate_ball_bearing_deg,
     get_distance_calibration_resolution,
@@ -37,8 +38,8 @@ def _detection_dict_from_xyxy(xyxy, confidence, frame_width, frame_height, *, po
     """Build the ball-style detection dict from an xyxy box.
 
     ``point`` selects which image point feeds radial_pixels / bearing:
-    - ``"centre"``: bbox centre (ball)
-    - ``"bottom_centre"``: bottom edge midpoint (bot ground contact)
+    - ``"centre"``: bbox centre (ball and bots)
+    - ``"bottom_centre"``: bottom edge midpoint (legacy option)
     """
     x1, y1, x2, y2 = xyxy
     centre_x = (x1 + x2) / 2.0
@@ -85,6 +86,7 @@ class Camera:
         session_epoch_monotonic=None,
         detection_callback=None,
         diagnostics=False,
+        bot_distance_calibration_file=DEFAULT_BOT_DISTANCE_CALIBRATION_FILE,
     ):
         self.ball_model_path = _resolve_model_path(ball_model_path)
         self.diagnostics_enabled = diagnostics
@@ -160,6 +162,14 @@ class Camera:
                 calibration_file=distance_calibration_file,
             )
             self._distance_calibration_warning_logged = False
+            self.bot_distance_calibration = load_distance_calibration(
+                self.resolution, calibration_file=bot_distance_calibration_file,
+            )
+            if self.bot_distance_calibration is None:
+                logger.warning(
+                    "Bot distance calibration '%s' unavailable; bot distances will be unavailable.",
+                    bot_distance_calibration_file,
+                )
             if self.distance_calibration is None:
                 logger.warning(
                     "Ball distance calibration file '%s' was not loaded; distance estimates will be unavailable.",
@@ -344,7 +354,7 @@ class Camera:
                         det["confidence"],
                         frame_w,
                         frame_h,
-                        point="bottom_centre",
+                        point="centre",
                     )
                 )
         return ball_detection, bot_detections
@@ -353,7 +363,7 @@ class Camera:
         ball_detection, _bot_detections = self._detect_scene(frame)
         return ball_detection
 
-    def _polar_from_detection(self, detection, frame_width, frame_height):
+    def _polar_from_detection(self, detection, frame_width, frame_height, *, target="ball"):
         point_x, point_y = detection.get("point", detection["centre"])
         bearing = calculate_ball_bearing_deg(
             point_x,
@@ -363,7 +373,7 @@ class Camera:
         )
         bearing += 270
         distance = predict_distance_from_calibration(
-            self.distance_calibration,
+            self.bot_distance_calibration if target == "bot" else self.distance_calibration,
             detection["radial_pixels"],
         )
         return bearing, distance
@@ -401,13 +411,23 @@ class Camera:
         with self._measurement_lock:
             return copy.deepcopy(self._diagnostic_snapshot)
 
-    def reload_distance_calibration(self, calibration_file=DEFAULT_DISTANCE_CALIBRATION_FILE):
+    def reload_distance_calibration(self, calibration_file=None, *, target="ball"):
+        if target not in ("ball", "bot"):
+            raise ValueError("Unknown calibration target")
+        if calibration_file is None:
+            calibration_file = (
+                DEFAULT_BOT_DISTANCE_CALIBRATION_FILE if target == "bot"
+                else DEFAULT_DISTANCE_CALIBRATION_FILE
+            )
         calibration = load_distance_calibration(self.resolution, calibration_file)
         if calibration is None:
             raise ValueError("Calibration is invalid or has a different resolution")
         with self._measurement_lock:
-            self.distance_calibration = calibration
-            self._distance_calibration_warning_logged = False
+            if target == "bot":
+                self.bot_distance_calibration = calibration
+            else:
+                self.distance_calibration = calibration
+                self._distance_calibration_warning_logged = False
 
     def _infer_worker(self):
         try:
@@ -459,7 +479,7 @@ class Camera:
 
             for bot_det in bot_detections:
                 bot_bearing, bot_distance = self._polar_from_detection(
-                    bot_det, frame_w, frame_h
+                    bot_det, frame_w, frame_h, target="bot"
                 )
                 if bot_bearing is None:
                     continue
@@ -519,6 +539,7 @@ class Camera:
                             "sensor_timestamp_ns": sensor_timestamp_ns,
                             "inference_sequence": inference_sequence,
                             "detection": detection,
+                            "bots": bot_detections,
                         }
                     )
                 except Exception as exc:

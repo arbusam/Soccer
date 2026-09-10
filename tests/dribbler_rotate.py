@@ -5,8 +5,9 @@ from lib.hardware_controller import MotorCommunicationError
 from lib.hardware_test_utils import create_hardware, set_startup_yaw
 
 COMMAND_INTERVAL = 0.05
-# Keep a clockwise yaw error so the bot spins in place instead of holding a heading.
-CLOCKWISE_ROTATION = 90.0
+# Keep the target this far clockwise of the current yaw so it never settles on a
+# fixed heading.
+CLOCKWISE_YAW_ERROR = 90.0
 
 
 def main():
@@ -16,13 +17,15 @@ def main():
         set_startup_yaw(hardware)
         print("Dribbler on; rotating clockwise. Press Ctrl+C to stop.")
         while True:
-            hardware.move(
-                0,
-                0,
-                CLOCKWISE_ROTATION,
-                1.0,
-                1,
-            )
+            yaw = hardware.get_yaw()
+            if yaw is not None:
+                hardware.move(
+                    0,
+                    0,
+                    yaw + CLOCKWISE_YAW_ERROR,
+                    1.0,
+                    1,
+                )
             time.sleep(COMMAND_INTERVAL)
     except KeyboardInterrupt:
         print("\nStopping test.")

@@ -193,6 +193,12 @@ pip install ultralytics
 
 Continue to use the apt-provided NumPy, OpenCV, and Picamera2 packages rather than pip versions.
 
+## Other bots in recorded replays
+
+**Problem:** The simulator already rendered trailing bot coordinate pairs, but the game loop did not log them; session recordings also saved only ball annotations.
+
+**Solution:** `main.py` appends friendly and enemy world-coordinate pairs after the 13 controller fields in plain/live logs. `RecordingSession.record_game(..., other_bots=...)` stores the same positions in an optional JSON CSV column; `game_event_tokens()` expands them for the existing simulator parser. Camera callbacks include all bot detections in the same timestamped event as the ball, saved as the optional `bots` JSON column and drawn by `annotate_video_frame()`. Missing columns in older recordings mean empty lists. Bot projection uses the bounding-box centre for both bearing and radial distance.
+
 ## Dashboard motor ownership and camera snapshots
 
 **Problem:** Calibration command mode 15 runs autonomously, so writing speed zero alone does not cancel physical calibration. Motor setup also indexed motor 4 unconditionally despite documenting the dribbler as optional.
@@ -231,3 +237,9 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 **Solution:** Compile the four SH-2 core `.c` files as C11 and the Linux adapter as C++17; exclude the Arduino wrapper. The adapter claims one session per process, checks transport errors and reset completion, and returns negative write errors. `getProdIdOp` has a one-second timeout. I2C reads repeat the four-byte SHTP header; the adapter reconstructs bounded transfers from 32-byte chunks, timestamps arrival with a monotonic microsecond counter, and re-enables reports after resets outside the callback. All IMU service and motor I/O share the controller's native bus mutex.
 
 `main.py` now samples native raw yaw, sets the startup reference in C++, and reads relative yaw and gyro for LIDAR. `move(direction, speed, rotation, rotation_speed, dribbler=0)` has no yaw argument. Each drive tick uses native yaw; after 100 ms without a quaternion, yaw correction is disabled while translation uses the last known heading. Gyro freshness is separate. Both reports resume automatically; the startup reference is retained across a sensor reset, so re-zero while paused if its raw origin shifts. Stop joins both workers and releases SH-2. Python IMU/dashboard workflows must run separately. The hardware-only build now includes both motors and IMU.
+
+## Separate ball and bot distance calibration
+
+**Problem:** Bot projection and dashboard overlays reused the ball radial-distance polynomial, even though object box centres need different distance fits.
+
+**Solution:** `Camera` loads `ball_distance_calibration.json` and `bot_distance_calibration.json` independently at the active camera resolution. Missing/invalid bot calibration yields bearings but no bot distances, never the ball fit. In dashboard **Distances**, select Ball or Bot to edit separate samples and fits; bot sampling requires exactly one detected bot and measures centre-to-centre distance. Saving backs up and reloads only the selected class via `reload_distance_calibration(path, target="bot")` (default target remains ball).

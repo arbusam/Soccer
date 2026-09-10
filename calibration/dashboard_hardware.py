@@ -34,10 +34,13 @@ class Hardware:
         self.controller = None
         self.session = None
         self.pause = None
+        self.break_beam = None
+        self.last_kick = float("-inf")
         self.active_cancel = threading.Event()
         self.localisation_stop_requested = threading.Event()
         self.target = None
         self.speed = 500
+        self.manual = None
         self.motion_cancel = threading.Event()
         self.motion_cancel.set()
         self.jobs = queue.Queue(maxsize=4)
@@ -62,6 +65,7 @@ class Hardware:
         with self.lock:
             controller, self.controller = self.controller, None
             self.target = None
+            self.manual = None
             if controller is None:
                 return
             self.status["mode"] = "stopping"
@@ -137,6 +141,43 @@ class Hardware:
         self.localisation_stop_requested.clear()
         self.notify("Localisation stopped")
 
+    def _start_gpio(self):
+        from lib.break_beam import Breakbeam
+        from lib.config import load_config
+
+        if self.break_beam is None:
+            self.break_beam = Breakbeam(load_config().break_beam_pin)
+
+    def _kick(self, cancel):
+        import digitalio
+
+        from lib.config import load_config
+        from lib.switch import Switch
+
+        config = load_config()
+        if self.pause is None:
+            self.pause = Switch(config.pause_switch_pin)
+        if self.pause.read():
+            raise ValueError("Physical pause switch is active")
+        if cancel.is_set():
+            return
+        if time.monotonic() - self.last_kick < 0.5:
+            raise ValueError("Kicker is cooling down")
+        pin = digitalio.DigitalInOut(config.kicker_pin)
+        try:
+            pin.switch_to_input(pull=digitalio.Pull.DOWN)
+            if cancel.is_set():
+                return
+            self.last_kick = time.monotonic()
+            pin.switch_to_output(value=True)
+            cancel.wait(0.02)
+        finally:
+            try:
+                pin.switch_to_input(pull=digitalio.Pull.DOWN)
+            finally:
+                pin.deinit()
+        self.notify("Kicker pulse complete")
+
     def _drive(self, data, cancel):
         from lib.config import load_config
         from lib.switch import Switch
@@ -163,6 +204,58 @@ class Hardware:
             self.speed = data["speed"]
             self.motion_cancel = cancel
             self.status["mode"] = "driving"
+
+    def _start_manual(self, cancel):
+        from lib.hardware_controller import HardwareController
+
+        from lib.config import load_config
+        from lib.localisation_service import capture_startup_yaw
+        from lib.switch import Switch
+
+        if self.session is not None:
+            raise ValueError("Stop localisation before starting manual control")
+        config = load_config()
+        if self.pause is None:
+            self.pause = Switch(config.pause_switch_pin)
+        if self.pause.read():
+            raise ValueError("Physical pause switch is active")
+        controller = HardwareController.from_i2c_addresses(
+            config.i2c_addresses, 50, 100, 400, 3,
+            calibration_file=str(self.root / "calibration_data.json"),
+        )
+        try:
+            capture_startup_yaw(controller, cancel_event=cancel)
+            with self.lock:
+                if cancel.is_set():
+                    controller.stop()
+                    return
+                self.controller = controller
+                self.motion_cancel = cancel
+                self.manual = (0, 0, time.monotonic() + 1.0)  # Allow the browser to observe startup.
+                self.status.update(mode="manual", manual_tick=time.monotonic())
+        except BaseException:
+            controller.stop()
+            raise
+
+    def update_manual(self, forward, right):
+        with self.lock:
+            if self.status["mode"] != "manual" or self.motion_cancel.is_set():
+                raise ValueError("Start manual control first")
+            self.manual = (forward, right, time.monotonic())
+
+    def _tick_manual(self):
+        with self.lock:
+            if self.manual is None or self.controller is None:
+                return
+            forward, right, received = self.manual
+            if self.motion_cancel.is_set() or self.pause.read():
+                raise InterruptedError("Manual drive stopped: pause or lost control")
+            if time.monotonic() - received > 0.35:
+                raise InterruptedError("Manual drive stopped: input timed out")
+            yaw = self.controller.get_yaw()
+            direction = yaw + math.degrees(math.atan2(right, forward))
+            self.controller.move(direction, math.hypot(forward, right), yaw, 0)
+            self.status["manual_tick"] = time.monotonic()
 
     def _calibrate(self, data, cancel):
         from legacy.movement import calibrate_motors, get_motors_for_calibration
@@ -209,6 +302,13 @@ class Hardware:
                             self.status.update(mode="starting " + action, error=None)
                         if action == "localise":
                             self._localise(cancel)
+                        elif action == "gpio":
+                            self._start_gpio()
+                        elif action == "kick":
+                            self._kick(cancel)
+                            cancel.set()
+                        elif action == "manual_start":
+                            self._start_manual(cancel)
                         elif action == "drive":
                             self._drive(data, cancel)
                         elif action == "calibrate":
@@ -217,6 +317,15 @@ class Hardware:
                         if self.controller is None:
                             with self.lock:
                                 self.status["mode"] = "monitoring" if self.session else "idle"
+                    self._tick_manual()
+                    if self.break_beam is not None:
+                        try:
+                            blocked = self.break_beam.read()
+                            with self.lock:
+                                self.status["break_beam"] = {"blocked": blocked, "error": None}
+                        except Exception as exc:
+                            with self.lock:
+                                self.status["break_beam"] = {"blocked": None, "error": str(exc)}
                     if self.session is not None:
                         with self.lock:
                             controller = self.controller
@@ -280,6 +389,8 @@ class Hardware:
             self.stop_drive()
             if self.session is not None:
                 self.session.close()
+            if self.break_beam is not None:
+                self.break_beam.switch.deinit()
             if self.pause is not None:
                 self.pause.switch.deinit()
 

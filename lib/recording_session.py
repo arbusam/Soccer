@@ -27,6 +27,7 @@ GAME_FIELDS = (
     "rotation",
     "kick",
     "dribbler",
+    "other_bots",
 )
 DETECTION_FIELDS = (
     "elapsed_s",
@@ -42,6 +43,7 @@ DETECTION_FIELDS = (
     "centre_x",
     "centre_y",
     "confidence",
+    "bots",
 )
 
 
@@ -172,7 +174,7 @@ class RecordingSession:
             "video_file": self.video_path.name,
             "game_file": self.game_path.name,
             "detections_file": self.detections_path.name,
-            "annotation": "top-confidence Ball detection used by the controller",
+            "annotation": "top-confidence Ball and all Bot detections; box centres",
             "finalized": False,
         }
         self._write_metadata_locked()
@@ -186,10 +188,12 @@ class RecordingSession:
     def elapsed(self) -> float:
         return time.monotonic() - self.epoch_monotonic
 
-    def record_game(self, values: Iterable[object], elapsed_s: float | None = None) -> bool:
+    def record_game(
+        self, values: Iterable[object], elapsed_s: float | None = None, *, other_bots=()
+    ) -> bool:
         if elapsed_s is None:
             elapsed_s = self.elapsed()
-        return self.game_writer.submit((elapsed_s, *values))
+        return self.game_writer.submit((elapsed_s, *values, json.dumps(list(other_bots))))
 
     def record_detection(self, event: Mapping[str, object]) -> bool:
         detection = event.get("detection")
@@ -214,6 +218,7 @@ class RecordingSession:
                 *bbox,
                 *centre,
                 confidence,
+                json.dumps(event.get("bots") or []),
             )
         )
 

@@ -123,6 +123,7 @@ def load_recorded_session(directory: str | Path) -> RecordedSession:
             logger.warning("Ignoring invalid recording row in %s", detections_path)
             continue
         event["detected"] = _bool(event.get("detected"))
+        event["bots"] = json.loads(event.get("bots") or "[]")
         valid_detection_events.append(event)
     detection_events = valid_detection_events
 
@@ -157,7 +158,10 @@ def game_event_tokens(event: dict) -> list[str]:
         "kick",
         "dribbler",
     )
-    return [str(event.get(field, "None")) for field in fields]
+    tokens = [str(event.get(field, "None")) for field in fields]
+    for position in json.loads(event.get("other_bots") or "[]"):
+        tokens.extend(str(coordinate) for coordinate in position)
+    return tokens
 
 
 class VideoReader:
@@ -243,6 +247,20 @@ class VideoReader:
 def annotate_video_frame(frame_rgb, detection: dict | None):
     """Draw recorded inference output on a replay-only frame copy."""
     annotated = frame_rgb.copy()
+    for index, bot in enumerate((detection or {}).get("bots", []), start=1):
+        x, y, width, height = (round(value) for value in bot["bbox"])
+        centre = tuple(round(value) for value in bot["centre"])
+        bot_colour = (80, 200, 255)
+        cv2.rectangle(annotated, (x, y), (x + width, y + height), bot_colour, 2)
+        cv2.circle(annotated, centre, 5, (255, 255, 255), -1)
+        confidence = bot.get("confidence")
+        label = f"BOT {index}"
+        if confidence is not None:
+            label += f" {confidence:.2f}"
+        cv2.putText(
+            annotated, label, (x, max(15, y - 6)), cv2.FONT_HERSHEY_SIMPLEX,
+            0.5, bot_colour, 1, cv2.LINE_AA,
+        )
     if detection is None:
         label = "NOT INFERRED"
         colour = (255, 210, 0)

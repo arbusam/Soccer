@@ -24,10 +24,18 @@ function motorAddresses() {
 $('claim').onclick = async () => { try { token = (await api('claim')).token; message('You have control. Motors remain disarmed until you arm them.'); } catch (e) { message(e.message); } };
 $('release').onclick = async () => { try { await api('release'); token = null; } catch (e) { message(e.message); } };
 handle('stop', 'stop');
+handle('startGpio', 'gpio');
+handle('kick', 'kick');
 handle('applyGain', 'analogue_gain', () => ({gain:$('analogueGain').value}));
 for (const button of document.querySelectorAll('.arm')) button.onclick = async () => { try { await api('arm'); } catch (e) { message(e.message); } };
-handle('sample', 'sample', () => ({distance:$('distance').value, captured:$('captured').checked}));
-handle('fit', 'fit'); handle('saveBall', 'save_ball'); handle('clearSamples', 'clear_samples');
+const distanceTarget = () => ({target:$('distanceTarget').value});
+$('distanceTarget').onchange = () => {
+  $('captured').disabled = $('distanceTarget').value === 'bot';
+  samplesSignature = ''; fitSignature = '';
+  if (state) render(state);
+};
+handle('sample', 'sample', () => ({...distanceTarget(), distance:$('distance').value, captured:$('captured').checked}));
+handle('fit', 'fit', distanceTarget); handle('saveBall', 'save_ball', distanceTarget); handle('clearSamples', 'clear_samples', distanceTarget);
 $('saveGoals').onclick = async () => {
   try { clearTimeout(goalTimer); await api('thresholds', {thresholds}); await api('save_goals'); }
   catch(e) { message(e.message); }
@@ -124,6 +132,9 @@ function render(s) {
   document.querySelectorAll('.control').forEach(e => { e.disabled = !token; });
   document.querySelectorAll('.arm').forEach(e => { e.disabled = !token || s.control.armed; });
   $('calibrate').disabled = $('drive').disabled = !token || !s.control.armed;
+  $('kick').disabled = !token || !s.control.armed;
+  const beam = s.hardware.break_beam;
+  $('breakBeamStatus').textContent = beam?.error ? `Unavailable: ${beam.error}` : beam?.blocked == null ? 'Monitoring has not started.' : beam.blocked ? 'BLOCKED — ball detected' : 'CLEAR — no ball';
   const gainRange = s.camera.analogue_gain_range;
   const gainAvailable = s.camera.status === 'running' && gainRange != null;
   $('analogueGain').disabled = $('applyGain').disabled = !token || !gainAvailable;
@@ -154,20 +165,21 @@ function render(s) {
   $('health').textContent = `CAMERA ${s.camera.status} | capture ${fmt(s.camera.fps.capture)} · inference ${fmt(s.camera.fps.inference)} · preview ${fmt(s.camera.fps.preview)} FPS | ${s.camera.age_s == null ? 'no frames' : 'frame age ' + fmt(s.camera.age_s) + 's' + (s.camera.age_s > .5 ? ' · STALE' : '')} | MOTORS ${s.hardware.mode}`;
   if (!$('addresses').value && s.addresses.length) $('addresses').value = s.addresses.join(',');
   syncBounds(s.thresholds);
-  readings($('cameraDetails'), [['Resolution',s.camera.resolution ? s.camera.resolution.join(' × ') : 'unavailable'],['Inference frame',s.camera.frame_id ?? 'unavailable'],['Distance calibration',s.fit ? 'loaded / preview available' : 'not loaded']]);
+  readings($('cameraDetails'), [['Resolution',s.camera.resolution ? s.camera.resolution.join(' × ') : 'unavailable'],['Inference frame',s.camera.frame_id ?? 'unavailable'],['Ball distance fit',s.fit ? 'available' : 'not loaded'],['Bot distance fit',s.bot_fit ? 'available' : 'not loaded']]);
   readings($('detections'), s.camera.detections.map(d => [d.label + ' ' + fmt(d.confidence*100,0) + '%', `${fmt(d.bearing % 360)}° · ${d.distance == null ? 'distance unavailable' : fmt(d.distance,0)+' mm'}`]));
   if (!s.camera.detections.length) $('detections').textContent = 'No current detections';
-  const signature = JSON.stringify(s.samples);
+  const distanceState = $('distanceTarget').value === 'bot' ? {...s, samples:s.bot_samples, fit:s.bot_fit} : s;
+  const signature = JSON.stringify(distanceState.samples);
   if (samplesSignature !== signature) {
     samplesSignature = signature; $('samples').replaceChildren();
-    s.samples.forEach((sample,index) => {
+    distanceState.samples.forEach((sample,index) => {
       const tr = document.createElement('tr');
       for (const value of [fmt(sample.distance_mm),fmt(sample.radial_pixels),`${fmt(sample.centre_x)}, ${fmt(sample.centre_y)}`, sample.captured ? 'yes':'no']) { const td=document.createElement('td'); td.textContent=value; tr.append(td); }
       const td=document.createElement('td'), button=document.createElement('button'); button.textContent='Remove'; button.className='control'; button.disabled=!token;
-      button.onclick=async()=>{try{await api('remove_sample',{index});}catch(e){message(e.message);}}; td.append(button); tr.append(td); $('samples').append(tr);
+      button.onclick=async()=>{try{await api('remove_sample',{index, ...distanceTarget()});}catch(e){message(e.message);}}; td.append(button); tr.append(td); $('samples').append(tr);
     });
   }
-  const fs = JSON.stringify([s.samples,s.fit]); if (fitSignature !== fs) { fitSignature = fs; drawFit(s); }
+  const fs = JSON.stringify([distanceState.samples,distanceState.fit]); if (fitSignature !== fs) { fitSignature = fs; drawFit(distanceState); }
   const calibration = s.hardware.calibration;
   readings($('motorProgress'), [['State',s.hardware.mode],['Active driver', calibration?.address ?? '—'],['Elapsed',fmt(calibration?.elapsed_s)+' s'],['Completed',calibration?.complete ? 'Saved':'—'],['Error',s.hardware.error ?? 'none']]);
   for (const motor of calibration?.results ?? []) { const p=document.createElement('p'); p.textContent=`Address ${motor.address}: ELECANGLEOFFSET ${motor.elecangleoffset} · SINCOSCENTRE ${motor.sincoscentre}`; $('motorProgress').append(p); }
@@ -225,3 +237,68 @@ async function heartbeat(){if(token){try{await api('heartbeat');}catch(e){token=
 async function poll(){try{const response=await fetch('/api/state');if(!response.ok)throw new Error('Status unavailable');render(await response.json());}catch(e){$('health').textContent='DISCONNECTED · motor control will expire automatically';}setTimeout(poll,300);}
 window.addEventListener('pagehide',()=>{if(token)fetch('/api/release',{method:'POST',headers:{'Content-Type':'application/json','X-Control-Token':token},body:'{}',keepalive:true}).catch(()=>{});});
 streams(); heartbeat(); poll();
+
+const manualKeys = new Set();
+let joystickVector = [0, 0], joystickPointer = null, manualSending = false, manualRequested = false;
+function resetManualInput() {
+  manualKeys.clear(); joystickVector = [0, 0]; joystickPointer = null;
+  $('joystickKnob').style.transform = '';
+}
+function stopManual() {
+  resetManualInput();
+  if (token && (manualRequested || state?.hardware.mode === 'manual' || state?.hardware.mode?.includes('manual_start'))) {
+    manualRequested = false;
+    api('stop').catch(e => message(e.message));
+  }
+}
+$('manualStart').onclick = async () => {
+  resetManualInput(); manualRequested = true;
+  try { await api('manual_start'); } catch (e) { manualRequested = false; message(e.message); }
+};
+handle('manualStop', 'stop');
+$('manualStop').addEventListener('click', resetManualInput);
+function manualReady() { return token && state?.control.armed && state?.hardware.mode === 'manual' && tab === 'manual' && !document.hidden; }
+window.addEventListener('keydown', event => {
+  if (!event.key.startsWith('Arrow') || !manualReady() || /INPUT|SELECT|TEXTAREA/.test(event.target.tagName)) return;
+  event.preventDefault(); manualKeys.add(event.key);
+});
+window.addEventListener('keyup', event => {
+  if (manualKeys.delete(event.key)) { event.preventDefault(); sendManual(); }
+});
+$('joystick').addEventListener('pointerdown', event => {
+  if (!manualReady()) return;
+  joystickPointer = event.pointerId; $('joystick').setPointerCapture(event.pointerId); updateJoystick(event);
+});
+function updateJoystick(event) {
+  if (event.pointerId !== joystickPointer) return;
+  const r = $('joystick').getBoundingClientRect();
+  let right = (event.clientX - r.left - r.width / 2) / (r.width / 2 - 25);
+  let forward = -(event.clientY - r.top - r.height / 2) / (r.height / 2 - 25);
+  const scale = Math.max(1, Math.hypot(right, forward)); right /= scale; forward /= scale;
+  joystickVector = [forward, right];
+  $('joystickKnob').style.transform = `translate(${right * 83}px, ${-forward * 83}px)`;
+}
+$('joystick').addEventListener('pointermove', updateJoystick);
+for (const event of ['pointerup', 'pointercancel', 'lostpointercapture']) $('joystick').addEventListener(event, () => { resetManualInput(); sendManual(); });
+window.addEventListener('blur', stopManual);
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopManual(); });
+for (const button of document.querySelectorAll('[data-tab]')) button.addEventListener('click', () => { if (button.dataset.tab !== 'manual') stopManual(); });
+async function sendManual() {
+  if (!manualReady() || manualSending) return;
+  const keys = manualKeys.size > 0;
+  let forward = keys ? Number(manualKeys.has('ArrowUp')) - Number(manualKeys.has('ArrowDown')) : joystickVector[0];
+  let right = keys ? Number(manualKeys.has('ArrowRight')) - Number(manualKeys.has('ArrowLeft')) : joystickVector[1];
+  const speed = Math.min(1000, Math.max(0, Number($('manualSpeed').value) || 0));
+  const scale = speed / Math.max(1, Math.hypot(forward, right));
+  forward *= scale; right *= scale;
+  manualSending = true;
+  try { await api('manual_input', {forward, right}); }
+  catch (e) { resetManualInput(); message(e.message); }
+  finally { manualSending = false; }
+}
+setInterval(() => {
+  $('manualStart').disabled = !token || !state?.control.armed || !['idle','stopped'].includes(state?.hardware.mode);
+  $('manualStatus').textContent = state?.hardware.mode === 'manual' ? 'Manual control active · release to stop' : 'Manual control stopped.';
+  if (!manualReady()) resetManualInput();
+  sendManual();
+}, 100);

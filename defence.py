@@ -269,8 +269,6 @@ def goalie(
             else:
                 direction = yaw
                 speed = 0
-        elif dist < 500 and abs(angle_error) < 10:
-            direction = yaw
         else:
             goal_dx = YELLOW_GOAL_BACK_X - ball_x
             goal_dy = GOAL_CENTRE_Y - ball_y

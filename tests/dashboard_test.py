@@ -233,6 +233,49 @@ def test_ball_samples_fit_save_reload_and_stale_rejection(dashboard):
         dashboard._edit("save_ball", {})
 
 
+def test_bot_calibration_is_separate_from_ball(dashboard):
+    class Camera:
+        def reload_distance_calibration(self, path, *, target):
+            self.target = target
+            self.loaded = json.loads(Path(path).read_text())
+
+    dashboard.camera = Camera()
+    install_snapshot(dashboard)
+    dashboard._edit("sample", {"distance": 100})
+    original_ball_samples = copy.deepcopy(dashboard.samples)
+    for radius, distance in [(2, 200), (5, 500), (8, 800)]:
+        install_snapshot(dashboard)
+        dashboard.latest["bots"] = [detection(radius)]
+        dashboard.latest["ball"] = None
+        dashboard._edit("sample", {"target": "bot", "distance": distance, "captured": True})
+    dashboard._edit("save_ball", {"target": "bot"})
+    assert dashboard.camera.target == "bot"
+    assert dashboard.camera.loaded["capture_calibration"]["sample_count"] == 0
+    assert (dashboard.root / "bot_distance_calibration.json").exists()
+    assert not (dashboard.root / "ball_distance_calibration.json").exists()
+    assert dashboard.samples == original_ball_samples
+    assert dashboard.calibration is None
+    assert dashboard.bot_calibration["samples"] == dashboard.bot_samples
+    assert dashboard.state()["bot_samples"] == dashboard.bot_samples
+    dashboard.latest["bots"] *= 2
+    with pytest.raises(ValueError, match="exactly one"):
+        dashboard._edit("sample", {"target": "bot", "distance": 500})
+    dashboard._edit("clear_samples", {"target": "bot"})
+    assert dashboard.bot_samples == []
+    assert dashboard.samples == original_ball_samples
+
+
+def test_scene_uses_separate_distance_models(dashboard):
+    install_snapshot(dashboard)
+    ball_fit = {"model": {"coefficients": [10], "radial_pixel_range": [0, 100]}}
+    bot_fit = {"model": {"coefficients": [20], "radial_pixel_range": [0, 100]}}
+    snap = dashboard.latest
+    _, results = scene(snap["frame"], snap["ball"], snap["bots"], ball_fit, bot_fit)
+    assert [d["distance"] for d in results] == [10, 20]
+    _, results = scene(snap["frame"], snap["ball"], snap["bots"], ball_fit)
+    assert [d["distance"] for d in results] == [10, None]
+
+
 @pytest.fixture
 def movement(monkeypatch):
     driver = types.ModuleType("steelbar_powerful_bldc_driver")
@@ -661,3 +704,84 @@ def test_watchdog_disarms_if_localisation_worker_stalls(dashboard):
     assert not dashboard.lease.armed and dashboard.hardware.stops > 0
     dashboard.closing.set()
     thread.join(1)
+
+
+def test_kicker_requires_arming_and_stop_cancels_request(dashboard):
+    token = dashboard.command("claim", {}, None)["token"]
+    with pytest.raises(ValueError, match="Arm"):
+        dashboard.command("kick", {}, token)
+    dashboard.command("arm", {}, token)
+    cancel = dashboard.lease.cancel
+    assert dashboard.command("kick", {}, token) == {"queued": True}
+    dashboard.command("stop", {}, None)
+    assert cancel.is_set()
+
+
+def test_kicker_pulse_restores_input_and_checks_pause(monkeypatch, tmp_path):
+    calls = []
+    pin = types.SimpleNamespace(
+        switch_to_input=lambda **kw: calls.append(("input", kw)),
+        switch_to_output=lambda **kw: calls.append(("output", kw)),
+        deinit=lambda: calls.append(("close", {})),
+    )
+    monkeypatch.setitem(sys.modules, "digitalio", types.SimpleNamespace(
+        DigitalInOut=lambda _pin: pin, Pull=types.SimpleNamespace(DOWN="down")))
+    monkeypatch.setitem(sys.modules, "lib.config", types.SimpleNamespace(
+        load_config=lambda: types.SimpleNamespace(kicker_pin=21)))
+    monkeypatch.setitem(sys.modules, "lib.switch", types.SimpleNamespace(Switch=None))
+    hardware = Hardware(tmp_path, lambda *_a, **_kw: None)
+    hardware.closing.set()
+    hardware.thread.join(1)
+    hardware.pause = types.SimpleNamespace(read=lambda: True)
+    with pytest.raises(ValueError, match="pause"):
+        hardware._kick(threading.Event())
+    assert calls == []
+    hardware.pause.read = lambda: False
+    hardware._kick(threading.Event())
+    assert [call[0] for call in calls] == ["input", "output", "input", "close"]
+    assert calls[1][1] == {"value": True}
+    with pytest.raises(ValueError, match="cooling"):
+        hardware._kick(threading.Event())
+
+
+def test_manual_api_validates_speed_and_requires_arming(dashboard):
+    token = dashboard.command("claim", {}, None)["token"]
+    with pytest.raises(ValueError, match="Arm"):
+        dashboard.command("manual_input", {"forward": 100, "right": 0}, token)
+    dashboard.command("arm", {}, token)
+    received = []
+    dashboard.hardware.update_manual = lambda *values: received.append(values)
+    dashboard.command("manual_input", {"forward": 300, "right": -400}, token)
+    assert received == [(300, -400)]
+    for forward, right in [(1000, 1000), ("nan", 0), (0, "inf"), (True, 0)]:
+        with pytest.raises((ValueError, TypeError)):
+            dashboard.command("manual_input", {"forward": forward, "right": right}, token)
+
+
+def test_manual_direction_release_timeout_and_pause(tmp_path):
+    hardware = Hardware(tmp_path, lambda *_a, **_kw: None)
+    hardware.closing.set()
+    hardware.thread.join(1)
+    imu = FakeIMU()
+    hardware.controller = imu
+    hardware.pause = types.SimpleNamespace(read=lambda: False)
+    hardware.motion_cancel = threading.Event()
+    hardware.status["mode"] = "manual"
+    hardware.update_manual(0, 300)
+    hardware._tick_manual()
+    assert imu.moves[-1][0] == (100, 300, 10, 0)
+    hardware.update_manual(0, 0)
+    hardware._tick_manual()
+    assert imu.moves[-1][0][1] == 0
+    hardware.manual = (300, 0, time.monotonic() - 1)
+    with pytest.raises(InterruptedError, match="timed out"):
+        hardware._tick_manual()
+    hardware.update_manual(300, 0)
+    hardware.pause.read = lambda: True
+    with pytest.raises(InterruptedError, match="pause"):
+        hardware._tick_manual()
+    hardware.stop_drive()
+    assert not imu._running
+    assert hardware.manual is None
+    with pytest.raises(ValueError, match="Start manual"):
+        hardware.update_manual(300, 0)

@@ -184,3 +184,22 @@ def annotation_does_not_modify_source_frame():
     )
     assert not np.any(source)
     assert np.any(annotated)
+
+
+def annotation_draws_all_bots_without_a_ball():
+    source = np.zeros((140, 160, 3), dtype=np.uint8)
+    annotated = session_replay.annotate_video_frame(
+        source,
+        {
+            "detected": False,
+            "bots": [
+                {"bbox": [20, 60, 20, 40], "centre": [30, 80], "confidence": 0.8},
+                {"bbox": [90, 60, 20, 40], "centre": [100, 80], "confidence": 0.7},
+            ],
+        },
+    )
+    assert not np.any(source)
+    assert np.all(annotated[80, 30] == 255)
+    assert np.all(annotated[80, 100] == 255)
+    assert np.any(annotated[100, 20])
+    assert np.any(annotated[100, 90])

@@ -624,15 +624,22 @@ try:
                     kick,
                     dribbler,
                 ]
+                other_bot_positions = friendly_bot_positions + enemy_bot_positions
                 log_line = ",".join(
-                    "None" if value is None else str(value) for value in log_values
+                    "None" if value is None else str(value)
+                    for value in (
+                        *log_values,
+                        *(coordinate for position in other_bot_positions for coordinate in position),
+                    )
                 )
                 if args.stream:
                     send_log.update_latest_log(log_line)
                 if log_recorder_thread is not None:
                     update_latest_log_snapshot(log_line)
                 if recording_session is not None:
-                    recording_session.record_game(log_values)
+                    recording_session.record_game(
+                        log_values, other_bots=other_bot_positions
+                    )
             try:
                 hardware_controller.move(direction, speed, rotation, 1.0, dribbler, kick=kick)
             except MotorCommunicationError as exc:

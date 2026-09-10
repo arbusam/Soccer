@@ -56,6 +56,9 @@ def _make_camera_for_infer(camera_module):
         }
     }
     camera._distance_calibration_warning_logged = True
+    camera.bot_distance_calibration = {
+        "model": {"coefficients": [2.0, 10.0], "radial_pixel_range": [0.0, 1000.0]}
+    }
     return camera
 
 
@@ -70,7 +73,7 @@ def inference_metadata_identifies_exact_source_capture():
         "confidence": 0.75,
         "polygon": None,
     }
-    camera._detect_scene = lambda _frame: (detection, [])
+    camera._detect_scene = lambda _frame: (detection, [detection])
     events = []
 
     def collect(event):
@@ -85,6 +88,7 @@ def inference_metadata_identifies_exact_source_capture():
     assert events[0]["video_time_s"] == pytest.approx(0.5)
     assert events[0]["elapsed_s"] == pytest.approx(2.5)
     assert events[0]["detection"] is detection
+    assert events[0]["bots"] == [detection]
 
 
 def inference_bottom_centre_detection_feeds_radial_pixels():
@@ -125,8 +129,9 @@ def inference_detect_scene_keeps_best_ball_and_all_bots():
     assert ball["confidence"] == pytest.approx(0.8)
     assert ball["centre"] == (40.0, 40.0)
     assert len(bots) == 2
-    assert bots[0]["point"] == (120.0, 180.0)
-    assert bots[1]["point"] == (220.0, 280.0)
+    assert bots[0]["point"] == (120.0, 140.0)
+    assert bots[1]["point"] == (220.0, 240.0)
+    assert bots[0]["radial_pixels"] == pytest.approx(np.hypot(120 - 320, 140 - 320))
 
 
 def inference_scene_measurement_returns_ball_and_bots_atomically():
@@ -161,12 +166,23 @@ def inference_scene_measurement_returns_ball_and_bots_atomically():
     assert len(bot_measurements) == 1
     bot_bearing, bot_distance = bot_measurements[0]
     assert bot_bearing is not None
-    assert bot_distance == pytest.approx(bots[0]["radial_pixels"])
+    assert bot_distance == pytest.approx(2 * bots[0]["radial_pixels"] + 10)
     # Legacy API still returns ball-only.
     legacy_id, legacy_bearing, legacy_distance = camera.get_measurement()
     assert legacy_id == frame_id
     assert legacy_bearing == bearing
     assert legacy_distance == distance
+
+
+def inference_missing_bot_calibration_does_not_use_ball_fit():
+    camera_module = _import_camera_without_picamera_hardware()
+    camera = _make_camera_for_infer(camera_module)
+    camera.bot_distance_calibration = None
+    det = camera_module._detection_dict_from_xyxy((1, 1, 4, 4), .9, 8, 8)
+    assert camera._polar_from_detection(det, 8, 8)[1] is not None
+    bearing, distance = camera._polar_from_detection(det, 8, 8, target="bot")
+    assert bearing is not None
+    assert distance is None
 
 
 def inference_classify_camera_bot_positions_filters_self_and_teammate():

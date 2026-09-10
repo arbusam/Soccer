@@ -153,7 +153,7 @@ def pixel_values(frame, x, y):
     return {"x": x, "y": y, "bgr": bgr.tolist(), "rgb": bgr[::-1].tolist(), "hsv": hsv.tolist()}
 
 
-def scene(frame, ball, bots, calibration):
+def scene(frame, ball, bots, calibration, bot_calibration=None):
     """Render only detections belonging to this exact source frame."""
     overlay = frame.copy()
     height, width = frame.shape[:2]
@@ -164,7 +164,9 @@ def scene(frame, ball, bots, calibration):
             x, y, w, h = detection["bbox"]
             point = detection.get("point", detection["centre"])
             bearing = calculate_ball_bearing_deg(*point, width, height) + 270
-            distance = predict_distance_from_calibration(calibration, detection["radial_pixels"])
+            distance = predict_distance_from_calibration(
+                calibration if label == "Ball" else bot_calibration, detection["radial_pixels"]
+            )
             result = {**detection, "label": label, "bearing": bearing, "distance": distance}
             results.append(result)
             cv2.rectangle(overlay, (x, y), (x + w, y + h), colour, 2)
@@ -205,6 +207,9 @@ class Dashboard:
         self.sample_resolution = None
         self.fit = None
         self.calibration = None
+        self.bot_samples = []
+        self.bot_fit = None
+        self.bot_calibration = None
         self.detections = []
         self.rates = {"capture": 0, "inference": 0, "preview": 0}
         self.jobs = queue.Queue(maxsize=8)
@@ -235,6 +240,10 @@ class Dashboard:
             local = hardware_state.get("localisation") or {}
             loop_stale = (hardware_state["mode"] == "driving"
                           and time.monotonic() - local.get("timestamp", 0) > 0.5)
+            loop_stale = loop_stale or (
+                hardware_state["mode"] == "manual"
+                and time.monotonic() - hardware_state.get("manual_tick", 0) > 0.5
+            )
             with self.lock:
                 if loop_stale:
                     self.lease.stop()
@@ -270,6 +279,7 @@ class Dashboard:
                            "requested_model": self.requested_model},
                 "control": {"occupied": self.lease.token is not None, "armed": self.lease.armed},
                 "hardware": self.hardware.snapshot(), "thresholds": copy.deepcopy(self.thresholds),
+                "bot_samples": list(self.bot_samples), "bot_fit": self.bot_fit,
                 "samples": list(self.samples), "fit": self.fit, "addresses": self.default_addresses,
                 "events": list(self.events)[-20:], "pitch": PITCH,
             }
@@ -299,8 +309,15 @@ class Dashboard:
             if action == "stop_localise":
                 self.hardware.request_stop_localisation()
                 return {}
-            if action in ("drive", "calibrate") and not self.lease.armed:
+            if action in ("drive", "calibrate", "kick", "manual_start", "manual_input") and not self.lease.armed:
                 raise ValueError("Arm motors first")
+            if action == "manual_input":
+                forward = number(data.get("forward"), -1000, 1000, "forward speed")
+                right = number(data.get("right"), -1000, 1000, "right speed")
+                if math.hypot(forward, right) > 1000.001:
+                    raise ValueError("Manual speed must not exceed 1000 mm/s")
+                self.hardware.update_manual(forward, right)
+                return {}
             if action == "drive":
                 data["speed"] = number(data.get("speed"), 0, 5000, "speed")
                 target = data.get("target")
@@ -314,7 +331,7 @@ class Dashboard:
                 data["addresses"] = addresses(data.get("addresses"))
                 if data.get("wheels_clear") is not True:
                     raise ValueError("Confirm that wheels are clear before calibration")
-            allowed = {"drive", "calibrate", "localise", "thresholds", "save_goals", "revert_goals",
+            allowed = {"manual_start", "gpio", "kick", "drive", "calibrate", "localise", "thresholds", "save_goals", "revert_goals",
                        "default_goals", "sample", "remove_sample", "clear_samples", "fit", "save_ball",
                        "select_model", "analogue_gain"}
             if action not in allowed:
@@ -333,15 +350,15 @@ class Dashboard:
             try:
                 with self.lock:
                     self.lease.check(token)
-                    if action in ("drive", "calibrate", "localise"):
-                        if action != "localise" and cancel.is_set():
+                    if action in ("drive", "calibrate", "localise", "gpio", "kick", "manual_start"):
+                        if action not in ("localise", "gpio") and cancel.is_set():
                             raise ValueError("Operation cancelled; arm again")
                         if self.hardware.snapshot()["mode"] not in ("idle", "stopped", "monitoring"):
                             raise ValueError("Hardware operation already running")
                         if action == "calibrate":
                             backup(self.root / "calibration_data.json")
                         # Localisation monitoring does not require armed motors.
-                        if action == "localise":
+                        if action in ("localise", "gpio"):
                             cancel = threading.Event()
                         self.hardware.submit(action, data, cancel)
                     else:
@@ -378,14 +395,32 @@ class Dashboard:
             self.thresholds = load_thresholds(goal_path)
         elif action == "default_goals":
             self.thresholds = copy.deepcopy(DEFAULT_THRESHOLDS)
-        elif action == "sample":
+        elif action in ("sample", "remove_sample", "clear_samples", "fit", "save_ball"):
+            self._edit_distance(action, data)
+
+    def _edit_distance(self, action, data):
+        target = data.get("target", "ball")
+        if target not in ("ball", "bot"):
+            raise ValueError("Unknown calibration target")
+        prefix = "bot_" if target == "bot" else ""
+        samples = getattr(self, prefix + "samples")
+        fit = getattr(self, prefix + "fit")
+        if action == "sample":
             snap = self.latest
-            if snap is None or time.monotonic() - snap["timestamp"] > 0.5 or snap["ball"] is None:
-                raise ValueError("A fresh detected ball is required")
-            det = snap["ball"]
+            if snap is None or time.monotonic() - snap["timestamp"] > 0.5:
+                raise ValueError("A fresh detection is required")
+            if target == "bot":
+                bots = snap.get("bots", [])
+                if len(bots) != 1:
+                    raise ValueError("Keep exactly one detected bot in view when sampling")
+                det = bots[0]
+            else:
+                det = snap["ball"]
+                if det is None:
+                    raise ValueError("A fresh detected ball is required")
             distance = number(data.get("distance"), 0.001, 50000, "distance (mm)")
             x, y = det["centre"]
-            captured = data.get("captured") is True
+            captured = target == "ball" and data.get("captured") is True
             sample = {"distance_mm": distance, "radial_pixels": det["radial_pixels"],
                       "centre_x": x, "centre_y": y, "bounding_box_area": det["bbox"][2] * det["bbox"][3],
                       "captured": captured}
@@ -393,34 +428,41 @@ class Dashboard:
                 from calibration.ball_distance import apply_camera_bearing_offset
                 sample["bearing_deg"] = apply_camera_bearing_offset(
                     calculate_ball_bearing_deg(x, y, *self.sample_resolution))
-            if len(self.samples) >= 500:
+            if len(samples) >= 500:
                 raise ValueError("Maximum 500 samples; remove samples before adding more")
-            self.samples.append(sample)
-            self.fit = None
+            samples.append(sample)
+            fit = None
         elif action == "remove_sample":
             index = data.get("index")
-            if type(index) is not int or not 0 <= index < len(self.samples):
+            if type(index) is not int or not 0 <= index < len(samples):
                 raise ValueError("Invalid sample index")
-            self.samples.pop(index)
-            self.fit = None
+            samples.pop(index)
+            fit = None
         elif action == "clear_samples":
-            self.samples = []
-            self.fit = None
+            samples = []
+            fit = None
         elif action in ("fit", "save_ball"):
-            radial = [s["radial_pixels"] for s in self.samples]
+            radial = [s["radial_pixels"] for s in samples]
             if len(radial) < 2 or len({round(r, 5) for r in radial}) != len(radial):
                 raise ValueError("Use at least two distinct radial positions; remove duplicate positions")
-            self.fit = fit_distance_calibration(self.samples)
-            if not all(math.isfinite(v) for v in self.fit["coefficients"]):
+            fit = fit_distance_calibration(samples)
+            if not all(math.isfinite(v) for v in fit["coefficients"]):
                 raise ValueError("Degenerate fit")
             if action == "save_ball":
                 if self.camera is None or self.sample_resolution is None:
                     raise ValueError("Camera unavailable")
-                path = self.root / "ball_distance_calibration.json"
+                path = self.root / f"{target}_distance_calibration.json"
                 backup(path)
-                self.calibration, _ = save_distance_calibration(self.samples, self.sample_resolution, str(path))
-                self.camera.reload_distance_calibration(str(path))
-                self.notify("Ball distance calibration saved and reloaded")
+                calibration, _ = save_distance_calibration(samples, self.sample_resolution, str(path))
+                setattr(self, prefix + "calibration", calibration)
+                if target == "bot":
+                    self.camera.reload_distance_calibration(str(path), target="bot")
+                else:
+                    self.camera.reload_distance_calibration(str(path))
+                self.notify(f"{target.title()} distance calibration saved and reloaded")
+
+        setattr(self, prefix + "samples", samples)
+        setattr(self, prefix + "fit", fit)
 
     def freeze(self):
         with self.lock:
@@ -461,6 +503,7 @@ class Dashboard:
                 "PORT": 0,
                 "diagnostics": True,
                 "distance_calibration_file": str(self.root / "ball_distance_calibration.json"),
+                "bot_distance_calibration_file": str(self.root / "bot_distance_calibration.json"),
             }
             if model is not None:
                 camera_args["ball_model_path"] = model["path"]
@@ -481,6 +524,12 @@ class Dashboard:
                 if self.calibration is not None:
                     self.samples = self.calibration.get("samples", [])[:500]
                     self.fit = self.calibration.get("model")
+                self.bot_calibration = load_distance_calibration(
+                    camera.resolution, str(self.root / "bot_distance_calibration.json")
+                )
+                if self.bot_calibration is not None:
+                    self.bot_samples = self.bot_calibration.get("samples", [])[:500]
+                    self.bot_fit = self.bot_calibration.get("model")
                 self.active_model = model_id
                 self.camera_status = "running"
             counts = (0, 0, 0)
@@ -494,8 +543,9 @@ class Dashboard:
                     with self.lock:
                         bounds = copy.deepcopy(self.thresholds)
                         calibration = self.calibration
+                        bot_calibration = self.bot_calibration
                     frame = snap["frame"]
-                    overlay, detections = scene(frame, snap["ball"], snap["bots"], calibration)
+                    overlay, detections = scene(frame, snap["ball"], snap["bots"], calibration, bot_calibration)
                     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
                     detector = OpenCV(bounds)
                     blue, yellow = detector.mask(hsv, True), detector.mask(hsv, False)
