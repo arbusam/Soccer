@@ -36,6 +36,8 @@ BALL_HIDING_ENABLED = False
 # Distance to goal (mm) at which ball hiding starts / ends.
 BALL_HIDING_START_DIST = 1000
 BALL_HIDING_END_DIST = 600
+# Distance to goal (mm) at which to aim and shoot when ball hiding is disabled.
+BALL_HIDING_DISABLED_END_DIST = 1000
 
 CLOSE_SHOOTING_Y_DIST = 100
 
@@ -306,6 +308,11 @@ def striker(
         target_x = CYAN_GOAL_BACK_X
 
         dist_to_goal = abs(target_x - ball_x)
+        shooting_end_dist = (
+            BALL_HIDING_END_DIST
+            if BALL_HIDING_ENABLED
+            else BALL_HIDING_DISABLED_END_DIST
+        )
         # Back-wall shot, or rebound off the opposite side wall; None if neither is possible.
         degrees_to_goal, shot_possible = goal_shot_aim(
             ball_x, ball_y, target_x, CYAN_GOAL_MOUTH_X, enemy_bot_positions
@@ -346,8 +353,8 @@ def striker(
             else:
                 rotation = 0
                 direction = 0
-        elif offset == 0 and dist_to_goal < BALL_HIDING_END_DIST:
-            # Once the bot is close enough the the goal, ball hiding ends and it turns and shoots
+        elif offset == 0 and dist_to_goal < shooting_end_dist:
+            # Turn and shoot once inside the distance for the selected hiding mode.
             speed = 0
             rotation = degrees_to_goal
             if (
