@@ -243,3 +243,13 @@ Build both extensions with `.venv/bin/python lib/setup.py build_ext --inplace`, 
 **Problem:** Bot projection and dashboard overlays reused the ball radial-distance polynomial, even though object box centres need different distance fits.
 
 **Solution:** `Camera` loads `ball_distance_calibration.json` and `bot_distance_calibration.json` independently at the active camera resolution. Missing/invalid bot calibration yields bearings but no bot distances, never the ball fit. In dashboard **Distances**, select Ball or Bot to edit separate samples and fits; bot sampling requires exactly one detected bot and measures centre-to-centre distance. Saving backs up and reloads only the selected class via `reload_distance_calibration(path, target="bot")` (default target remains ball).
+
+## LIDAR acquisition timestamps and slip uncertainty
+
+**Problem:** Timing the nonblocking `grabScanDataHq()` call measures retrieval of an already completed revolution, not acquisition. The SDK timestamp's clock and reference point must be checked before using it with odometry history.
+
+**Solution:** `grabScanDataHqWithTimeStamp()` returns the first sample's timestamp. The bundled Linux SDK uses `CLOCK_MONOTONIC` microseconds (`sdk/src/arch/linux/timer.cpp`), matching Linux steady-clock odometry. Retain `LidarScanMode` from `startScan()` and add `(count - 1) * us_per_sample / 2` before converting to seconds. Use the original count including misses, before sorting/filtering. This is a whole-scan midpoint approximation, not per-beam deskewing. Invalid timestamps are excluded from localisation; scans older than retained odometry cannot be fully rewound and are rejected.
+
+**Problem:** In Pi reverse runs, wheel travel exceeded physical travel while recovery did not trigger. Stationary diffusion of 8 mm/sqrt(s) does not represent that moving uncertainty.
+
+**Solution:** Translation noise per axis is `hypot(8, coefficient * measured_speed) * sqrt(dt)`, with coefficient 0.30 sqrt(s) initially; wheel velocity remains the mean. Noise is added only on prediction, not scan replay. `lidar.set_motion_noise(0)` restores legacy noise for timestamp-only comparisons; `python -m tests.localisation --motion-noise 0` exposes this option (default 0.30). The coefficient needs Pi validation. Offline checks: `.venv/bin/python -m unittest tests.test_localisation_motion`.

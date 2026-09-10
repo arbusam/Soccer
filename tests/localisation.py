@@ -72,7 +72,13 @@ def parse_args():
         "--max-speed", type=float, default=MAX_SPEED_MM_S,
         help="Maximum translation speed in mm/s (default: 500).",
     )
+    parser.add_argument(
+        "--motion-noise", type=float, default=0.30,
+        help="Speed-dependent motion noise coefficient in sqrt(s); 0 isolates the timestamp fix.",
+    )
     args = parser.parse_args()
+    if not math.isfinite(args.motion_noise) or args.motion_noise < 0:
+        parser.error("--motion-noise must be finite and nonnegative")
     if not math.isfinite(args.max_speed) or not 0 < args.max_speed <= MAX_SPEED_MM_S:
         parser.error("--max-speed must be greater than zero and at most 500 mm/s")
     return args
@@ -483,6 +489,8 @@ def main():
         print(f"Startup yaw reference set to {startup_yaw:.1f} deg")
         feed_imu_yaw_prior(lidar, imu, startup_yaw)
 
+        lidar.set_motion_noise(args.motion_noise)
+        print(f"Motion noise coefficient: {args.motion_noise:g} sqrt(s)")
         lidar.start_coordinates(PITCH_X, PITCH_Y)
 
         print("Waiting for first pose estimate...")

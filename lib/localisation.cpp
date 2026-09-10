@@ -6,6 +6,7 @@
 #include <deque>
 #include <mutex>
 #include <random>
+#include <stdexcept>
 #include <vector>
 
 struct Segment {
@@ -77,6 +78,9 @@ static constexpr int MIN_HIT_COUNT = 8;
 static constexpr int ANGLE_BIN_COUNT = 180;  // 2° bins over 360°
 static constexpr float ANGLE_BIN_DEG = 360.0f / ANGLE_BIN_COUNT;
 static constexpr float TRANS_NOISE_MM = 8.0f;
+// sqrt(seconds): moving at 500 mm/s gives about 47.5 mm of standard
+// deviation per axis over 100 ms. Stationary diffusion remains 8 mm/sqrt(s).
+static float g_speed_noise_coefficient = 0.30f;
 static constexpr float YAW_NOISE_DEG = 2.0f;
 // Absolute IMU yaw is accurate enough to strongly constrain MCL heading.
 // Keep initialization especially tight so particles search position rather
@@ -114,14 +118,19 @@ static void propagate_particle(Particle& particle, float vx_mm_s, float vy_mm_s,
     float dx = (vx_mm_s * cos_yaw + vy_mm_s * sin_yaw) * dt_s;
     float dy = (vx_mm_s * sin_yaw - vy_mm_s * cos_yaw) * dt_s;
     float noise_dt_scale = std::sqrt(std::max(dt_s, 0.0f));
+    const float translation_sigma = add_noise
+        ? std::hypot(TRANS_NOISE_MM,
+                     g_speed_noise_coefficient * std::hypot(vx_mm_s, vy_mm_s))
+            * noise_dt_scale
+        : 0.0f;
 
     particle.x = std::min(std::max(
         particle.x + dx
-        + (add_noise ? rand_normal(TRANS_NOISE_MM * noise_dt_scale) : 0.0f),
+        + (add_noise ? rand_normal(translation_sigma) : 0.0f),
         0.0f), g_pitch_x);
     particle.y = std::min(std::max(
         particle.y + dy
-        + (add_noise ? rand_normal(TRANS_NOISE_MM * noise_dt_scale) : 0.0f),
+        + (add_noise ? rand_normal(translation_sigma) : 0.0f),
         0.0f), g_pitch_y);
     particle.yaw_deg = wrap_angle_deg(
         particle.yaw_deg + omega_deg_s * dt_s
@@ -802,6 +811,14 @@ void loc_reset() {
     reset_rotation_gate();
 }
 
+void loc_set_motion_noise(float speed_coefficient) {
+    if (!std::isfinite(speed_coefficient) || speed_coefficient < 0.0f) {
+        throw std::invalid_argument("Motion noise coefficient must be finite and nonnegative");
+    }
+    std::lock_guard<std::mutex> lock(g_loc_mutex);
+    g_speed_noise_coefficient = speed_coefficient;
+}
+
 void loc_predict_odometry(float vx_mm_s, float vy_mm_s, float omega_deg_s, float dt_s) {
     if (dt_s <= 0.0f) {
         return;
@@ -868,6 +885,16 @@ void loc_update_scan(const LocScanPoint* points, int count,
 
     // Score the scan at its acquisition time, not at processing time. A completed
     // rotating scan is already old by the time this thread receives it.
+    // Untimestamped synthetic scans use -1. A real scan must fit the retained
+    // history; partially rewinding an older scan would associate it with a
+    // position newer than its acquisition time.
+    if (!std::isfinite(scan_time_s)
+        || (scan_time_s >= 0.0
+            && (scan_time_s == 0.0 || scan_time_s > monotonic_time_s()
+                || (!g_odometry_history.empty()
+                    && scan_time_s < g_odometry_history.front().start_time_s)))) {
+        return;
+    }
     const LocPose predicted_pose = g_pose;
     const bool had_prior_pose = g_ready && g_pose.ok;
     const bool compensate_delay =

@@ -19,6 +19,7 @@
 #include <stdexcept>
 
 #include "localisation.h"
+#include "scan_timing.h"
 #include "sl_lidar_driver.h"
 
 namespace py = pybind11;
@@ -32,6 +33,7 @@ static ILidarDriver* g_driver = nullptr;
 static IChannel* g_channel = nullptr;
 static std::atomic<bool> g_running{false};
 static std::thread g_scan_thread;
+static LidarScanMode g_scan_mode = {};
 static std::mutex g_data_mutex;
 
 struct ScanPoint {
@@ -71,14 +73,23 @@ static void release_driver_resources() {
 
 static void scan_thread_func() {
     sl_lidar_response_measurement_node_hq_t nodes[8192];
+    bool reported_bad_timestamp = false;
 
     while (g_running.load()) {
         size_t count = _countof(nodes);
-        const double scan_start_time_s = monotonic_time_s();
-        sl_result op_result = g_driver->grabScanDataHq(nodes, count, 0);
+        sl_u64 first_sample_us = 0;
+        sl_result op_result = g_driver->grabScanDataHqWithTimeStamp(
+            nodes, count, first_sample_us, 0);
         const double scan_end_time_s = monotonic_time_s();
 
         if (SL_IS_OK(op_result)) {
+            const double midpoint_s = scan_midpoint_s(
+                first_sample_us, count, g_scan_mode.us_per_sample, scan_end_time_s);
+            if (midpoint_s < 0.0 && !reported_bad_timestamp) {
+                std::fprintf(stderr, "LIDAR: invalid acquisition timestamp; "
+                             "scan excluded from localisation\n");
+            }
+            reported_bad_timestamp = midpoint_s < 0.0;
             g_driver->ascendScanData(nodes, count);
 
             std::vector<ScanPoint> new_scan;
@@ -105,8 +116,7 @@ static void scan_thread_func() {
             {
                 std::lock_guard<std::mutex> lock(g_data_mutex);
                 g_latest_scan = std::move(new_scan);
-                g_latest_scan_time_s =
-                    0.5 * (scan_start_time_s + scan_end_time_s);
+                g_latest_scan_time_s = midpoint_s;
                 g_scan_ready.store(true);
                 g_scan_generation.fetch_add(1);
             }
@@ -139,7 +149,7 @@ static void localization_thread_func() {
             generation = g_scan_generation.load();
         }
 
-        if (scan_copy.empty()) {
+        if (scan_copy.empty() || scan_time_s <= 0.0) {
             last_processed_generation = generation;
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
@@ -199,7 +209,14 @@ static bool init_lidar(const std::string& port, int baudrate) {
         }
 
         g_driver->setMotorSpeed();
-        g_driver->startScan(0, 1);
+        g_scan_mode = {};
+        if (SL_IS_FAIL(g_driver->startScan(0, 1, 0, &g_scan_mode))) {
+            throw std::runtime_error("Failed to start LIDAR scan");
+        }
+        if (!std::isfinite(g_scan_mode.us_per_sample)
+            || g_scan_mode.us_per_sample <= 0.0f) {
+            throw std::runtime_error("LIDAR returned invalid scan sample duration");
+        }
     } catch (...) {
         release_driver_resources();
         throw;
@@ -563,6 +580,11 @@ PYBIND11_MODULE(lidar, m) {
           py::arg("vx_mm_s"), py::arg("vy_mm_s"),
           py::arg("omega_deg_s"), py::arg("dt_s"),
           "Propagate the particle filter between LIDAR scans.");
+
+    m.def("set_motion_noise", &loc_set_motion_noise,
+          py::arg("speed_coefficient"),
+          "Set translation speed-noise coefficient in sqrt(seconds). "
+          "Default 0.30; use 0 for the legacy stationary-only noise model.");
 
     m.def("get_pose", &get_pose_py,
           "Get (x, y, yaw_deg, confidence) from MCL.");
