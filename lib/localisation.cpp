@@ -488,7 +488,21 @@ static void inject_random_particles(float fraction) {
     const float weight = 1.0f / PARTICLE_COUNT;
     for (int i = 0; i < count; i++) {
         int idx = (int)rand_uniform(0.0f, (float)(PARTICLE_COUNT - 1));
-        sample_position(g_particles[idx], GOAL_PARTICLE_FRACTION);
+        const bool search_nearby =
+            g_recovery_fraction > EXPLORATION_FRACTION
+            && rand_uniform(0.0f, 1.0f) < 0.70f;
+        if (search_nearby) {
+            // Broaden the existing position hypothesis at the scan timestamp.
+            constexpr float recovery_sigma_mm = 150.0f;
+            g_particles[idx].x = std::min(
+                std::max(g_particles[idx].x + rand_normal(recovery_sigma_mm), 0.0f),
+                g_pitch_x);
+            g_particles[idx].y = std::min(
+                std::max(g_particles[idx].y + rand_normal(recovery_sigma_mm), 0.0f),
+                g_pitch_y);
+        } else {
+            sample_position(g_particles[idx], GOAL_PARTICLE_FRACTION);
+        }
         g_particles[idx].yaw_deg = rand_init_yaw_deg();
         g_particles[idx].weight = weight;
     }
