@@ -232,30 +232,34 @@ def goalie(
         return direction, speed, rotation, kick, dribbler
     vector = (ball_x - x_pos), (ball_y - y_pos)
     direction = None
-    dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
+    # dist = math.sqrt(vector[0] ** 2 + vector[1] ** 2)
     angle_to_ball = math.degrees(math.atan2(ball_y - y_pos, ball_x - x_pos))
     rotation = 0
     angle_to_ball %= 360
-    angle_error = ((angle_to_ball - yaw + 180) % 360) - 180
     speed = 700
     kick = False
 
-    if ball_captured and -90 < yaw < 90:
-        kick = True
-        yaw_rad = math.radians(yaw)
-        dir_x = math.cos(yaw_rad)
-        dir_y = math.sin(yaw_rad)
-        for bot in enemy_bot_positions:
-            along_kick = (bot[0] - x_pos) * dir_x + (bot[1] - y_pos) * dir_y
-            if abs(along_kick) < 200:
-                kick = False
-                    
+    yaw %= 360
+    if yaw < 0:
+        yaw += 360
 
-    if y_pos > 1360:
+    if ball_captured:
+        if yaw < 20 or yaw > 340:
+            kick = True
+            yaw_rad = math.radians(yaw)
+            dir_x = math.cos(yaw_rad)
+            dir_y = math.sin(yaw_rad)
+            for bot in enemy_bot_positions:
+                along_kick = (bot[0] - x_pos) * dir_x + (bot[1] - y_pos) * dir_y
+                if abs(along_kick) < 200:
+                    kick = False
+        else:
+            dribbler = 1
+    elif y_pos > 1360:
         direction = 270
     elif y_pos < 460:
         direction = 90
-    elif x_pos < 520:
+    elif x_pos < 520 and not 90 < yaw < 270:
         direction = 0
     elif x_pos > 600 and not ball_captured:
         direction = 180
@@ -269,6 +273,18 @@ def goalie(
             else:
                 direction = yaw
                 speed = 0
+        elif ball_x < x_pos:
+            y_diff = ball_y - y_pos
+            rotation = angle_to_ball
+            if abs(y_diff) > 10:
+                direction = math.degrees(math.atan2(y_diff, 0))
+                distance_to_target = abs(y_diff)
+                speed = min(speed, distance_to_target * 4 + 50)
+            else:
+                dribbler = 1
+                if abs(yaw - rotation) < 5:
+                    direction = angle_to_ball
+                    speed = 200
         else:
             goal_dx = YELLOW_GOAL_BACK_X - ball_x
             goal_dy = GOAL_CENTRE_Y - ball_y
@@ -293,6 +309,8 @@ def goalie(
             if math.hypot(dif_x, dif_y) < 10:
                 speed = 0
             direction = math.degrees(math.atan2(dif_y, dif_x))
+            distance_to_target = math.hypot(dif_x, dif_y)
+            speed = min(speed, distance_to_target * 4)
     if kick == True:
         dribbler = -1
 
