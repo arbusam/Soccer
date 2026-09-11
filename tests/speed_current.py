@@ -81,19 +81,21 @@ def main(argv=None):
     current = args.start_current
     print(f"Target {args.speed:g} mm/s; tolerance {args.tolerance:.1%}; "
           f"up to {args.duration:g}s per current. Ctrl+C stops the test.", flush=True)
+    hardware = None
     try:
+        hardware = HardwareController.from_i2c_addresses(
+            config.i2c_addresses, WHEEL_DIAMETER, MAX_YAW_RPM,
+            MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD,
+            drive_motor_current_limit=current,
+        )
+        set_startup_yaw(hardware)
         while True:
             print(f"Testing {current:g} A drive current", flush=True)
-            hardware = HardwareController.from_i2c_addresses(
-                config.i2c_addresses, WHEEL_DIAMETER, MAX_YAW_RPM,
-                MAX_MOTOR_RPM, YAW_CORRECT_THRESHOLD,
-                drive_motor_current_limit=current,
-            )
             try:
-                set_startup_yaw(hardware)
+                hardware.set_drive_current_limits(current, current)
                 passed = measure_trial(hardware, args.speed, args.duration, args.tolerance, args.hold)
             finally:
-                hardware.stop()
+                hardware.move(0, 0, 0, 0)
             if passed:
                 print(f"Lowest passing tested current: {current:g} A at {args.speed:g} mm/s.")
                 return 0
@@ -105,6 +107,9 @@ def main(argv=None):
     except KeyboardInterrupt:
         print("\nCurrent sweep stopped.")
         return 130
+    finally:
+        if hardware is not None:
+            hardware.stop()
 
 
 if __name__ == "__main__":
