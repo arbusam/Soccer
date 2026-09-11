@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -44,7 +45,10 @@ public:
                        std::unique_ptr<TwoWire> transport = nullptr,
                        int imu_address = 0x4a, int imu_report_interval_ms = 10,
                        int kicker_pin = -1, const std::string& kicker_gpiochip = "",
-                       std::unique_ptr<KickerOutput> kicker_output = nullptr);
+                       std::unique_ptr<KickerOutput> kicker_output = nullptr,
+                       double drive_motor_current_limit = 8.0,
+                       double dribbler_motor_current_limit = 1.0,
+                       double kick_pulse_length = 0.02, double kick_cooldown = 0.5);
     ~HardwareController();
     HardwareController(const HardwareController&) = delete;
     HardwareController& operator=(const HardwareController&) = delete;
@@ -58,6 +62,7 @@ public:
     void set_startup_yaw(double raw_yaw) { imu_->set_startup_yaw(raw_yaw); }
     std::pair<double, double> get_measured_body_velocity_mm_s(double yaw_deg);
     void stop();
+    void set_drive_current_limits(double constant_speed_amps, double acceleration_amps);
     uint64_t loop_count() const { return loop_count_.load(); }
     double current_speed() const;
     double current_direction() const;
@@ -73,6 +78,9 @@ private:
     std::unique_ptr<LinuxBno08x> imu_;
     std::unique_ptr<KickerOutput> kicker_;
     std::vector<PowerfulBLDCdriver> motors_;
+    int32_t drive_motor_current_limit_, dribbler_motor_current_limit_;
+    int32_t constant_speed_current_limit_, acceleration_current_limit_; // state_mutex_
+    std::chrono::steady_clock::duration kick_pulse_, kick_cooldown_;
     mutable std::mutex state_mutex_;
     std::mutex bus_mutex_, stop_mutex_;
     std::condition_variable wake_;

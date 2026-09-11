@@ -261,7 +261,8 @@ void kinematics() {
 }
 void lifecycle(int count) {
     auto state = std::make_shared<State>();
-    HardwareController controller(calibration(count), config, "unused", std::make_unique<FakeWire>(state));
+    HardwareController controller(calibration(count), config, "unused", std::make_unique<FakeWire>(state),
+                                  0x4a, 10, -1, "", nullptr, 2.5, 0.75);
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         for (int i = 0; i < count; ++i) {
@@ -269,9 +270,9 @@ void lifecycle(int count) {
             assert(has_packet(*state, 25+i, {0x32, 0, 8, 0, 0}));
             assert(has_packet(*state, 25+i, {0x21, uint8_t(i < 4 ? 12 : 2)}));
             if (i < 4)
-                assert(has_packet(*state, 25+i, {0x33, 0, 0, 8, 0}));
+                assert(has_packet(*state, 25+i, {0x33, 0, 0x80, 2, 0}));
             else
-                assert(has_packet(*state, 25+i, {0x33, 0, 0, 1, 0}));
+                assert(has_packet(*state, 25+i, {0x33, 0, 0xc0, 0, 0}));
         }
         // Float PID values must be serialized as IEEE bits, not converted to integers.
         assert(has_packet(*state, 25, {0x43, 0, 0x80, 0x89, 0x43, 0, 0, 0, 0, 0, 0, 0, 0}));
@@ -284,7 +285,7 @@ void lifecycle(int count) {
     close(velocity.second, -500, 1e-4); // Negative QDR register decoded correctly.
     if (count == 5) {
         std::lock_guard<std::mutex> lock(state->mutex);
-        assert(has_packet(*state, 29, {0x11, 0, 0, 1, 0}));
+        assert(has_packet(*state, 29, {0x11, 0, 0xc0, 0, 0}));
     }
     throws([&] { controller.move(0, std::numeric_limits<double>::quiet_NaN(), 0, 0, 0); });
     throws([&] { controller.move(0, 0, 0, 0, 0, true); });
@@ -337,7 +338,7 @@ void kicker_control() {
     auto gpio = std::make_shared<KickState>();
     HardwareController controller(calibration(4), config, "unused",
         std::make_unique<FakeWire>(state), 0x4a, 10, -1, "",
-        std::make_unique<FakeKicker>(gpio));
+        std::make_unique<FakeKicker>(gpio), 8.0, 1.0, 0.01, 0.1);
     auto wait = [&](size_t count, bool ended) {
         std::unique_lock<std::mutex> lock(gpio->mutex);
         assert(gpio->changed.wait_for(lock, std::chrono::seconds(2), [&] {
@@ -355,11 +356,11 @@ void kicker_control() {
     wait(1, true);
     state->block_motor = false; // Pulse completed while the I2C transaction was blocked.
     controller.move(0, 500, 0, 0, 0, true); // During cooldown: ignored.
-    std::this_thread::sleep_for(std::chrono::milliseconds(550));
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
     {
         std::lock_guard<std::mutex> lock(gpio->mutex);
         assert(gpio->starts.size() == 1); // No queued or stale-target repeat.
-        assert(gpio->ends[0] - gpio->starts[0] >= std::chrono::milliseconds(20));
+        assert(gpio->ends[0] - gpio->starts[0] >= std::chrono::milliseconds(10));
     }
     assert(controller.loop_count() > 10); // Driving continues independently.
     controller.move(0, 0, 0, 0, 0, true);
@@ -458,7 +459,33 @@ void failures() {
     throws([&] { HardwareController bad(invalid, config, "/no/hardware"); });
 }
 }
+void dynamic_current_limits() {
+    auto state = std::make_shared<State>();
+    HardwareController controller(calibration(5), config, "unused", std::make_unique<FakeWire>(state));
+    controller.set_drive_current_limits(0.75, 2.5);
+    throws([&] { controller.set_drive_current_limits(-1, 2); });
+    wait_ticks(controller, 2);
+    controller.move(0, 500, 0, 0);
+    wait_ticks(controller, 12);
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        for (int address = 25; address < 29; ++address) {
+            std::vector<std::vector<uint8_t>> limits;
+            for (const auto& packet : state->packets)
+                if (packet.address == address && packet.bytes[0] == 0x33)
+                    limits.push_back(packet.bytes);
+            assert(limits.size() == 4); // Initial, stationary, accelerating, cruising; no repeated writes.
+            assert(limits[1] == std::vector<uint8_t>({0x33, 0, 0xc0, 0, 0}));
+            assert(limits[2] == std::vector<uint8_t>({0x33, 0, 0x80, 2, 0}));
+            assert(limits[3] == limits[1]);
+        }
+        assert(!has_packet(*state, 29, {0x33, 0, 0x80, 2, 0}));
+    }
+    controller.stop();
+    throws([&] { controller.set_drive_current_limits(1, 2); });
+}
 int main() {
+    dynamic_current_limits();
     imu_protocol();
     kinematics();
     lifecycle(4);

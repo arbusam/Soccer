@@ -10,12 +10,7 @@ namespace {
 constexpr double PI = 3.14159265358979323846;
 constexpr double RAD = PI / 180.0;
 constexpr int32_t AMPS_PER_LSB = 1 << 16;
-constexpr int32_t DRIVE_MOTOR_CURRENT_LIMIT = 8 * AMPS_PER_LSB;
-constexpr int32_t DRIBBLER_MOTOR_CURRENT_LIMIT = 1 * AMPS_PER_LSB;
-constexpr int32_t DRIBBLER_MAX_TORQUE = 1 * AMPS_PER_LSB;
 constexpr int32_t MOTOR_SPEED_LIMIT = 546133333;
-constexpr auto KICK_PULSE = std::chrono::milliseconds(20);
-constexpr auto KICK_COOLDOWN = std::chrono::milliseconds(500);
 
 double wrap(double angle) {
     double result = std::fmod(angle + 180.0, 360.0);
@@ -24,6 +19,18 @@ double wrap(double angle) {
 }
 void finite(double value) {
     if (!std::isfinite(value)) throw std::invalid_argument("Motor parameters must be finite");
+}
+int32_t current_limit_lsb(double amps) {
+    finite(amps);
+    if (amps < 0 || amps > static_cast<double>(INT32_MAX) / AMPS_PER_LSB)
+        throw std::invalid_argument("Motor current limits must be non-negative and fit in int32 LSB");
+    return static_cast<int32_t>(amps * AMPS_PER_LSB);
+}
+std::chrono::steady_clock::duration seconds_duration(double seconds, const char* name) {
+    if (!std::isfinite(seconds) || seconds < 0)
+        throw std::invalid_argument(std::string(name) + " must be finite and non-negative");
+    return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+        std::chrono::duration<double>(seconds));
 }
 }
 void DriveConfig::validate() const {
@@ -72,7 +79,17 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
                                      std::unique_ptr<TwoWire> transport,
                                      int imu_address, int imu_report_interval_ms,
                                      int kicker_pin, const std::string& kicker_gpiochip,
-                                     std::unique_ptr<KickerOutput> kicker_output) : config_(config) {
+                                     std::unique_ptr<KickerOutput> kicker_output,
+                                     double drive_motor_current_limit,
+                                     double dribbler_motor_current_limit,
+                                     double kick_pulse_length, double kick_cooldown) :
+    config_(config),
+    drive_motor_current_limit_(current_limit_lsb(drive_motor_current_limit)),
+    dribbler_motor_current_limit_(current_limit_lsb(dribbler_motor_current_limit)),
+    constant_speed_current_limit_(drive_motor_current_limit_),
+    acceleration_current_limit_(drive_motor_current_limit_),
+    kick_pulse_(seconds_duration(kick_pulse_length, "Kick pulse length")),
+    kick_cooldown_(seconds_duration(kick_cooldown, "Kick cooldown")) {
     config_.validate();
     if (calibration.size() != 4 && calibration.size() != 5)
         throw std::invalid_argument("HardwareController requires four wheels and an optional dribbler");
@@ -109,7 +126,7 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
             motor.configureOperatingModeAndSensor(3, 1);
             motor.setTorque(0);
             motor.setSpeed(0);
-            motor.setCurrentLimitFOC(DRIVE_MOTOR_CURRENT_LIMIT);
+            motor.setCurrentLimitFOC(drive_motor_current_limit_);
             motor.setIdPidConstants(1500, 200);
             motor.setIqPidConstants(1500, 200);
             motor.setSpeedPidConstants(4e-2f, 4e-4f, 3e-2f);
@@ -128,7 +145,7 @@ HardwareController::HardwareController(const std::vector<MotorCalibration>& cali
             motor.configureCommandMode(2);
             motor.configureOperatingModeAndSensor(3, 1);
             motor.setTorque(0);
-            motor.setCurrentLimitFOC(DRIBBLER_MOTOR_CURRENT_LIMIT);
+            motor.setCurrentLimitFOC(dribbler_motor_current_limit_);
             motor.setIdPidConstants(1500, 200);
             motor.setIqPidConstants(1500, 200);
             motor.setSpeedPidConstants(4e-2f, 4e-4f, 3e-2f);
@@ -191,6 +208,14 @@ void HardwareController::fail(const std::string& message) {
     error_ += message;
     running_ = false;
     wake_.notify_all();
+}
+void HardwareController::set_drive_current_limits(double constant_speed_amps, double acceleration_amps) {
+    const auto steady = current_limit_lsb(constant_speed_amps);
+    const auto accelerating = current_limit_lsb(acceleration_amps);
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    check_state();
+    constant_speed_current_limit_ = steady;
+    acceleration_current_limit_ = accelerating;
 }
 std::pair<double, double> HardwareController::get_measured_body_velocity_mm_s(double yaw_deg) {
     finite(yaw_deg); // Kept for compatibility; body-frame inversion does not need yaw.
@@ -288,10 +313,10 @@ void HardwareController::kicker_loop() noexcept {
             kicking_ = true;
             kicker_->high();
             const auto started = std::chrono::steady_clock::now();
-            next_kick_time_ = started + KICK_COOLDOWN;
+            next_kick_time_ = started + kick_cooldown_;
             // wait_until releases state_mutex_; motors, IMU, and move() can proceed.
             // Shutdown interrupts the pulse early, and ordinary move updates do not extend it.
-            wake_.wait_until(lock, started + KICK_PULSE, [&] { return !running_; });
+            wake_.wait_until(lock, started + kick_pulse_, [&] { return !running_; });
             lock.unlock();
             kicker_->idle();
             lock.lock();
@@ -313,9 +338,12 @@ void HardwareController::drive_loop() noexcept {
     const auto period = std::chrono::milliseconds(20); // Target loop period (50Hz)
     auto last = Clock::now(); // Previous loop time
     auto next = last + period; // Target next loop time
+    std::array<double, 4> previous_rpms{};
+    int32_t applied_current_limit = drive_motor_current_limit_;
     try {
         while (running_) {
             Command command;
+            int32_t steady_current, accelerating_current;
             {
                 // Obtains a lock to avoid this loop and move() racing
                 std::unique_lock<std::mutex> lock(state_mutex_);
@@ -333,6 +361,8 @@ void HardwareController::drive_loop() noexcept {
                 if (next <= now) next = now + period; // Account for missed loops
 
                 command = target_; // target_ is the command from move(). Saves it to command so it can be unlocked
+                steady_current = constant_speed_current_limit_;
+                accelerating_current = acceleration_current_limit_;
                 // Calculate required change in velocity vectors (delta refers to change in velocity)
                 double delta_x = std::cos(command.direction * RAD) * command.speed - dx_;
                 double delta_y = std::sin(command.direction * RAD) * command.speed - dy_;
@@ -358,11 +388,23 @@ void HardwareController::drive_loop() noexcept {
             command.yaw = imu.last_yaw;
             if (!imu.yaw) command.rotation_speed = 0;
             const auto rpms = calculate_drive_rpms(command, config_);
+            // Wheel target changes include translation ramps, braking and yaw corrections.
+            bool accelerating = false;
+            for (size_t i = 0; i < rpms.size(); ++i)
+                accelerating |= std::abs(rpms[i] - previous_rpms[i]) > 0.1;
+            const auto current_limit = accelerating ? accelerating_current : steady_current;
+            if (current_limit != applied_current_limit) {
+                for (size_t i = 0; i < rpms.size(); ++i)
+                    motors_[i].setCurrentLimitFOC(current_limit);
+                applied_current_limit = current_limit;
+            }
+            previous_rpms = rpms;
             // Send motor commands
             for (size_t i = 0; i < rpms.size(); ++i)
                 motors_[i].setSpeed(static_cast<int32_t>(rpms[i] * RPM_TO_MOTOR_SPEED));
             // Spin the dribbler, if configured
-            if (motors_.size() > 4) motors_[4].setTorque(command.dribbler * DRIBBLER_MAX_TORQUE);
+            if (motors_.size() > 4)
+                motors_[4].setTorque(command.dribbler * dribbler_motor_current_limit_);
             ++loop_count_;
         }
     } catch (const std::exception& exc) {

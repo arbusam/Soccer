@@ -67,6 +67,11 @@ class HardwareControllerTests(unittest.TestCase):
                              {"imu_report_interval_ms": 0}, {"imu_report_interval_ms": 1001}):
                 with self.assertRaisesRegex(ValueError, "IMU"):
                     create([25, 26, 27, 28], **settings)
+            for settings in ({"drive_motor_current_limit": -1.0},
+                             {"dribbler_motor_current_limit": float("inf")},
+                             {"kick_pulse_length": -0.01}, {"kick_cooldown": float("nan")}):
+                with self.assertRaises(ValueError):
+                    create([25, 26, 27, 28], **settings)
             # Reordered calibration is accepted by address and reaches device open.
             for pin in (-2, 28):
                 with self.assertRaisesRegex(ValueError, "kicker|Kicker"):
@@ -85,6 +90,9 @@ class HardwareControllerTests(unittest.TestCase):
         self.assertNotIn("yaw:", HardwareController.move.__doc__)
         self.assertIn("dribbler:", HardwareController.move.__doc__)
         self.assertIn("kick: bool = False", HardwareController.move.__doc__)
+        constructor_doc = HardwareController.from_i2c_addresses.__doc__
+        self.assertIn("drive_motor_current_limit: typing.SupportsFloat = 8.0", constructor_doc)
+        self.assertIn("kick_pulse_length: typing.SupportsFloat = 0.02", constructor_doc)
 
     def test_main_yaw_reference_and_lidar_prior(self):
         # Execute the actual startup helpers without importing main's hardware side effects.

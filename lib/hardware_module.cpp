@@ -13,7 +13,8 @@ std::unique_ptr<HardwareController> from_addresses(
     const std::vector<int>& addresses, double diameter, double max_yaw_rpm,
     double max_rpm, double yaw_correct_threshold, const std::string& calibration_file,
     const std::string& i2c_device, int imu_address, int imu_report_interval_ms,
-    int kicker_pin, const std::string& kicker_gpiochip) {
+    int kicker_pin, const std::string& kicker_gpiochip, double drive_motor_current_limit,
+    double dribbler_motor_current_limit, double kick_pulse_length, double kick_cooldown) {
     // File parsing runs once with the GIL. All motor I/O and control are native C++.
     std::filesystem::path path(calibration_file);
     if (path.is_relative()) {
@@ -50,7 +51,8 @@ std::unique_ptr<HardwareController> from_addresses(
     py::gil_scoped_release release;
     return std::make_unique<HardwareController>(calibration,
         hardware::DriveConfig{diameter, max_yaw_rpm, max_rpm, yaw_correct_threshold}, i2c_device,
-        nullptr, imu_address, imu_report_interval_ms, kicker_pin, kicker_gpiochip);
+        nullptr, imu_address, imu_report_interval_ms, kicker_pin, kicker_gpiochip, nullptr,
+        drive_motor_current_limit, dribbler_motor_current_limit, kick_pulse_length, kick_cooldown);
 }
 }
 PYBIND11_MODULE(hardware_controller, module) {
@@ -63,12 +65,18 @@ PYBIND11_MODULE(hardware_controller, module) {
             py::arg("calibration_file") = "calibration_data.json",
             py::arg("i2c_device") = "/dev/i2c-1",
             py::arg("imu_address") = 0x4a, py::arg("imu_report_interval_ms") = 10,
-            py::arg("kicker_pin") = -1, py::arg("kicker_gpiochip") = "")
+            py::arg("kicker_pin") = -1, py::arg("kicker_gpiochip") = "",
+            py::arg("drive_motor_current_limit") = 8.0,
+            py::arg("dribbler_motor_current_limit") = 1.0,
+            py::arg("kick_pulse_length") = 0.02, py::arg("kick_cooldown") = 0.5)
         .def("move", &HardwareController::move, py::arg("direction"), py::arg("speed"),
              py::arg("rotation"), py::arg("rotation_speed"),
              py::arg("dribbler") = 0, py::arg("kick") = false,
              py::call_guard<py::gil_scoped_release>())
         .def("get_raw_imu_yaw", &HardwareController::get_raw_imu_yaw)
+        .def("set_drive_current_limits", &HardwareController::set_drive_current_limits,
+             py::arg("constant_speed_amps"), py::arg("acceleration_amps"),
+             py::call_guard<py::gil_scoped_release>())
         .def("set_startup_yaw", &HardwareController::set_startup_yaw, py::arg("raw_yaw"))
         .def("get_yaw", &HardwareController::get_yaw)
         .def("get_gyro_z_deg_s", &HardwareController::get_gyro_z_deg_s)

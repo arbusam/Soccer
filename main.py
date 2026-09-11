@@ -18,19 +18,21 @@ from lib.config import BotMode, load_config
 from lib.recording_session import RecordingSession
 
 LOG_FPS = 30 # How often the bot state is written to the log file
-FPS_REPORT_INTERVAL = 1.0 # seconds, how often the FPS is printed to the console when --fps is used
+FPS_REPORT_INTERVAL = 1.0 # seconds; how often the FPS is printed to the console when --fps is used
 PEER_PORT = 5005 # Port for bot to bot communication.
 ENABLE_COMMUNICATION = False # Use lib/communication.py to communicate between bots.
 USE_PAUSE = True # Whether to pause the bot when the pause switch is pressed. Set to False for debugging.
 
-WHEEL_DIAMETER = 50 # mm, used to convert between motor RPM and robot mm/s
+WHEEL_DIAMETER = 50 # mm; used to convert between motor RPM and robot mm/s
+CONSTANT_SPEED_TORQUE = 8.0  # Amps; The current limit when the bot is at a constant speed.
+ACCELERATION_TORQUE = 8.0  # Amps; The current limit when the bot is accelerating.
 MAX_YAW_RPM = 100 # Maximum rpm that can be added or subtracted from the wheel speeds to correct yaw
 
 LIDAR_PORT = "/dev/ttyUSB0" # LIDAR port. Usually "/dev/ttyUSB0"
 LIDAR_BAUDRATE = 460800
 
 MAX_MOTOR_RPM = 1000  # This converts to a maximum linear translation of ~2618 mm/s with 50 mm wheels; driver hardware max is ~1984 RPM (~5194 mm/s)
-YAW_CORRECT_THRESHOLD = 3 # deg, threshold of allowable yaw error.
+YAW_CORRECT_THRESHOLD = 3 # deg; threshold of allowable yaw error.
 
 CAMERA_PORT = 8000 # Port used for streaming the camera feed for debugging.
 CAMERA_RESOLUTION = (640, 640)
@@ -39,7 +41,7 @@ CAMERA_FPS = 90
 # treated as self/friendly rather than enemies.
 CAMERA_BOT_MATCH_MM = 100
 
-BALL_TIMEOUT = 0.5 # seconds, maximum time for which the ball position can be extrapolated from velocity without assuming 'lost' state.
+BALL_TIMEOUT = 0.5 # seconds; maximum time for which the ball position can be extrapolated from velocity without assuming 'lost' state.
 STARTUP_YAW_SAMPLE_COUNT = 25
 STARTUP_YAW_SAMPLE_INTERVAL = 0.02
 
@@ -309,6 +311,7 @@ try:
         YAW_CORRECT_THRESHOLD,
         kicker_pin=int(KICKER_PIN.id),
     )
+    hardware_controller.set_drive_current_limits(CONSTANT_SPEED_TORQUE, ACCELERATION_TORQUE)
     startup_yaw = capture_startup_yaw(hardware_controller)
     hardware_controller.set_startup_yaw(startup_yaw)
     print(f"Startup yaw reference set to {startup_yaw:.6f} deg")
